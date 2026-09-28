@@ -78,6 +78,15 @@ const selectedTitle = computed(() => {
 const isExpense = computed(() => type.value === 'expense')
 
 /* ---------------- 交互 ---------------- */
+/** 切换支出/收入/转账/借贷：分类体系不同，必须清掉上一个类型的选择 */
+function switchType(key) {
+  if (type.value === key) return
+  type.value = key
+  primaryId.value = ''
+  subId.value = ''
+  expandedId.value = ''
+}
+
 function selectCategory(item) {
   if (item.id === '__manage__') {
     router.push({ path: '/category', query: { type: type.value } })
@@ -287,7 +296,7 @@ onMounted(async () => {
             class="type-tab"
             :class="{ 'is-active': type === item.key }"
             type="button"
-            @click="type = item.key"
+            @click="switchType(item.key)"
           >
             <span>{{ item.label }}</span>
             <i v-if="type === item.key" class="line" />
@@ -304,7 +313,8 @@ onMounted(async () => {
     <div class="page-body record-body">
       <CategoryGrid
         :items="items"
-        :selected-id="subId || primaryId"
+        :selected-id="subId"
+        :active-id="primaryId"
         :badges="badges"
         :insert-after-id="expandedId"
         @select="selectCategory"
@@ -344,11 +354,13 @@ onMounted(async () => {
 
 <style scoped>
 .record-page {
-  background: #fff;
+  background: var(--page);
 }
 
+/* 与参考稿一致：分类区直接铺在灰色页面上，
+   二级分类面板作为白色浮起卡片（见 SubCategoryPanel.vue）叠在灰底之上 */
 .record-body {
-  background: #fff;
+  background: transparent;
   padding: 8px 6px 8px;
 }
 

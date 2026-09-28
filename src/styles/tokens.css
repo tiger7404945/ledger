@@ -22,6 +22,8 @@
   --surface-2: #f8f9fa;
   --surface-3: #f0f1f4;
   --surface-4: #e9eaee;
+  /* 浮起卡片：铺在灰底 --page 之上的白色卡片，当前用于记账页二级分类面板 */
+  --surface-raised: #ffffff;
   --hairline: #eff0f3;
   --dark: #101010;
   --danger: #e2564a;

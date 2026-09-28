@@ -5,6 +5,12 @@ import CategoryIcon from './CategoryIcon.vue'
 const props = defineProps({
   items: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' },
+  /**
+   * 同样要显示选中态的分类 id。
+   * 记账页选中二级分类时 selectedId 是二级 id，一级宫格里匹配不到，
+   * 需要通过 activeId 传父级 id 把一级分类一并点亮。
+   */
+  activeId: { type: String, default: '' },
   /** 需要显示「含二级分类」角标的一级分类 id */
   badges: { type: Array, default: () => [] },
   columns: { type: Number, default: 5 },
@@ -14,6 +20,10 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['select'])
+
+function isActive(id) {
+  return id === props.selectedId || id === props.activeId
+}
 
 const rows = computed(() => {
   const out = []
@@ -43,7 +53,7 @@ const insertRowIndex = computed(() => {
           <CategoryIcon
             :icon="item.icon"
             :size="iconSize"
-            :variant="item.id === selectedId ? 'active' : 'muted'"
+            :variant="isActive(item.id) ? 'active' : 'muted'"
             :badge="badges.includes(item.id)"
           />
           <span class="cat-name">{{ item.name }}</span>

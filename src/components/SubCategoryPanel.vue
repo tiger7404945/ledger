@@ -63,11 +63,16 @@ function onCell(item) {
 </template>
 
 <style scoped>
+/* 二级分类面板：铺在灰色页面（--page）之上的白色浮起卡片，
+   通过「更亮的底色 + 左右内缩 + 圆角 + 极轻阴影」与一级分类区拉开层次。
+   改底色只需调整 --surface-raised（定义在 src/styles/tokens.css）。 */
 .sub-panel {
-  margin: 2px 4px 14px;
-  padding: 14px 0 2px;
-  background: #fff;
+  margin: 4px 24px 16px;
+  padding: 16px 2px 2px;
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
   border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
 }
 
 .sub-row {
