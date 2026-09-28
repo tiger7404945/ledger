@@ -1,7 +1,7 @@
 # 项目长期记忆 · 随手记账（D:\projects\ledger）
 
 ## 项目性质
-移动端记账 Web App 的前端复刻。设计原型来自仓库根目录的 8 张微信截图（`微信图片_*.jpg`）。
+移动端记账 Web App 的前端复刻。设计原型来自仓库根目录的设计稿：8 张微信截图（`微信图片_*.jpg`）+ 后续补充的 `填写备注.jpg`（记账页备注候选条）。补充稿同样放在仓库根目录、纳入版本管理。
 **第一阶段只做前端 + Mock 数据**；第二阶段接 IndexedDB 离线缓存与 LeanCloud 增量同步。
 
 ## 强制约定
@@ -37,6 +37,7 @@ Mock 数据持久化在 localStorage `ledger.db.v1`，「我的 → 重置演示
 ## 版本管理
 - **本机 Git 环境**：未安装 Git for Windows（无 `C:\Program Files\Git`），用户 PATH 中无 git；本会话执行 git 用的是 WorkBuddy 内置 PortableGit `~/.workbuddy/binaries/PortableGit/versions/1.2.0`（2.55.0）。另装有 GitHub Desktop 3.5.12，其自带精简版 git 在 `%LOCALAPPDATA%\GitHubDesktop\app-3.5.12\resources\app\git\cmd\git.exe`（2.53.0，无 bash/gitk）。全局身份 `tiger7404945 <tiger7404945@163.com>`。
 - 主分支 `main`；第一阶段已打标签 `v0.1.0`。
+- 提交历史：`face5fb` 第一阶段前端 → `cb2ac48` 记账页选中态/面板层级修复 → `698c975` 记账页交互增强（默认分类/草稿/备注候选，含 `填写备注.jpg`）。
 - 提交信息用约定式前缀（`feat:`/`fix:`/`refactor:`/`docs:`），正文写清功能点与数据层改动。
 - 不提交 `node_modules/`、`dist/`、`.preview/`（见 `.gitignore`）；`dist` 为可重建产物。
 - 设计参考图与 `.workbuddy/memory/` 纳入版本管理，作为设计来源与决策记录。
