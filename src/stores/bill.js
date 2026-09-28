@@ -155,6 +155,20 @@ export const useBillStore = defineStore('bill', {
       return billRepo.get(id)
     },
 
+    /**
+     * 某分类下的历史备注（记账页「填写备注」的候选）
+     * 去重、按最近保存时间从新到旧
+     * @param {string} categoryId 二级分类优先，无二级时为一级分类
+     * @param {number} limit
+     * @returns {Promise<string[]>}
+     */
+    async remarkHistory(categoryId, limit = 15) {
+      if (!categoryId) return []
+      const ledger = useLedgerStore()
+      await ledger.ensureLoaded()
+      return billRepo.remarkHistory({ ledgerId: ledger.currentId, categoryId, limit })
+    },
+
     /** 搜索：备注 / 分类名（含二级全名）/ 金额 */
     async search(keyword) {
       this.searchKeyword = keyword

@@ -5,7 +5,7 @@ import {
   SCHEMA_VERSION
 } from '../contract.js'
 import { outbox } from '../sync/outbox.js'
-import { buildSeed } from '../mock/seed.js'
+import { buildSeed, SEED_BILL_NOTES, SEED_NOTES_VERSION } from '../mock/seed.js'
 import { now, uid } from '../../utils/id.js'
 import { monthKeyOf, daysInMonth, currentMonthKey, todayKey } from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
@@ -25,6 +25,28 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
   /* ---------------- 内部：持久化 ---------------- */
 
+  /**
+   * 轻量数据迁移（幂等）
+   * 演示账单的备注是后加的字段，早期版本播种出来的本地库里这些账单备注为空，
+   * 导致记账页「填写备注」看不到历史候选。这里按 id 一次性回填，
+   * 只补「种子账单 + 备注为空」的记录，不动用户自己记的账。
+   * @returns {boolean} 是否有改动
+   */
+  function migrate(s) {
+    const meta = s.meta || (s.meta = {})
+    if (meta.seedNotes === SEED_NOTES_VERSION) return false
+    let changed = false
+    ;(s.bills || []).forEach((b) => {
+      const note = SEED_BILL_NOTES[b.id]
+      if (note && !b.remark) {
+        b.remark = note
+        changed = true
+      }
+    })
+    meta.seedNotes = SEED_NOTES_VERSION
+    return true
+  }
+
   function load() {
     if (state) return state
     try {
@@ -33,6 +55,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
         const parsed = JSON.parse(raw)
         if (parsed && parsed.schemaVersion === SCHEMA_VERSION) {
           state = parsed
+          if (migrate(state)) persist()
           return state
         }
       }
@@ -275,17 +298,18 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
   const billApi = {
     /**
      * @param {{ledgerId?:string, month?:string, date?:string, type?:string,
-     *          keyword?:string, order?:'asc'|'desc'}} query
+     *          categoryId?:string, keyword?:string, order?:'asc'|'desc'}} query
      */
     async list(query = {}) {
       const s = await ready()
-      const { ledgerId, month, date, type, keyword, order = 'desc' } = query
+      const { ledgerId, month, date, type, categoryId, keyword, order = 'desc' } = query
       const kw = String(keyword || '').trim().toLowerCase()
 
       let rows = s.bills
         .filter((b) => alive(b))
         .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
         .filter((b) => (type ? b.type === type : true))
+        .filter((b) => (categoryId ? b.categoryId === categoryId : true))
         .filter((b) => (month ? monthKeyOf(b.date) === month : true))
         .filter((b) => (date ? b.date === date : true))
 
@@ -446,6 +470,38 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     /** 全账本最近 N 条（首页今日账单） */
     async recent(query = {}) {
       return this.list({ ...query, order: 'desc' })
+    },
+
+    /**
+     * 某分类下的历史备注（记账页「填写备注」的候选）
+     * - 只取该分类的账单，空备注过滤掉
+     * - 同一条备注去重，保留最近一次保存的时间
+     * - 按最近保存时间从新到旧，最多 limit 条
+     * @param {{ledgerId?:string, categoryId:string, limit?:number}} query
+     * @returns {Promise<string[]>}
+     */
+    async remarkHistory(query = {}) {
+      const s = await ready()
+      const { ledgerId, categoryId, limit = 15 } = query
+      if (!categoryId) return []
+
+      const latest = new Map()
+      s.bills
+        .filter((b) => alive(b))
+        .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
+        .filter((b) => b.categoryId === categoryId)
+        .forEach((b) => {
+          const text = String(b.remark || '').trim()
+          if (!text) return
+          const ts = b.updatedAt || b.createdAt || 0
+          const prev = latest.get(text)
+          if (!prev || ts > prev) latest.set(text, ts)
+        })
+
+      return Array.from(latest.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit)
+        .map(([text]) => text)
     }
   }
 

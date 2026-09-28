@@ -103,10 +103,11 @@ export const NAME_MAX_LENGTH = 8
  * ledger:   list() | get(id) | update(id, patch)
  * category: list({ ledgerId, type }) | get(id) | create(payload) | update(id, patch)
  *           | remove(id, { cascade }) | listChildren(parentId) | reorder(orderedIds)
- * bill:     list({ ledgerId, month, type, keyword, date }) | get(id)
+ * bill:     list({ ledgerId, month, date, type, categoryId, keyword, order }) | get(id)
  *           | create(payload) | update(id, patch) | remove(id)
  *           | summary({ ledgerId, month })
  *           | listByMonthGroups({ ledgerId, month })
+ *           | remarkHistory({ ledgerId, categoryId, limit })
  * sync:     pendingCount() | push() | pull(since) | subscribe(cb)
  */
 export class NotImplementedError extends Error {

@@ -7,7 +7,9 @@ import { formatDateCN, todayKey } from '@/utils/date.js'
 const props = defineProps({
   /** 已经格式化好的金额文本，例如 "0.00" / "128.50" */
   amountText: { type: String, default: '0.00' },
-  ledgerName: { type: String, default: '默认账本' }
+  ledgerName: { type: String, default: '默认账本' },
+  /** 当前分类下该用户之前保存过的备注，已按从新到旧排好序 */
+  remarkSuggestions: { type: Array, default: () => [] }
 })
 
 const emit = defineEmits(['key', 'action'])
@@ -17,11 +19,40 @@ const dateKey = defineModel('dateKey', { type: String, default: todayKey() })
 const noReimburse = defineModel('noReimburse', { type: Boolean, default: false })
 
 const dateInput = ref(null)
+const remarkInput = ref(null)
+const remarkFocused = ref(false)
+/** 失焦后延迟收起，给候选按钮的 click 留出时间（移动端 blur 早于 click） */
+let hideTimer = null
+
+const showSuggestions = computed(
+  () => remarkFocused.value && props.remarkSuggestions.length > 0
+)
 
 const dateLabel = computed(() => {
   if (dateKey.value === todayKey()) return '今天'
   return formatDateCN(dateKey.value)
 })
+
+function onRemarkFocus() {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = null
+  remarkFocused.value = true
+}
+
+function onRemarkBlur() {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    remarkFocused.value = false
+  }, 160)
+}
+
+function pickSuggestion(text) {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = null
+  remark.value = text
+  // 桌面端按下候选不夺焦，可以接着改；移动端已经失焦了就把候选收起来
+  if (document.activeElement !== remarkInput.value) remarkFocused.value = false
+}
 
 function openDatePicker() {
   const el = dateInput.value
@@ -36,14 +67,31 @@ function onDateChange(e) {
 </script>
 
 <template>
-  <div class="record-panel">
+  <div class="record-panel" :class="{ 'has-suggestions': showSuggestions }">
+    <!-- 点击备注框后，列出当前分类下用过的备注，横向滑动选择填入 -->
+    <div v-if="showSuggestions" class="suggest">
+      <button
+        v-for="text in remarkSuggestions"
+        :key="text"
+        class="suggest-chip"
+        type="button"
+        @mousedown.prevent="pickSuggestion(text)"
+        @click="pickSuggestion(text)"
+      >
+        {{ text }}
+      </button>
+    </div>
+
     <div class="top">
       <input
+        ref="remarkInput"
         v-model="remark"
         class="remark"
         type="text"
         maxlength="40"
         placeholder="点击填写备注..."
+        @focus="onRemarkFocus"
+        @blur="onRemarkBlur"
       />
       <div class="amount">
         <span class="symbol">¥</span><span class="value">{{ amountText }}</span>
@@ -95,6 +143,43 @@ function onDateChange(e) {
 .record-panel {
   flex: none;
   background: #fff;
+}
+
+/* 候选备注条出现时，面板顶部收成圆角，视觉上像新浮起的一张卡片 */
+.record-panel.has-suggestions {
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+
+.suggest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.suggest::-webkit-scrollbar {
+  display: none;
+}
+
+.suggest-chip {
+  flex: none;
+  max-width: 140px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggest-chip:active {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
 }
 
 .top {

@@ -6,6 +6,7 @@ import { useBillStore } from '@/stores/bill.js'
 import { db, DATA_SOURCE } from '@/api'
 import { outbox } from '@/api/sync/outbox.js'
 import { useToast } from '@/composables/useToast.js'
+import { clearRecordDraft } from '@/composables/useRecordDraft.js'
 import AppHeader from '@/components/AppHeader.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 import TabBar from '@/components/TabBar.vue'
@@ -48,6 +49,7 @@ async function handleEntry(entry) {
 
 async function resetDemo() {
   await db.reset()
+  clearRecordDraft()
   await Promise.all([categoryStore.ensureLoaded(true), billStore.ensureLoaded()])
   await billStore.refresh()
   pending.value = outbox.pendingCount()

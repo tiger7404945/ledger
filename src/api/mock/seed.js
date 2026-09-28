@@ -96,12 +96,12 @@ export const SUB_ID = (key) => `sub_${key}`
  * cat 为一级分类 key，sub 为二级分类 key
  */
 const BILL_TEMPLATES = [
-  { offset: 0, cat: 'traffic', sub: 'traffic-bus', amount: 40.0 },
+  { offset: 0, cat: 'traffic', sub: 'traffic-bus', amount: 40.0, remark: '地铁通勤' },
   { offset: 1, cat: 'traffic', amount: 25.25, remark: 'ETC' },
   { offset: 2, cat: 'snack', sub: 'snack-fruit', amount: 18.0 },
   { offset: 2, cat: 'clothes', amount: 57.0 },
-  { offset: 2, cat: 'food', amount: 22.7 },
-  { offset: 3, cat: 'traffic', sub: 'traffic-parking', amount: 15.0 },
+  { offset: 2, cat: 'food', amount: 22.7, remark: '公司食堂' },
+  { offset: 3, cat: 'traffic', sub: 'traffic-parking', amount: 15.0, remark: '停车场' },
   { offset: 4, cat: 'daily', amount: 45.6 },
   { offset: 5, cat: 'food', amount: 88.0, remark: '同事聚餐' },
   { offset: 6, cat: 'snack', amount: 12.0 },
@@ -111,7 +111,7 @@ const BILL_TEMPLATES = [
   { offset: 10, cat: 'snack', sub: 'snack-milktea', amount: 26.0 },
   { offset: 11, cat: 'repair', amount: 320.0, remark: '汽车保养' },
   { offset: 12, cat: 'shopping', amount: 168.8 },
-  { offset: 13, cat: 'food', amount: 210.0 },
+  { offset: 13, cat: 'food', amount: 210.0, remark: '星巴克' },
   { offset: 14, cat: 'daily', amount: 96.3 },
   { offset: 15, cat: 'phone', amount: 129.0 },
   { offset: 16, cat: 'broadband', amount: 78.0 },
@@ -122,13 +122,34 @@ const BILL_TEMPLATES = [
   { offset: 21, cat: 'traffic', sub: 'traffic-taxi', amount: 88.0 },
   { offset: 22, cat: 'clothes', amount: 320.0 },
   { offset: 23, cat: 'edu', amount: 480.0, remark: '线上课程' },
-  { offset: 24, cat: 'food', amount: 168.0 },
+  { offset: 24, cat: 'food', amount: 168.0, remark: '外卖' },
   { offset: 25, cat: 'house', sub: 'house-utility', amount: 268.0 },
   { offset: 26, cat: 'house', sub: 'house-rent', amount: 4500.0, remark: '9月房租' }
 ]
 
 /** 本月支出目标值（与参考截图一致） */
 const MONTH_EXPENSE_TARGET = 8720.72
+
+/** 补齐差额那笔「购物」账单的备注 */
+const GAP_BILL_REMARK = '数码配件'
+
+/**
+ * 种子账单 id → 备注
+ * 用途：早期版本播种的本地库里这些演示账单没有备注（备注字段是后加的），
+ * 适配器加载时按 id 一次性回填，让「填写备注」的历史候选立刻有数据可展示，
+ * 又不必清空用户自己记的账。
+ */
+export const SEED_NOTES_VERSION = 1
+
+export const SEED_BILL_NOTES = (() => {
+  const map = {}
+  BILL_TEMPLATES.forEach((tpl, index) => {
+    if (!tpl.remark) return
+    map[`bill_seed_${String(index + 1).padStart(3, '0')}`] = tpl.remark
+  })
+  map.bill_seed_gap = GAP_BILL_REMARK
+  return map
+})()
 
 export function buildSeed() {
   const ts = Date.now()
@@ -211,7 +232,7 @@ export function buildSeed() {
       amount: gap,
       categoryId: CAT_ID('shopping'),
       primaryCategoryId: CAT_ID('shopping'),
-      remark: '数码配件',
+      remark: GAP_BILL_REMARK,
       date: `${month}-01`,
       noReimburse: false,
       createdAt: ts + 1,
@@ -221,5 +242,11 @@ export function buildSeed() {
     })
   }
 
-  return { ledgers: [ledger], categories, bills }
+  return {
+    ledgers: [ledger],
+    categories,
+    bills,
+    // 迁移标记：本次播种已带备注，适配器无需再回填
+    meta: { seedNotes: SEED_NOTES_VERSION }
+  }
 }

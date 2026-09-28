@@ -1,10 +1,15 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCategoryStore } from '@/stores/category.js'
 import { useBillStore } from '@/stores/bill.js'
 import { useLedgerStore } from '@/stores/ledger.js'
 import { useToast } from '@/composables/useToast.js'
+import {
+  clearRecordDraft,
+  readRecordDraft,
+  writeRecordDraft
+} from '@/composables/useRecordDraft.js'
 import AppHeader from '@/components/AppHeader.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 import CategoryGrid from '@/components/CategoryGrid.vue'
@@ -77,14 +82,29 @@ const selectedTitle = computed(() => {
 
 const isExpense = computed(() => type.value === 'expense')
 
+/** 当前生效的分类（二级优先），决定「填写备注」的历史候选来自哪个分类 */
+const currentCategoryId = computed(() => subId.value || primaryId.value)
+
+/** 当前分类下的历史备注，从新到旧 */
+const remarkSuggestions = ref([])
+
 /* ---------------- 交互 ---------------- */
-/** 切换支出/收入/转账/借贷：分类体系不同，必须清掉上一个类型的选择 */
+/** 数据源就绪后，默认选中当前类型的第一个一级分类 */
+function selectFirstPrimary() {
+  const first = primaries.value[0]
+  if (first) selectCategory({ id: first.id, name: first.name, icon: first.icon })
+  else {
+    primaryId.value = ''
+    subId.value = ''
+    expandedId.value = ''
+  }
+}
+
+/** 切换支出/收入/转账/借贷：分类体系不同，必须清掉上一个类型的选择后重选 */
 function switchType(key) {
   if (type.value === key) return
   type.value = key
-  primaryId.value = ''
-  subId.value = ''
-  expandedId.value = ''
+  selectFirstPrimary()
 }
 
 function selectCategory(item) {
@@ -181,6 +201,54 @@ function onAction(name) {
   if (name === 'image') toast.show('图片附件将在后续版本支持')
 }
 
+/* ---------------- 草稿：离开页面不丢编辑内容 ---------------- */
+
+/** 把当前表单状态落盘（任一字段变化即写入，刷新/误关页面也能恢复） */
+function persistDraft() {
+  writeRecordDraft({
+    type: type.value,
+    primaryId: primaryId.value,
+    subId: subId.value,
+    expandedId: expandedId.value,
+    remark: remark.value,
+    dateKey: dateKey.value,
+    noReimburse: noReimburse.value,
+    acc: acc.value,
+    op: op.value || '',
+    cur: cur.value,
+    editingId: editingId.value
+  })
+}
+
+/** 用草稿覆盖表单状态 */
+function applyDraft(draft) {
+  type.value = draft.type || 'expense'
+  primaryId.value = draft.primaryId || ''
+  subId.value = draft.subId || ''
+  expandedId.value = draft.expandedId || ''
+  remark.value = draft.remark || ''
+  dateKey.value = draft.dateKey || todayKey()
+  noReimburse.value = !!draft.noReimburse
+  acc.value = Number(draft.acc) || 0
+  op.value = draft.op || null
+  cur.value = draft.cur || ''
+  editingId.value = draft.editingId || ''
+}
+
+/* ---------------- 备注候选 ---------------- */
+async function loadRemarkSuggestions() {
+  const id = currentCategoryId.value
+  if (!id) {
+    remarkSuggestions.value = []
+    return
+  }
+  try {
+    remarkSuggestions.value = await billStore.remarkHistory(id)
+  } catch (e) {
+    remarkSuggestions.value = []
+  }
+}
+
 /* ---------------- 提交 ---------------- */
 async function submit(again) {
   const amount = resolveAmount()
@@ -206,15 +274,21 @@ async function submit(again) {
     }
     if (editingId.value) {
       await billStore.updateBill(editingId.value, payload)
+      clearRecordDraft()
       toast.success('修改成功')
       goBack()
       return
     }
     await billStore.createBill(payload)
+    // 已落库，草稿使命结束
+    clearRecordDraft()
+    // 新备注进入候选，下次填这个分类时能直接选
+    await loadRemarkSuggestions()
     toast.success('记账成功')
     if (again) {
       resetAmount()
       remark.value = ''
+      persistDraft()
       toast.show('已保存，继续记账')
       return
     }
@@ -222,15 +296,6 @@ async function submit(again) {
   } catch (e) {
     toast.error(e?.message || '保存失败')
   }
-}
-
-function resetForm() {
-  resetAmount()
-  remark.value = ''
-  noReimburse.value = false
-  primaryId.value = ''
-  subId.value = ''
-  expandedId.value = ''
 }
 
 function goBack() {
@@ -242,6 +307,7 @@ function goBack() {
 async function removeBill() {
   if (!editingId.value) return
   await billStore.deleteBill(editingId.value)
+  clearRecordDraft()
   toast.success('已删除')
   goBack()
 }
@@ -256,12 +322,20 @@ onMounted(async () => {
   const queryType = route.query.type
   if (queryType && TYPES.some((t) => t.key === queryType)) type.value = queryType
 
-  if (id) {
+  // 草稿恢复：只有「从分类管理 / 分类编辑返回」这一种进入方式会留下草稿
+  // （路由守卫负责在其它进入方式时清空，见 installRecordDraftGuard）。
+  // 另外校验 editingId —— 换了一笔账单就必须重新读取，不能套用旧草稿。
+  const draft = readRecordDraft()
+  if (draft && String(draft.editingId || '') === String(id || '')) {
+    applyDraft(draft)
+  } else if (id) {
     const bill = await billStore.getBill(id)
     if (bill) {
       editingId.value = bill.id
       type.value = bill.type === 'income' ? 'income' : 'expense'
       primaryId.value = bill.primaryCategoryId || ''
+      subId.value = ''
+      expandedId.value = ''
       if (bill.categoryId && bill.categoryId !== bill.primaryCategoryId) {
         subId.value = bill.categoryId
         expandedId.value = bill.primaryCategoryId || ''
@@ -275,8 +349,29 @@ onMounted(async () => {
     } else {
       toast.error('账单不存在')
     }
+  } else {
+    // 新建一笔且没有草稿：默认选中第一个一级分类（如「餐饮」）
+    selectFirstPrimary()
   }
+
+  await loadRemarkSuggestions()
+  persistDraft()
   loading.value = false
+})
+
+/* 表单任一字段变化立即落盘，保证切页面 / 刷新 / 误关都不丢编辑内容 */
+watch(
+  [type, primaryId, subId, expandedId, remark, dateKey, noReimburse, acc, op, cur, editingId],
+  () => {
+    if (loading.value) return
+    persistDraft()
+  },
+  { flush: 'post' }
+)
+
+/* 切换分类后重新拉取该分类下的历史备注 */
+watch(currentCategoryId, () => {
+  loadRemarkSuggestions()
 })
 </script>
 
@@ -336,6 +431,7 @@ onMounted(async () => {
       v-model:no-reimburse="noReimburse"
       :amount-text="amountText"
       :ledger-name="ledgerStore.currentName"
+      :remark-suggestions="remarkSuggestions"
       @key="onKey"
       @action="onAction"
     >

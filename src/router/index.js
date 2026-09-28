@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 
+import { installRecordDraftGuard } from '@/composables/useRecordDraft.js'
 import HomeView from '@/views/HomeView.vue'
 import BillsView from '@/views/BillsView.vue'
 import RecordView from '@/views/RecordView.vue'
@@ -28,7 +29,15 @@ const routes = [
   { path: '/:pathMatch(.*)*', redirect: '/' }
 ]
 
-export default createRouter({
+const router = createRouter({
   history: createWebHashHistory(),
   routes
 })
+
+/**
+ * 记账页草稿的生命周期：只在「记账页 ↔ 分类管理/分类编辑」往返时保留，
+ * 其它任何退出方式（返回键、左上角返回、切 Tab）立即作废。
+ */
+installRecordDraftGuard(router)
+
+export default router

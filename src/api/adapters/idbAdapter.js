@@ -110,7 +110,8 @@ export function createIdbAdapter(options = {}) {
       remove: notReady('bill.remove'),
       summary: notReady('bill.summary'),
       dailySummary: notReady('bill.dailySummary'),
-      recent: notReady('bill.recent')
+      recent: notReady('bill.recent'),
+      remarkHistory: notReady('bill.remarkHistory')
     },
     sync: {
       pendingCount: async () => outbox.pendingCount(),
