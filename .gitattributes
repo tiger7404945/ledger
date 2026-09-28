@@ -1,0 +1,14 @@
+# 统一换行符，避免 Windows 提交时把整个仓库标记为改动
+* text=auto eol=lf
+
+# 二进制资源不做换行转换
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# 让 git diff / GitHub 正确识别语言
+*.vue linguist-language=Vue

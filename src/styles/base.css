@@ -1,0 +1,227 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #e9ebee;
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+input,
+button,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+input {
+  border: none;
+  outline: none;
+  background: transparent;
+}
+
+input::placeholder {
+  color: var(--ink-4);
+}
+
+button {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------------- 手机外框 ---------------- */
+.app-frame {
+  position: relative;
+  width: 100%;
+  max-width: var(--frame-w);
+  height: 100%;
+  margin: 0 auto;
+  background: var(--page);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* 让内部的 position:fixed 元素以本容器为参照 */
+  transform: translateZ(0);
+}
+
+@media (min-width: 480px) {
+  .app-frame {
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.12);
+  }
+}
+
+/* ---------------- 页面骨架 ---------------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--page);
+}
+
+.page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.page-body::-webkit-scrollbar,
+.scroll-x::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.has-tabbar {
+  padding-bottom: calc(var(--tab-h) + var(--safe-b));
+}
+
+/* ---------------- 通用块 ---------------- */
+.card {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  background: var(--surface-3);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.pill.is-active {
+  background: var(--brand-soft-2);
+  color: var(--brand-ink);
+}
+
+.btn-dark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 48px;
+  border-radius: var(--r-pill);
+  background: var(--dark);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.btn-dark:active {
+  opacity: 0.85;
+  transform: scale(0.985);
+}
+
+.btn-dark:disabled {
+  opacity: 0.35;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--ink);
+}
+
+.icon-btn:active {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.chip.is-on {
+  background: var(--brand-soft-2);
+  color: var(--brand-ink);
+}
+
+/* ---------------- 过渡 ---------------- */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.slide-up-enter-from,
+.slide-up-leave-to {
+  transform: translateY(100%);
+}
+
+.pop-enter-active {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.pop-enter-from {
+  transform: translateY(60px);
+  opacity: 0;
+}

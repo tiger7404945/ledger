@@ -1,0 +1,51 @@
+:root {
+  /* ---------- Brand ---------- */
+  --brand: #3fd9b6;
+  --brand-600: #2fc9a6;
+  --brand-700: #17b894;
+  --brand-grad: linear-gradient(135deg, #62e3c9 0%, #38d0b0 55%, #33c9ab 100%);
+  --brand-soft: #e4f8f2;
+  --brand-soft-2: #d3f4ea;
+  --brand-ink: #0f8f76;
+
+  /* ---------- Ink ---------- */
+  --ink: #16181c;
+  --ink-2: #4e545c;
+  --ink-3: #9aa0a8;
+  --ink-4: #c3c8cf;
+  --on-brand: #ffffff;
+  --on-brand-dim: rgba(255, 255, 255, 0.86);
+
+  /* ---------- Surface ---------- */
+  --page: #f4f5f7;
+  --surface: #ffffff;
+  --surface-2: #f8f9fa;
+  --surface-3: #f0f1f4;
+  --surface-4: #e9eaee;
+  --hairline: #eff0f3;
+  --dark: #101010;
+  --danger: #e2564a;
+
+  /* ---------- Radius ---------- */
+  --r-lg: 18px;
+  --r-md: 14px;
+  --r-sm: 10px;
+  --r-pill: 999px;
+
+  /* ---------- Shadow ---------- */
+  --shadow-card: 0 2px 10px rgba(22, 24, 28, 0.035);
+  --shadow-sheet: 0 -10px 34px rgba(16, 18, 22, 0.1);
+  --shadow-float: 0 6px 16px rgba(16, 18, 22, 0.18);
+
+  /* ---------- Metrics ---------- */
+  --nav-h: 48px;
+  --tab-h: 56px;
+  --frame-w: 430px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* ---------- Type ---------- */
+  --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-num: 'DIN Alternate', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Helvetica Neue', Arial, sans-serif;
+}
