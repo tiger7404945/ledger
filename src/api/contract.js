@@ -103,12 +103,15 @@ export const NAME_MAX_LENGTH = 8
  * ledger:   list() | get(id) | update(id, patch)
  * category: list({ ledgerId, type }) | get(id) | create(payload) | update(id, patch)
  *           | remove(id, { cascade }) | listChildren(parentId) | reorder(orderedIds)
- * bill:     list({ ledgerId, month, date, type, categoryId, keyword, order }) | get(id)
+ * bill:     list({ ledgerId, month, from, to, date, type, categoryId, keyword, order }) | get(id)
  *           | create(payload) | update(id, patch) | remove(id)
- *           | summary({ ledgerId, month })
+ *           | summary({ ledgerId, month, from, to })
  *           | listByMonthGroups({ ledgerId, month })
  *           | remarkHistory({ ledgerId, categoryId, limit })
  * sync:     pendingCount() | push() | pull(since) | subscribe(cb)
+ *
+ * 关于账单的区间条件：month（'YYYY-MM'）与 from / to（'YYYY-MM-DD'，含首尾）是两套等价写法，
+ * 同时传入时按 AND 处理。账单页「按月 / 按年」筛选统一用 from / to 表达区间。
  */
 export class NotImplementedError extends Error {
   constructor(what) {

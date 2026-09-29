@@ -55,7 +55,7 @@ onMounted(async () => {
       </template>
     </AppHeader>
 
-    <div class="page-body has-tabbar">
+    <div class="page-body">
       <section class="hero">
         <span class="hero-label">本月支出</span>
         <div class="hero-amount">
@@ -108,7 +108,8 @@ onMounted(async () => {
 }
 
 .page-body {
-  padding: 0 14px;
+  /* 底部留出标签栏高度，否则最后一屏内容会被固定的 TabBar 盖住 */
+  padding: 0 14px var(--tabbar-space);
 }
 
 .hero {

@@ -25,6 +25,27 @@ export function monthFirstKey(monthKey) {
   return `${monthKey || currentMonthKey()}-01`
 }
 
+/** 该月最后一天，如 2026-09 -> 2026-09-30 */
+export function monthLastKey(monthKey) {
+  const m = monthKey || currentMonthKey()
+  return `${m}-${pad2(daysInMonth(m))}`
+}
+
+export function yearFirstKey(year) {
+  return `${year}-01-01`
+}
+
+export function yearLastKey(year) {
+  return `${year}-12-31`
+}
+
+/** 两个日期键之间的整天数（to - from），按 UTC 计算，不受时区/夏令时影响 */
+export function daysBetween(fromKey, toKey) {
+  const [ay, am, ad] = String(fromKey).split('-').map(Number)
+  const [by, bm, bd] = String(toKey).split('-').map(Number)
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86400000)
+}
+
 export function addDays(date, days) {
   const d = new Date(date)
   d.setDate(d.getDate() + days)

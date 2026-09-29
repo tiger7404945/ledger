@@ -50,8 +50,9 @@ async function handleEntry(entry) {
 async function resetDemo() {
   await db.reset()
   clearRecordDraft()
+  billStore.resetPeriod()
   await Promise.all([categoryStore.ensureLoaded(true), billStore.ensureLoaded()])
-  await billStore.refresh()
+  await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
   pending.value = outbox.pendingCount()
   toast.success('演示数据已重置')
 }
@@ -61,7 +62,7 @@ async function resetDemo() {
   <div class="page mine-page">
     <AppHeader title="我的" />
 
-    <div class="page-body has-tabbar">
+    <div class="page-body">
       <section class="card profile">
         <span class="avatar">默</span>
         <div class="profile-info">
@@ -108,7 +109,8 @@ async function resetDemo() {
 
 <style scoped>
 .page-body {
-  padding: 4px 14px 0;
+  /* 底部留出标签栏高度，否则最后一屏内容会被固定的 TabBar 盖住 */
+  padding: 4px 14px var(--tabbar-space);
 }
 
 .profile {

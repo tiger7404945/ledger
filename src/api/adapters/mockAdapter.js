@@ -7,7 +7,14 @@ import {
 import { outbox } from '../sync/outbox.js'
 import { buildSeed, SEED_BILL_NOTES, SEED_NOTES_VERSION } from '../mock/seed.js'
 import { now, uid } from '../../utils/id.js'
-import { monthKeyOf, daysInMonth, currentMonthKey, todayKey } from '../../utils/date.js'
+import {
+  monthKeyOf,
+  monthFirstKey,
+  monthLastKey,
+  daysBetween,
+  currentMonthKey,
+  todayKey
+} from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -297,12 +304,13 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
   const billApi = {
     /**
-     * @param {{ledgerId?:string, month?:string, date?:string, type?:string,
-     *          categoryId?:string, keyword?:string, order?:'asc'|'desc'}} query
+     * @param {{ledgerId?:string, month?:string, from?:string, to?:string, date?:string,
+     *          type?:string, categoryId?:string, keyword?:string, order?:'asc'|'desc'}} query
+     * from / to 为 'YYYY-MM-DD'（含首尾），与 month 同时传入时按 AND 处理
      */
     async list(query = {}) {
       const s = await ready()
-      const { ledgerId, month, date, type, categoryId, keyword, order = 'desc' } = query
+      const { ledgerId, month, from, to, date, type, categoryId, keyword, order = 'desc' } = query
       const kw = String(keyword || '').trim().toLowerCase()
 
       let rows = s.bills
@@ -311,6 +319,8 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
         .filter((b) => (type ? b.type === type : true))
         .filter((b) => (categoryId ? b.categoryId === categoryId : true))
         .filter((b) => (month ? monthKeyOf(b.date) === month : true))
+        .filter((b) => (from ? b.date >= from : true))
+        .filter((b) => (to ? b.date <= to : true))
         .filter((b) => (date ? b.date === date : true))
 
       rows = rows.map(decorate)
@@ -424,24 +434,37 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       return { id }
     },
 
-    /** 月度汇总（首页卡片 / 账单页结余卡片） */
+    /**
+     * 区间汇总（首页 / 账单页结余卡片）
+     * 用 month 传月度区间，或用 from / to 传任意区间（账单页按年筛选）
+     */
     async summary(query = {}) {
       const s = await ready()
       const ledgerId = query.ledgerId
-      const month = query.month || currentMonthKey()
+      const { from, to } = query
+      const month = query.month || (from ? '' : currentMonthKey())
       const rows = s.bills
         .filter((b) => alive(b))
         .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
-        .filter((b) => monthKeyOf(b.date) === month)
+        .filter((b) => (month ? monthKeyOf(b.date) === month : true))
+        .filter((b) => (from ? b.date >= from : true))
+        .filter((b) => (to ? b.date <= to : true))
 
       const expense = round2(rows.filter((b) => b.type === 'expense').reduce((a, b) => a + b.amount, 0))
       const income = round2(rows.filter((b) => b.type === 'income').reduce((a, b) => a + b.amount, 0))
+
+      // 已过天数：区间起始日到今天，落在区间内；区间还没开始为 0，已经结束为整天数
+      const start = from || monthFirstKey(month)
+      const end = to || monthLastKey(month)
       const today = todayKey()
-      const isCurrent = month === currentMonthKey()
-      const elapsed = isCurrent ? Number(today.slice(8, 10)) : daysInMonth(month)
+      const totalDays = daysBetween(start, end) + 1
+      const elapsed =
+        today >= end ? totalDays : today < start ? 0 : Math.min(totalDays, daysBetween(start, today) + 1)
 
       return {
         month,
+        from: start,
+        to: end,
         expense,
         income,
         balance: round2(income - expense),
@@ -449,7 +472,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
         remain: 0,
         dailyAvg: elapsed > 0 ? round2(expense / elapsed) : 0,
         daysElapsed: elapsed,
-        daysInMonth: daysInMonth(month)
+        daysInMonth: totalDays
       }
     },
 

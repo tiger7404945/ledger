@@ -19,6 +19,22 @@
 - **记账页层级**：页面底色用灰色 `--page`，二级分类面板（`SubCategoryPanel`）是白色浮起卡片（`--surface-raised` + `--r-md` + `--shadow-card` + 左右 24px 内缩）叠在灰底上。一级分类区直接铺灰底，**不要**给页面或 body 设纯白底，否则面板会与背景糊在一起。
 - `CategoryGrid` 的选中态 = `selectedId`（叶子分类 id）或 `activeId`（父级一级分类 id）；记账页两个都要传，这样选中二级分类时父级也点亮。
 - 调整视觉前先对参考稿做像素采样（PIL 取色），参考稿为 1080×2400。
+- **账期选择器几何**（采样自 `月选择器.jpg` / `年选择器.jpg`）：4 列网格、左右内缩 20、列间距 7、行间距 20、单元格高 45 圆角 12、选中态 `--brand` 实底 + 深色文字；页签下划线 2.5px、两个页签间距 50；`‹ 标题 ›` 行高 66、左右内边距 16、标题 20px/600。年份网格一屏 12 个，当前年前面留 8 年。
+- **agent-browser 的 click 命中第一个匹配元素**：`click ".grid .cell:nth-child(9)"` 在账单页会点到月历的日期格（页面里有两个 `.grid`），必须写成 `.picker .grid .cell:nth-child(9)`。改完文件若页面空白又无报错，先重新 `open` 一次（HMR 半改状态）。
+- **Vue 的 DOM 更新是异步的**：用 `eval` 派发合成手势后，必须在**另一次** `eval` 里读状态，同一次调用里读到的还是旧值。
+- **agent-browser 用法**：二进制在 `C:\Users\DELL\.workbuddy\binaries\node\workspace\node_modules\agent-browser\bin\agent-browser-win32-x64.exe`。**必须先 `open <url>` 再 `set viewport <w> <h>`**；没有打开页面就调 `set viewport` 会一直挂住不返回。命令都可能挂起，一律套 `timeout`。`eval` 用最简单的表达式（如 `document.querySelector('.scroll-area').scrollTop = 99999`）不会挂。
+
+## 布局约定
+- **账单 store 有两份互相独立的数据切片**，不要合并：
+  - **本月视角**：`month` / `bills` / `summary`，首页与统计页固定用它（首页永远显示「本月」，不能被账单页的筛选带跑）。
+  - **账单页筛选取景**：`period{mode,month,year}` / `periodBills` / `periodSummary` + `period*` 系列 getter（`periodRange` / `periodLabel` / `periodUnit` / `periodGroups` / `periodDailyMap` / `periodMonthlyMap`），账单页只用这套。
+  - 写操作（create/update/delete）要同时刷新两份；`periodInitialized` 为 false 时跳过 period 刷新，避免记账页做多余查询。
+- **区间一律用 `from` / `to`（'YYYY-MM-DD'，含首尾）表达**，`month` 只是它的特例。contract 里两者可同时传且按 AND 处理。新增区间筛选先补 contract，再补 mockAdapter，再给 store 加 getter。
+- **横向滑动轨道**：`.view-track`（`width:200%` + `translateX(0|-50%)`）+ 两个 `.view-pane`（`flex:0 0 50%`），每屏各自有 `.scroll-area`。拖动时把 `transition` 关掉（`.is-dragging`）跟手位移，松手按阈值吸附。手势要先判主方向，纵向直接放弃（`active=false`）把滚动交还给浏览器，否则会抢滚动。
+- 横向手势**不要**用 `preventDefault`：纵向滚动区在轨道内部，靠主方向判定就够了。
+- **底部标签栏占位**：`TabBar` 是 `position: fixed`，带 TabBar 的页面必须自己留底部空间。统一用 `padding-bottom: var(--tabbar-space)`（= `--tab-h` + `--safe-b`）。**不要写 `padding: 0 14px` 这种简写**——它会连 `padding-bottom` 一起重置，导致最后一条内容被标签栏盖住且滚不出来。原先 base.css 里的 `.has-tabbar` 工具类已删除（它会被各页面 scoped 样式里的 padding 简写静默覆盖，是个坑）。
+- **局部滚动**：页面需要「只有某一块滚动、其余固定」时，用 base.css 的 `.scroll-area`（`flex: 1` + `min-height: 0` + `overflow-y: auto`），外层 `.page-body` 改为 `display: flex; flex-direction: column; overflow: hidden`。账单页即此结构：筛选行 + 结余卡片固定，只有列表（含日历视图）滚动；滚动区自己写 `padding: 0 14px var(--tabbar-space)`，卡片就能像设计稿那样一直铺到标签栏底下，且最后一条能完整滚出来。
+- 卡片与上方固定区之间的间距放在固定区上（如 `.hero { margin-bottom: 12px }`），不要放在滚动区的 `padding-top`——否则滚动时这段留白会被滚掉，半截列表会贴到固定区上。
 
 ## 页面与路由
 `/` 首页 · `/bills` 账单 · `/record` 记账（`?id=` 为修改）· `/stats` 统计 · `/mine` 我的

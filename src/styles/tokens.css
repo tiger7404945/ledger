@@ -44,6 +44,8 @@
   --tab-h: 56px;
   --frame-w: 430px;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  /* 底部标签栏的占位高度：TabBar 是 fixed，带 TabBar 的页面要自己留出这么多底部内边距 */
+  --tabbar-space: calc(var(--tab-h) + var(--safe-b));
 
   /* ---------- Type ---------- */
   --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',

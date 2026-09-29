@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBillStore } from '@/stores/bill.js'
 import { useLedgerStore } from '@/stores/ledger.js'
@@ -9,40 +9,108 @@ import TabBar from '@/components/TabBar.vue'
 import BillRow from '@/components/BillRow.vue'
 import AmountText from '@/components/AmountText.vue'
 import SearchOverlay from '@/components/SearchOverlay.vue'
-import {
-  formatDateDots,
-  formatMonthLabel,
-  monthGrid,
-  weekdayLabels,
-  todayKey
-} from '@/utils/date.js'
+import PeriodPicker from '@/components/PeriodPicker.vue'
+import { formatDateDots, monthGrid, weekdayLabels, todayKey } from '@/utils/date.js'
 
 const router = useRouter()
 const billStore = useBillStore()
 const ledgerStore = useLedgerStore()
 
+/** 流水 | 日历 —— 可点顶部胶囊切换，也可在列表区左右滑动切换 */
+const VIEWS = ['flow', 'calendar']
+
 const searchOpen = ref(false)
+const pickerOpen = ref(false)
 const view = ref('flow')
 const activeDay = ref('')
 
-const summary = computed(() => billStore.summary)
-const groups = computed(() => billStore.groups)
-const dailyMap = computed(() => billStore.dailyMap)
-const cells = computed(() => monthGrid(billStore.month))
+const summary = computed(() => billStore.periodSummary)
+const groups = computed(() => billStore.periodGroups)
+const dailyMap = computed(() => billStore.periodDailyMap)
+const monthlyMap = computed(() => billStore.periodMonthlyMap)
+const isYear = computed(() => billStore.period.mode === 'year')
+const cells = computed(() => monthGrid(billStore.period.month))
 const weekdays = weekdayLabels()
 const today = todayKey()
+/** 年度总览里的 1..12 月 */
+const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
 const activeDayBills = computed(() =>
-  activeDay.value ? billStore.bills.filter((b) => b.date === activeDay.value) : []
+  activeDay.value ? billStore.periodBills.filter((b) => b.date === activeDay.value) : []
 )
 
 const calendarExpense = computed(() =>
   Object.values(dailyMap.value).reduce((sum, d) => sum + d.expense, 0)
 )
+const monthsWithData = computed(() => Object.keys(monthlyMap.value).length)
 
 onMounted(async () => {
-  await Promise.all([ledgerStore.ensureLoaded(), billStore.ensureLoaded()])
+  await Promise.all([ledgerStore.ensureLoaded(), billStore.ensurePeriodLoaded()])
 })
+
+// 切换月份/年份后，之前选中的「某天」可能已经不在区间里
+watch(
+  () => [billStore.period.mode, billStore.period.month, billStore.period.year],
+  () => {
+    activeDay.value = ''
+  }
+)
+
+/* ---------------- 左右滑动切换流水 / 日历 ---------------- */
+
+const drag = ref({ dx: 0, active: false })
+
+let startX = 0
+let startY = 0
+/** '' 未定 | 'x' 横向（切换视图） | 'y' 纵向（交给滚动） */
+let axis = ''
+/** 滑动阈值 */
+const SWITCH_THRESHOLD = 56
+
+const trackStyle = computed(() => {
+  const base = view.value === 'flow' ? 0 : -50
+  return { transform: `translateX(calc(${base}% + ${drag.value.dx}px))` }
+})
+
+function onTouchStart(e) {
+  if (e.touches.length !== 1) return
+  startX = e.touches[0].clientX
+  startY = e.touches[0].clientY
+  axis = ''
+  drag.value = { dx: 0, active: true }
+}
+
+function onTouchMove(e) {
+  if (!drag.value.active || e.touches.length !== 1) return
+  const mx = e.touches[0].clientX - startX
+  const my = e.touches[0].clientY - startY
+  if (!axis) {
+    // 先判定主方向：纵向就完全放手给滚动区域，避免抢滚动手势
+    if (Math.abs(mx) < 6 && Math.abs(my) < 6) return
+    axis = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
+    if (axis === 'y') {
+      drag.value = { dx: 0, active: false }
+      return
+    }
+  }
+  // 已经在首/末屏还继续往外拖时加阻尼
+  const atEdge = (view.value === 'flow' && mx > 0) || (view.value === 'calendar' && mx < 0)
+  const limit = window.innerWidth
+  const d = atEdge ? mx * 0.35 : mx
+  drag.value = { dx: Math.max(-limit, Math.min(limit, d)), active: true }
+}
+
+function onTouchEnd() {
+  if (!drag.value.active) return
+  const dx = drag.value.dx
+  drag.value = { dx: 0, active: false }
+  if (Math.abs(dx) < SWITCH_THRESHOLD) return
+  const next = dx < 0 ? 1 : -1
+  const index = VIEWS.indexOf(view.value) + next
+  if (index >= 0 && index < VIEWS.length) view.value = VIEWS[index]
+}
+
+/* ---------------- 事件 ---------------- */
 
 function openBill(bill) {
   router.push({ path: '/record', query: { id: bill.id } })
@@ -50,6 +118,24 @@ function openBill(bill) {
 
 function monthValue(day) {
   return day.slice(8, 10)
+}
+
+/** 年度总览点某个月 → 下钻到该月（按月查看） */
+function drillToMonth(m) {
+  billStore.setPeriodMonth(`${billStore.period.year}-${String(m).padStart(2, '0')}`)
+}
+
+function monthExpense(m) {
+  const key = `${billStore.period.year}-${String(m).padStart(2, '0')}`
+  return monthlyMap.value[key]?.expense || 0
+}
+
+function onPickMonth(month) {
+  billStore.setPeriodMonth(month)
+}
+
+function onPickYear(year) {
+  billStore.setPeriodYear(year)
 }
 </script>
 
@@ -67,7 +153,7 @@ function monthValue(day) {
       </template>
     </AppHeader>
 
-    <div class="page-body has-tabbar">
+    <div class="page-body">
       <!-- 筛选行 -->
       <div class="filter-row">
         <div class="segmented">
@@ -90,11 +176,28 @@ function monthValue(day) {
         </div>
 
         <div class="month-switch">
-          <button class="arrow" type="button" @click="billStore.shiftMonth(-1)">
+          <button
+            class="arrow"
+            type="button"
+            :aria-label="isYear ? '上一年' : '上个月'"
+            @click="billStore.shiftPeriod(-1)"
+          >
             <IconBase name="chevronLeft" :size="15" :stroke-width="2" />
           </button>
-          <span class="month-label">{{ formatMonthLabel(billStore.month) }}</span>
-          <button class="arrow" type="button" @click="billStore.shiftMonth(1)">
+          <button
+            class="month-label"
+            type="button"
+            aria-label="选择月份或年份"
+            @click="pickerOpen = true"
+          >
+            {{ billStore.periodLabel }}
+          </button>
+          <button
+            class="arrow"
+            type="button"
+            :aria-label="isYear ? '下一年' : '下个月'"
+            @click="billStore.shiftPeriod(1)"
+          >
             <IconBase name="chevronRight" :size="15" :stroke-width="2" />
           </button>
         </div>
@@ -102,7 +205,7 @@ function monthValue(day) {
 
       <!-- 结余卡片 -->
       <section class="hero">
-        <span class="hero-label">结余</span>
+        <span class="hero-label">{{ isYear ? '本年结余' : '结余' }}</span>
         <div class="hero-amount">
           <AmountText
             :value="summary.balance"
@@ -114,97 +217,156 @@ function monthValue(day) {
         </div>
         <div class="hero-grid">
           <div class="hero-cell">
-            <span class="k">本月支出</span>
+            <span class="k">{{ billStore.periodUnit }}支出</span>
             <span class="v">¥ {{ summary.expense.toFixed(2) }}</span>
           </div>
           <div class="hero-cell">
-            <span class="k">本月收入</span>
+            <span class="k">{{ billStore.periodUnit }}收入</span>
             <span class="v">¥ {{ summary.income.toFixed(2) }}</span>
           </div>
           <div class="hero-cell">
-            <span class="k">本月预算</span>
+            <span class="k">{{ billStore.periodUnit }}预算</span>
             <span class="v">¥ {{ summary.budget.toFixed(2) }}</span>
           </div>
           <div class="hero-cell">
-            <span class="k">本月剩余</span>
+            <span class="k">{{ billStore.periodUnit }}剩余</span>
             <span class="v">¥ {{ summary.remain.toFixed(2) }}</span>
           </div>
         </div>
       </section>
 
-      <!-- 流水视图 -->
-      <section v-if="view === 'flow'" class="card list-card">
-        <template v-for="group in groups" :key="group.date">
-          <header class="group-head">
-            <span>{{ formatDateDots(group.date) }}</span>
-            <span class="group-stat">
-              <em>收 ¥ {{ group.income.toFixed(2) }}</em>
-              <em class="expense">支 ¥ {{ group.expense.toFixed(2) }}</em>
-            </span>
-          </header>
-          <BillRow
-            v-for="bill in group.items"
-            :key="bill.id"
-            :bill="bill"
-            :size="40"
-            @click="openBill"
-          />
-        </template>
-        <p v-if="!groups.length" class="empty">本月还没有账单</p>
-      </section>
-
-      <!-- 日历视图 -->
-      <section v-else class="card calendar-card">
-        <div class="week-head">
-          <span v-for="w in weekdays" :key="w">{{ w }}</span>
-        </div>
-        <div class="grid">
-          <button
-            v-for="(day, index) in cells"
-            :key="index"
-            class="cell"
-            :class="{
-              empty: !day,
-              'is-today': day === today,
-              'is-active': day === activeDay
-            }"
-            type="button"
-            :disabled="!day"
-            @click="activeDay = day === activeDay ? '' : day"
-          >
-            <template v-if="day">
-              <span class="d">{{ Number(monthValue(day)) }}</span>
-              <span v-if="dailyMap[day]" class="amt">
-                {{ dailyMap[day].expense ? dailyMap[day].expense.toFixed(0) : '' }}
-              </span>
-            </template>
-          </button>
-        </div>
-        <div class="calendar-foot">
-          本月支出 <b>¥ {{ calendarExpense.toFixed(2) }}</b>
+      <!--
+        左右滑动切换流水/日历：两屏并排放在一条轨道上，拖动时跟手位移，松手后吸附。
+        每一屏各有自己的滚动区，只有列表被滚动。
+      -->
+      <div
+        class="view-track"
+        :class="{ 'is-dragging': drag.active }"
+        :style="trackStyle"
+        @touchstart="onTouchStart"
+        @touchmove="onTouchMove"
+        @touchend="onTouchEnd"
+        @touchcancel="onTouchEnd"
+      >
+        <!-- 流水视图 -->
+        <div class="view-pane">
+          <div class="scroll-area">
+            <section class="card list-card">
+              <template v-for="group in groups" :key="group.date">
+                <header class="group-head">
+                  <span>{{ formatDateDots(group.date) }}</span>
+                  <span class="group-stat">
+                    <em>收 ¥ {{ group.income.toFixed(2) }}</em>
+                    <em class="expense">支 ¥ {{ group.expense.toFixed(2) }}</em>
+                  </span>
+                </header>
+                <BillRow
+                  v-for="bill in group.items"
+                  :key="bill.id"
+                  :bill="bill"
+                  :size="40"
+                  @click="openBill"
+                />
+              </template>
+              <p v-if="!groups.length" class="empty">
+                {{ isYear ? '这一年还没有账单' : '本月还没有账单' }}
+              </p>
+            </section>
+          </div>
         </div>
 
-        <div v-if="activeDay" class="day-detail">
-          <header class="group-head">
-            <span>{{ formatDateDots(activeDay) }}</span>
-            <span class="group-stat">
-              <em class="expense">支 ¥ {{ (dailyMap[activeDay]?.expense || 0).toFixed(2) }}</em>
-            </span>
-          </header>
-          <BillRow
-            v-for="bill in activeDayBills"
-            :key="bill.id"
-            :bill="bill"
-            :size="38"
-            @click="openBill"
-          />
-          <p v-if="!activeDayBills.length" class="empty">当天没有账单</p>
+        <!-- 日历视图 -->
+        <div class="view-pane">
+          <div class="scroll-area">
+            <!-- 按月：月历 + 当日明细 -->
+            <section v-if="!isYear" class="card calendar-card">
+              <div class="week-head">
+                <span v-for="w in weekdays" :key="w">{{ w }}</span>
+              </div>
+              <div class="grid">
+                <button
+                  v-for="(day, index) in cells"
+                  :key="index"
+                  class="cell"
+                  :class="{
+                    empty: !day,
+                    'is-today': day === today,
+                    'is-active': day === activeDay
+                  }"
+                  type="button"
+                  :disabled="!day"
+                  @click="activeDay = day === activeDay ? '' : day"
+                >
+                  <template v-if="day">
+                    <span class="d">{{ Number(monthValue(day)) }}</span>
+                    <span v-if="dailyMap[day]" class="amt">
+                      {{ dailyMap[day].expense ? dailyMap[day].expense.toFixed(0) : '' }}
+                    </span>
+                  </template>
+                </button>
+              </div>
+              <div class="calendar-foot">
+                本月支出 <b>¥ {{ calendarExpense.toFixed(2) }}</b>
+              </div>
+
+              <div v-if="activeDay" class="day-detail">
+                <header class="group-head">
+                  <span>{{ formatDateDots(activeDay) }}</span>
+                  <span class="group-stat">
+                    <em class="expense">
+                      支 ¥ {{ (dailyMap[activeDay]?.expense || 0).toFixed(2) }}
+                    </em>
+                  </span>
+                </header>
+                <BillRow
+                  v-for="bill in activeDayBills"
+                  :key="bill.id"
+                  :bill="bill"
+                  :size="38"
+                  @click="openBill"
+                />
+                <p v-if="!activeDayBills.length" class="empty">当天没有账单</p>
+              </div>
+            </section>
+
+            <!-- 按年：12 个月的年度总览，点某月下钻到该月 -->
+            <section v-else class="card calendar-card">
+              <div class="year-head">
+                <span class="section-title">{{ billStore.period.year }}年各月支出</span>
+                <span class="muted">{{ monthsWithData }} 个月有记账</span>
+              </div>
+              <div class="year-grid">
+                <button
+                  v-for="m in months"
+                  :key="m"
+                  class="month-cell"
+                  :class="{ 'has-data': monthExpense(m) > 0 }"
+                  type="button"
+                  @click="drillToMonth(m)"
+                >
+                  <span class="d">{{ m }}月</span>
+                  <span class="amt">{{ monthExpense(m) ? monthExpense(m).toFixed(0) : '—' }}</span>
+                </button>
+              </div>
+              <div class="calendar-foot">
+                本年支出 <b>¥ {{ calendarExpense.toFixed(2) }}</b>
+              </div>
+            </section>
+          </div>
         </div>
-      </section>
+      </div>
     </div>
 
     <TabBar />
     <SearchOverlay v-model="searchOpen" />
+    <PeriodPicker
+      v-model="pickerOpen"
+      :mode="billStore.period.mode"
+      :month="billStore.period.month"
+      :year="billStore.period.year"
+      @pick-month="onPickMonth"
+      @pick-year="onPickYear"
+    />
   </div>
 </template>
 
@@ -223,14 +385,19 @@ function monthValue(day) {
 }
 
 .page-body {
-  padding: 0 14px;
+  /* 本页由内部的 .scroll-area 负责滚动，本层只做纵向排布 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* ---------- 筛选行 ---------- */
 .filter-row {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin: 0 14px;
   padding: 2px 0 12px;
 }
 
@@ -278,11 +445,41 @@ function monthValue(day) {
   color: var(--ink);
   min-width: 74px;
   text-align: center;
+  border-radius: var(--r-sm);
+  padding: 3px 0;
+}
+
+.month-label:active {
+  background: var(--surface-3);
+}
+
+/* ---------- 流水 / 日历 滑动轨道 ---------- */
+.view-track {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  width: 200%;
+  transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* 拖动跟手时不要过渡 */
+.view-track.is-dragging {
+  transition: none;
+}
+
+.view-pane {
+  flex: 0 0 50%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---------- 结余卡片 ---------- */
 .hero {
   position: relative;
+  flex: none;
+  margin: 0 14px 12px;
   padding: 16px 18px 14px;
   border-radius: var(--r-lg);
   background: var(--brand-grad);
@@ -341,9 +538,17 @@ function monthValue(day) {
   font-family: var(--font-num);
 }
 
+/* ---------- 列表滚动区 ---------- */
+/*
+ * 页面里只有这一块滚动；底部预留 --tabbar-space，
+ * 保证最后一条记录能完整滚到固定标签栏之上（此前被盖住、也没法滚出来）。
+ */
+.scroll-area {
+  padding: 0 14px var(--tabbar-space);
+}
+
 /* ---------- 列表 ---------- */
 .list-card {
-  margin-top: 12px;
   padding: 4px 16px 10px;
 }
 
@@ -382,7 +587,6 @@ function monthValue(day) {
 
 /* ---------- 日历 ---------- */
 .calendar-card {
-  margin-top: 12px;
   padding: 14px 12px 8px;
 }
 
@@ -457,5 +661,62 @@ function monthValue(day) {
 .day-detail .group-head {
   margin: 8px -12px 2px;
   padding: 8px 12px;
+}
+
+/* ---------- 日历 · 按年总览 ---------- */
+.year-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 2px 2px 12px;
+}
+
+.year-head .muted {
+  font-size: 12px;
+}
+
+.year-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 52px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  transition: background 0.15s ease;
+}
+
+.month-cell .d {
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+
+.month-cell .amt {
+  font-size: 12.5px;
+  font-family: var(--font-num);
+  color: var(--ink-4);
+}
+
+.month-cell.has-data {
+  background: var(--brand-soft);
+}
+
+.month-cell.has-data .d {
+  color: var(--ink);
+}
+
+.month-cell.has-data .amt {
+  color: var(--brand-ink);
+}
+
+.month-cell:active {
+  background: var(--brand-soft-2);
 }
 </style>

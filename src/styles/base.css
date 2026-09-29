@@ -99,15 +99,29 @@ ul {
   overscroll-behavior: contain;
 }
 
+/* 页面内的局部滚动区：需要「只有某一块滚动、其余固定」时用（如账单页只让列表滚） */
+.scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 .page-body::-webkit-scrollbar,
+.scroll-area::-webkit-scrollbar,
 .scroll-x::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
-.has-tabbar {
-  padding-bottom: calc(var(--tab-h) + var(--safe-b));
-}
+/*
+ * 底部标签栏（TabBar）是 position: fixed 浮在内容之上的，
+ * 所以带 TabBar 的页面必须自己留出 --tabbar-space 的底部空间，
+ * 否则最后一条内容会被标签栏盖住、且滚不出来。
+ * 注意：写 padding 时不要用 `padding: 0 14px` 简写，它会把 padding-bottom 一起重置掉。
+ */
 
 /* ---------------- 通用块 ---------------- */
 .card {
