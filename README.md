@@ -5,9 +5,9 @@
 - **第一阶段（已完成，v0.2.0）**：前端 UI 与交互复刻，全部页面跑通。
 - **第二阶段（进行中）**：数据从「只在这台浏览器」变成「本地优先 + 云端同步」。
   **S1 已完成** —— 本地存储已从 localStorage 切到 IndexedDB，用户无感。
-  **S2 已完成** —— 同步引擎骨架落地：四态状态机、pull/push 收敛、拒收回拉、服务端单调水位线；
-  云端用内存假实现（`fakeCloud.js`）跑通全链路，真实云端留给 S3。
-  设计说明见 `phase2-backend-plan.md` 的 S2 小节。
+  **S2 已完成** —— 同步引擎骨架落地：四态状态机、pull/push 收敛、拒收回拉、服务端单调水位线；云端用内存假实现（`fakeCloud.js`）跑通全链路。
+  **S3 已完成** —— 接入**腾讯云开发 CloudBase**：`@cloudbase/js-sdk` 直连文档型数据库、匿名登录、真实服务端权限隔离；换浏览器可完整恢复数据。
+  设计说明见 `phase2-backend-plan.md` 的 S2 / S3 小节。
 
 ## 快速开始
 
@@ -15,8 +15,25 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎）
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎），共 259 条
 ```
+
+### 配置云端（可选）
+
+**不配也能用**——纯本地记账，一切照旧，只是「我的」页会显示"未配置云端"。
+
+```bash
+cp .env.example .env.local
+# 编辑 .env.local，填入你的 CloudBase 环境 ID
+```
+
+```
+VITE_CLOUDBASE_ENV=<你的环境 ID>
+```
+
+> - `.env.local` 已 gitignore，**绝不会进仓库**（可用 `git check-ignore -v .env.local` 自证）。
+> - 只有 `VITE_` 前缀的变量会被 Vite 注入前端代码；读取统一走 `src/config/env.js`。
+> - 首次带云端启动时会把本地已有数据**一次性推上云**（`ensureCloudFirstBind()`，本地优先）。
 
 ## 页面清单（对应 8 张参考图）
 
@@ -52,20 +69,22 @@ npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 +
 
 ```
 src/
+  config/env.js            环境变量读取（cloudEnvId / isCloudConfigured），其它文件不直接读 import.meta.env
   api/                    数据层（视图只依赖契约，不依赖实现）
     contract.js            实体类型 + Repository 接口契约 + 错误类型
-    index.js               适配器装配（改 DATA_SOURCE 即可切换数据源）
+    index.js               适配器装配（改 DATA_SOURCE 切数据源；改 cloud 切云端）
     core/query.js          查询与派生（纯函数，无 IO）—— 各适配器共用
     core/migrate.js        演示数据的幂等迁移 —— 各适配器共用
     core/idb.js            IndexedDB 库名/版本/objectStore 原语（破解 adapter ↔ outbox 循环依赖）
-    core/merge.js          远端文档合并规则（剥元数据 / 新者胜 / 分流 take|keep）
-    adapters/mockAdapter.js      内存 + localStorage（对照基准，保留）
-    adapters/idbAdapter.js       当前启用：IndexedDB 离线缓存
-    adapters/leancloudAdapter.js 已废弃（LeanCloud 停服），仅保留同步策略注释作参考
+    core/merge.js          远端文档合并规则（剥元数据 / 新者胜 / 分流 take|keep）—— 各云端共用
+    adapters/mockAdapter.js        内存 + localStorage（对照基准，保留）
+    adapters/idbAdapter.js         当前启用：IndexedDB 离线缓存
+    adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 匿名登录），SDK 动态 import
+    adapters/leancloudAdapter.js   已废弃（LeanCloud 停服），仅保留同步策略注释作参考
     sync/outbox.js         增量同步队列（本地写入即入队，变更通知订阅者）
     sync/outboxStore.js    队列的存储后端（IndexedDB 表 / 内存）+ 旧 localStorage 队列一次性搬迁
     sync/cloudClient.js    云端客户端接口约定（只有形状，无实现）
-    sync/fakeCloud.js      内存假云端（真云端同接口，S3 换实现即可）
+    sync/fakeCloud.js      内存假云端（与真云端同接口，用于测试与本地调试）
     sync/syncEngine.js     同步调度：四态状态机 + pull/push + 退避重试 + 水位线
     mock/seed.js           种子数据
   stores/                  Pinia：ledger / category / bill
@@ -84,10 +103,10 @@ src/
 | --- | --- |
 | `mockAdapter.js` | 第一阶段实现（内存 + localStorage）。保留作契约对照基准 |
 | `idbAdapter.js` | **当前启用**：IndexedDB，库名 `ledger`、版本 2、5 个 objectStore |
+| `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 匿名登录 + 文档型数据库） |
 | `leancloudAdapter.js` | 已废弃（LeanCloud 停服），仅留同步策略注释作参考 |
-| `cloudbaseAdapter.js` | 待实现（第二阶段 S3，腾讯云开发） |
 
-业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。
+业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。**合并规则也只写一份**（`core/merge.js`），mock 与真云端共用。
 
 ### 已切到 IndexedDB（S1）
 
@@ -108,15 +127,30 @@ src/
 - 适配器**不 import syncEngine**，靠 `outbox.onChange` 通知解耦，依赖方向保持 `适配器 → outbox ← syncEngine`。
 - **已知不修**：本地「新者胜」依赖客户端时钟，跨设备乱序写入时可能判错；S4 用服务端时间裁决。
 
-### 接腾讯云开发的步骤（第二阶段 S3）
+### 已接入腾讯云开发（S3）
 
-1. 按 `phase2-backend-plan.md` 第 3 节完成账号与环境准备，**配好安全规则**（不配等于数据库公开）。
-2. 新增 `src/api/adapters/cloudbaseAdapter.js`，实现 `cloudClient.js` 约定的三件事：
-   - `pull(collection, { since, cursor, limit, ids }) -> { docs, serverTime, hasMore, cursor }` —— 必须返回**服务端时间**作为水位，不能拿客户端 `updatedAt` 顶替；
-   - `push(collection, docs) -> { upserted, rejected }` —— 条件 upsert，被拒条目要带上 `cloudUpdatedAt`；
-   - `serverTime()`。
-3. 在 `src/api/index.js` 把 `export const cloud = null` 换成该实现的实例。**syncEngine、适配器、store、视图都不需要改**。
-4. 验收重点：S3 的安全规则是**真**权限（fakeCloud 只测「代码没抹掉身份」，测不了规则本身），要用两个真实账号交叉验证。
+代码在 `src/api/adapters/cloudbaseAdapter.js`，装配在 `src/api/index.js`：
+
+```js
+export const cloud = isCloudConfigured ? createCloudBaseAdapter({ env: cloudEnvId }) : null
+export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncStore, meta: db.kv, cloud })
+```
+
+- **环境能力以实测为准**：当前环境是**纯 NoSQL 后端**（`RuntimeBackends.nosql = true`，官方明确 "PostgreSQL is NOT provisioned in this env"），走 `app.database()`；**不要**改成 `app.rdb()`。
+- **集合名带项目前缀**：`ledger_ledgers` / `ledger_categories` / `ledger_bills`。**该 CloudBase 环境后续可能被其它项目复用**，所以所有云端资源都加 `ledger_` 前缀；代码里由 `CLOUD_COLLECTION_PREFIX` + `CLOUD_COLLECTIONS` 映射产出，**业务代码不手写集合名**。
+- **权限用简单权限 PRIVATE（仅创建者可读写）**，三个集合全设。这是**服务端校验**，所以适配器里的查询**故意不带** `_openid` —— 前端过滤不是安全措施（谁都能改前端代码）。
+- **`push` 是两段式条件 upsert**：先按 `_id` 批量读回云端 `updatedAt`，再逐条判断本地不旧才 `col.doc(id).set({...payload, _serverTs: db.serverDate()})`；否则进 `rejected` 并带 `cloudUpdatedAt`，引擎据此回拉。**两段之间不原子，是留给 S4 的已知窗口。**
+- **`pull` 用服务端时间做水位线**：`where({ _serverTs: _.gte(new Date(since)) }).orderBy('_serverTs','asc').skip(n).limit(limit)`。注意 `_serverTs` 是 Date 类型，**用数字比较一条都匹配不到**。
+- **`_openid` 由 SDK 自动注入**（手写会报错），拉回时由 `core/merge.js` 的 `fromRemote()` 剥掉，不落本地库。
+- **匿名登录是懒触发的**：只有真正要读写数据时才 `signInAnonymously()`（否则光是打开「我的」页就会触发 88 次写入）。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）——**清掉就永久失联**，这是 S5「匿名转正」要解决的问题。
+- **SDK 走动态 import**，被 Vite 拆成独立 chunk（871 kB / gzip 220.8 kB）；不配云端时这段代码根本不加载。
+- **首次绑定**：`ensureCloudFirstBind()` 把本地三个集合的文档一次性入队推上云（本地优先）。现在是匿名设备身份、云端不可能有别人的数据，所以无覆盖风险；**S5 有真账号后必须改成先问用户**。
+- **已知不修**：本地「新者胜」依赖客户端时钟；`serverTime()` 只是"能观察到的最新 `_serverTs`"，是**下界**，只能做水位线、不能做冲突裁决。都留给 S4-2（云函数提供真服务端时间）。
+
+**两个探针脚本**留在 `.preview/sdk-probe/`（该目录**不入库**，属本地验证脚本），换环境或升 SDK 大版本时可直接重跑：
+`probe-docdb.mjs`（`serverDate` 读写 / 自定义 `_id` upsert / `_openid` 注入 / 区间+排序+分页 / 水位线边界）、`probe-isolation.mjs`（**独立进程**验证跨身份隔离）。
+
+> 换云端只需改 `src/api/index.js` 里 `cloud` 这一个变量，`syncEngine`、适配器、store、视图**一行都不用动**。
 
 ## 第一阶段验收结论（v0.2.0）
 
@@ -184,14 +218,35 @@ src/
 > **说明**：fakeCloud 带身份维度只能验「代码没抹掉身份」，**测不了真实安全规则** —— 那是 S3 用两个真实账号验收的事。
 
 
+## 第二阶段 S3 验收结论（接入腾讯云开发）
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm run build` | 通过（122 modules；主包 236.67 kB / gzip 84.31 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
+| 数据层断言合计 | **259 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125），`syncEngine` 未改动故零回归 |
+| 云端资源 | 三集合 `ledger_ledgers` / `ledger_categories` / `ledger_bills`，权限均为 **PRIVATE**，索引 `_openid + _serverTs` |
+| 单设备推送 | 通过（云端 44 账单 / 42 分类 / 1 账本，与本地种子精确吻合；`bill_seed_001` 的 `_id` / `_openid` / `_serverTs` / 各业务字段逐一核对正确） |
+| **清空本地 → 从云端恢复（最关键）** | 通过（先造一笔只存在于云端的账 → 清空 IndexedDB 五张表 → 重载 → 本地恢复 45 条，云端独有那笔完整回来；首页 `¥8733.06 = 8720.72 + 12.34` ✓，派生分类名也对） |
+| 真实服务端隔离 | 通过（**独立进程**中的另一个匿名身份：按 `_id` 精确读 → 读不到；全表读 → 看不到；删他人文档 → 删不掉） |
+| 幂等 | 通过（重复推送靠 `doc(id).set()` upsert，不产生重复文档） |
+| 未知配置降级 | 通过（无 `.env.local` 时 `cloud = null`，应用照常启动，同步静默跳过） |
+| 「我的」页 | 通过（显示 `匿名 · <uid 前 8 位>`、同步状态、待同步条数；**立即同步**与**重置演示数据**（含清云端）实测有效） |
+| 浏览器运行时未捕获异常 | 无 |
+
+> **验证过程中在云端产生的探针数据已全部清理**，云端为干净的种子状态（44 / 42 / 1）。
+> **一个工具经验**：用无头浏览器验证时，其 `click` 命令**不一定会触发 Vue 的 `@click` 处理器**；遇到"点了没反应但逻辑明明是对的"时，用 `element.click()` 原生触发同一元素做对照，就能区分是工具问题还是真实 bug（本次即如此）。
+> **待办**：`serverTime()` 只是水位线下界，冲突裁决仍需 S4 用云函数打真服务端时间；S5 需把匿名身份转成正式账号，否则清掉浏览器数据即永久失联。
+
+
 ## 说明
 
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
-- 数据当前持久化在 **IndexedDB**（库名 `ledger`，版本 2）；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」可恢复初始种子。
-- 云端目前是 `fakeCloud.js`（内存），所以「我的」页显示**未接入**；接 S3 时只需在 `src/api/index.js` 换掉 `cloud` 一个变量。
+- 数据当前持久化在 **IndexedDB**（库名 `ledger`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」会清本地与云端、再重新灌种子并推上云。
+- 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
 - **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
   - `sync-test.mjs` —— 同步引擎 18 组场景（125 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
-  - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。
+  - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
+- **云端运维提醒**：免费环境单次续期 6 个月、不支持自动续费，过期会停用；体验版**不支持自助添加 Web 安全域名**，部署到线上域名前需先处理。

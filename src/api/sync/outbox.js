@@ -62,6 +62,25 @@ export function createOutbox(store) {
     return row
   }
 
+  /**
+   * 批量入队。
+   * 首次绑定要一次性投递本地已有数据（本项目是 1 账本 + 42 分类 + 44 账单），
+   * 逐条 enqueue 会开几十次事务、通知几十次，白白拖慢启动；这里合成一次写、一次通知。
+   */
+  async function enqueueMany(entries) {
+    const list = (entries || []).map((entry) => {
+      const row = { retry: 0, synced: false, ...toPlain(entry) }
+      if (!row.id) row.id = uid('ob')
+      if (!row.ts) row.ts = now()
+      return row
+    })
+    if (!list.length) return []
+    await store.prepare?.()
+    await store.put(list)
+    notify()
+    return list
+  }
+
   async function markSynced(ids) {
     const set = new Set(ids || [])
     if (!set.size) return 0
@@ -130,6 +149,7 @@ export function createOutbox(store) {
     pending,
     pendingCount,
     enqueue,
+    enqueueMany,
     markSynced,
     bumpRetry,
     bumpRetryAll,

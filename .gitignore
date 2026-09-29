@@ -29,3 +29,10 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# ---- Agent / 平台本地状态（可重新安装或由平台生成，不入库）----
+.agents/
+.claude/
+skills-lock.json
+.wbapp_*.genie
+.workbuddy/applications.yaml

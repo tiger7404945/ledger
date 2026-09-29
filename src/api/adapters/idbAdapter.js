@@ -537,6 +537,14 @@ export function createIdbAdapter(options = {}) {
       return readOne(name, id)
     },
 
+    /** 读某个集合的全部本地文档。首次绑定要把它们整体入队推上云 */
+    async all(collection) {
+      await ready()
+      const name = STORE_OF[collection]
+      if (!name) return []
+      return readAll(name)
+    },
+
     async applyRemote(collection, docs) {
       await ready()
       const name = STORE_OF[collection]

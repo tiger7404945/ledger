@@ -333,9 +333,17 @@ for (const [name, adapter] of [
   ok(
     `${name} 暴露了 outbox / syncStore（同步引擎的接缝）`,
     !!adapter.outbox &&
-      has(adapter.outbox, ['enqueue', 'pending', 'markSynced', 'bumpRetry', 'compact', 'onChange'])
+      has(adapter.outbox, [
+        'enqueue',
+        'enqueueMany',
+        'pending',
+        'markSynced',
+        'bumpRetry',
+        'compact',
+        'onChange'
+      ])
   )
-  ok(`${name}.syncStore 方法齐全`, has(adapter.syncStore, ['get', 'applyRemote']))
+  ok(`${name}.syncStore 方法齐全`, has(adapter.syncStore, ['get', 'all', 'applyRemote']))
   ok(`${name} 有 reset / snapshot`, has(adapter, ['reset', 'snapshot']))
   ok(`${name}.name 为 ${name === 'mock' ? 'mock' : 'idb'}`, adapter.name === (name === 'mock' ? 'mock' : 'idb'))
 }

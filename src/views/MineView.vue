@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCategoryStore } from '@/stores/category.js'
 import { useBillStore } from '@/stores/bill.js'
-import { db, DATA_SOURCE, cloud, syncEngine } from '@/api'
+import { db, DATA_SOURCE, cloud, syncEngine, ensureCloudFirstBind } from '@/api'
 import { useToast } from '@/composables/useToast.js'
 import { clearRecordDraft } from '@/composables/useRecordDraft.js'
 import AppHeader from '@/components/AppHeader.vue'
@@ -17,13 +17,15 @@ const toast = useToast()
 
 const pending = ref(0)
 const syncState = ref(syncEngine.state)
+const cloudUid = ref(null)
 let offSync = null
+let offAuth = null
 
 const entries = [
   { icon: 'settings', label: '分类管理', desc: '一级 / 二级分类的增删改', to: '/category' },
   { icon: 'piggy', label: '账本管理', desc: '多账本与共享（后续版本）' },
   { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已启用）' },
-  { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（S3 接入）' },
+  { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（已接入）' },
   { icon: 'star', label: '关于', desc: '随手记账 · 前端演示版 v0.2' }
 ]
 
@@ -31,21 +33,27 @@ const entries = [
 const storageLabel = DATA_SOURCE === 'idb' ? 'IndexedDB（ledger 库）' : '内存 + localStorage'
 const cacheLabel = DATA_SOURCE === 'idb' ? '已启用' : '未启用（仍是内存）'
 
-const SYNC_STATE_LABEL = {
-  idle: '空闲',
-  syncing: '同步中',
-  error: '同步失败',
-  offline: '离线'
-}
-const syncLabel = computed(() => SYNC_STATE_LABEL[syncState.value] || syncState.value)
-
 /** 云端那一行：没接入就说清楚，接入了就说当前状态 */
 const cloudLabel = computed(() => {
-  if (!cloud) return '未接入（S3 接腾讯云开发）'
+  if (!cloud) return '未配置（纯本地记账）'
   if (syncState.value === 'syncing') return '同步中…'
   if (syncState.value === 'error') return '同步失败，稍后自动重试'
   if (syncState.value === 'offline') return '离线，联网后自动补推'
   return pending.value ? `待推 ${pending.value} 条` : '已同步'
+})
+
+/** 云端账号：匿名账号就是当前这台设备的身份，露一下 uid 便于确认「没串号」 */
+const accountLabel = computed(() => {
+  if (!cloud) return '未接入'
+  if (!cloudUid.value) return '登录中…'
+  return `匿名 · ${String(cloudUid.value).slice(0, 8)}`
+})
+
+/** 个人卡片那行说明。接了云之后还写「数据仅保存在本机」就是骗人了 */
+const profileSub = computed(() => {
+  if (!cloud) return '数据仅保存在本机 · 未配置云端'
+  if (!cloudUid.value) return '本地优先 · 云端登录中…'
+  return '本地优先 · 已同步到腾讯云开发'
 })
 
 onMounted(async () => {
@@ -57,11 +65,20 @@ onMounted(async () => {
     syncState.value = s.state
     pending.value = s.pendingCount
   })
+  // 登录态要显式触发一次才会去登（匿名登录是懒加载的，不在启动路径上）
+  if (cloud?.ensureSignedIn) {
+    offAuth = cloud.onAuthChange((a) => {
+      cloudUid.value = a.uid
+    })
+    cloud.ensureSignedIn().catch(() => {})
+  }
 })
 
 onUnmounted(() => {
   offSync?.()
   offSync = null
+  offAuth?.()
+  offAuth = null
 })
 
 async function handleEntry(entry) {
@@ -74,22 +91,52 @@ async function handleEntry(entry) {
     return
   }
   if (entry.label === '云端同步') {
-    toast.show(
-      cloud
-        ? `同步状态：${syncLabel.value}，待推 ${pending.value} 条`
-        : `待推 ${pending.value} 条，队列已就绪；云端待 S3 接入腾讯云开发`
-    )
+    if (!cloud) {
+      toast.show(`待推 ${pending.value} 条，队列已就绪；但没配云端（见 .env.local）`)
+      return
+    }
+    await syncNow()
     return
   }
   toast.show('该功能将在后续版本开放')
 }
 
+/** 手动同步。manual: true 跳过「离线就不发请求」的判断 —— 是用户主动要试的 */
+async function syncNow() {
+  if (!cloud) {
+    toast.show('没配云端（见 .env.local）')
+    return
+  }
+  const r = await syncEngine.sync({ reason: 'manual', manual: true })
+  if (r?.ok) toast.success(`已同步：上行 ${r.pushed}、下行 ${r.pulled}`)
+  else if (r?.skipped) toast.show(`已跳过：${r.reason}`)
+  else toast.show(`同步失败：${r?.error?.message || '未知错误'}`)
+  pending.value = await db.sync.pendingCount()
+  return r
+}
+
 async function resetDemo() {
+  // 顺序不能反：
+  //   ① 先把本地清掉、重新播种（这一步会清空 outbox、水位线与首次绑定标记）
+  //   ② 再把云端清掉 —— 不然后面同步会把刚清掉的旧数据原样拉回来，
+  //      看起来就像「重置按钮没生效」
+  //   ③ 最后重新绑定 + 同步，把新的演示数据送上去
   await db.reset()
+  if (cloud?.wipe) {
+    try {
+      await cloud.wipe()
+    } catch (e) {
+      toast.show(`云端清理失败：${e?.message || e}`)
+    }
+  }
   clearRecordDraft()
   billStore.resetPeriod()
   await Promise.all([categoryStore.ensureLoaded(true), billStore.ensureLoaded()])
   await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
+  if (cloud) {
+    await ensureCloudFirstBind().catch(() => {})
+    await syncEngine.sync({ reason: 'manual', manual: true }).catch(() => {})
+  }
   pending.value = await db.sync.pendingCount()
   toast.success('演示数据已重置')
 }
@@ -104,7 +151,7 @@ async function resetDemo() {
         <span class="avatar">默</span>
         <div class="profile-info">
           <span class="name">本地用户</span>
-          <span class="sub">数据仅保存在本机 · 未登录</span>
+          <span class="sub">{{ profileSub }}</span>
         </div>
       </section>
 
@@ -135,8 +182,12 @@ async function resetDemo() {
           <li><em>待同步队列</em><span>{{ pending }} 条</span></li>
           <li><em>离线缓存</em><span>{{ cacheLabel }}</span></li>
           <li><em>云端</em><span>{{ cloudLabel }}</span></li>
+          <li><em>云端账号</em><span>{{ accountLabel }}</span></li>
         </ul>
-        <button class="reset" type="button" @click="resetDemo">重置演示数据</button>
+        <div class="actions">
+          <button class="ghost" type="button" @click="syncNow">立即同步</button>
+          <button class="ghost" type="button" @click="resetDemo">重置演示数据</button>
+        </div>
       </section>
     </div>
 
@@ -274,10 +325,15 @@ async function resetDemo() {
   color: var(--ink-3);
 }
 
-.reset {
-  width: 100%;
-  height: 40px;
+.actions {
+  display: flex;
+  gap: 8px;
   margin-top: 12px;
+}
+
+.ghost {
+  flex: 1;
+  height: 40px;
   border-radius: var(--r-pill);
   background: var(--surface-3);
   color: var(--ink-2);

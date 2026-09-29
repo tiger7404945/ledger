@@ -428,6 +428,16 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     }
   }
 
+  /** 集合名 → 内存里的数组。两处（all / applyRemote）共用，不各写一套 */
+  const localListOf = (state, collection) =>
+    collection === COLLECTIONS.LEDGER
+      ? state.ledgers
+      : collection === COLLECTIONS.CATEGORY
+        ? state.categories
+        : collection === COLLECTIONS.BILL
+          ? state.bills
+          : null
+
   /** 给 syncEngine 用的本地读写口（与 idbAdapter 同形） */
   const syncStore = {
     async get(collection, id) {
@@ -438,16 +448,16 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       return null
     },
 
+    /** 读某个集合的全部本地文档。首次绑定要把它们整体入队推上云 */
+    async all(collection) {
+      const s = await ready()
+      const list = localListOf(s, collection)
+      return list ? list.map((d) => ({ ...d })) : []
+    },
+
     async applyRemote(collection, docs) {
       const s = await ready()
-      const list =
-        collection === COLLECTIONS.LEDGER
-          ? s.ledgers
-          : collection === COLLECTIONS.CATEGORY
-            ? s.categories
-            : collection === COLLECTIONS.BILL
-              ? s.bills
-              : null
+      const list = localListOf(s, collection)
       if (!list) return { applied: 0, kept: 0 }
 
       // 新者胜：远端更新才覆盖，本地更新的保留（它还在 outbox 里等下一轮推送）

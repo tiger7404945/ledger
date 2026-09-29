@@ -10,6 +10,7 @@
     "test:data": "node scripts/contract-test.mjs && node scripts/period-test.mjs && node scripts/seed-test.mjs && node scripts/migrate-test.mjs && node scripts/sync-test.mjs"
   },
   "dependencies": {
+    "@cloudbase/js-sdk": "^3.10.1",
     "pinia": "^2.2.6",
     "vue": "^3.5.13",
     "vue-router": "^4.4.5"
