@@ -13,10 +13,20 @@ const ADAPTERS = {
   idb: createIdbAdapter
 }
 
-/** 当前数据源：mock | idb */
-export const DATA_SOURCE = 'mock'
+/** 各数据源的构造参数 */
+const ADAPTER_OPTIONS = {
+  mock: { latency: 24 },
+  idb: { dbName: 'ledger' }
+}
 
-export const db = ADAPTERS[DATA_SOURCE]({ namespace: 'ledger' })
+/**
+ * 当前数据源：mock | idb
+ * 第二阶段已切到 idb（IndexedDB）：数据真正落在本机数据库里，刷新/重启不丢，
+ * 也为后续云端增量同步留好了 outbox 队列。切回 mock 只需改这一行。
+ */
+export const DATA_SOURCE = 'idb'
+
+export const db = ADAPTERS[DATA_SOURCE](ADAPTER_OPTIONS[DATA_SOURCE])
 
 export const ledgerRepo = db.ledger
 export const categoryRepo = db.category

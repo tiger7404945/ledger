@@ -5,17 +5,22 @@ import {
   SCHEMA_VERSION
 } from '../contract.js'
 import { outbox } from '../sync/outbox.js'
-import { buildSeed, buildExtraBills, SEED_BILL_NOTES, SEED_NOTES_VERSION, SEED_EXTRA_VERSION } from '../mock/seed.js'
+import { buildSeed } from '../mock/seed.js'
+import { migrateSeedData } from '../core/migrate.js'
 import { now, uid } from '../../utils/id.js'
-import {
-  monthKeyOf,
-  monthFirstKey,
-  monthLastKey,
-  daysBetween,
-  currentMonthKey,
-  todayKey
-} from '../../utils/date.js'
+import { todayKey } from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
+import {
+  alive,
+  createCategoryLookup,
+  filterCategories,
+  filterBills,
+  groupBillsByDate,
+  dailySummaryOf,
+  summarizeBills,
+  remarkHistoryOf,
+  decorateBill
+} from '../core/query.js'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -33,42 +38,14 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
   /* ---------------- 内部：持久化 ---------------- */
 
   /**
-   * 轻量数据迁移（幂等）
-   * 1) 演示账单的备注是后加的字段，早期版本播种出来的本地库里这些账单备注为空，
-   *    导致记账页「填写备注」看不到历史候选。这里按 id 一次性回填。
-   * 2) 后加的演示账单（本月收入 + 往月收支）按 id 补齐，让统计页有数据可看。
-   * 两步都只补「本地库里没有 / 字段为空」的记录，不动用户自己记的账。
+   * 轻量数据迁移（幂等，规则见 core/migrate.js）
+   * 演示账单的备注回填 + 后加的演示账单补齐，都只补「本地没有的」，不动用户的数据。
    * @returns {boolean} 是否有改动
    */
   function migrate(s) {
     const meta = s.meta || (s.meta = {})
-    let changed = false
-
-    if (meta.seedNotes !== SEED_NOTES_VERSION) {
-      ;(s.bills || []).forEach((b) => {
-        const note = SEED_BILL_NOTES[b.id]
-        if (note && !b.remark) {
-          b.remark = note
-          changed = true
-        }
-      })
-      meta.seedNotes = SEED_NOTES_VERSION
-      changed = true
-    }
-
-    if (meta.seedExtra !== SEED_EXTRA_VERSION) {
-      const bills = s.bills || (s.bills = [])
-      const have = new Set(bills.map((b) => b.id))
-      buildExtraBills().forEach((b) => {
-        if (have.has(b.id)) return
-        bills.push(b)
-        changed = true
-      })
-      meta.seedExtra = SEED_EXTRA_VERSION
-      changed = true
-    }
-
-    return changed
+    const bills = s.bills || (s.bills = [])
+    return migrateSeedData(bills, meta).changed
   }
 
   function load() {
@@ -116,8 +93,6 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     })
   }
 
-  const alive = (doc) => !doc.deleted
-
   function findCategory(id) {
     return load().categories.find((c) => c.id === id && alive(c)) || null
   }
@@ -126,18 +101,9 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     return load().bills.find((b) => b.id === id && alive(b)) || null
   }
 
-  /** 分类展示名：一级 -> 「交通」，二级 -> 「交通-公交地铁」 */
-  function categoryLabel(id) {
-    const cat = findCategory(id)
-    if (!cat) return '未分类'
-    if (!cat.parentId) return cat.name
-    const parent = findCategory(cat.parentId)
-    return parent ? `${parent.name}-${cat.name}` : cat.name
-  }
-
-  function categoryOf(id) {
-    const cat = findCategory(id)
-    return cat || null
+  /** 当前状态的分类查找表（派生展示名用） */
+  function lookupOf(s) {
+    return createCategoryLookup(s.categories)
   }
 
   /* ---------------- 账本 ---------------- */
@@ -169,14 +135,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     /** @param {{ledgerId?:string, type?:string, parentId?:string|null, includeDeleted?:boolean}} query */
     async list(query = {}) {
       const s = await ready()
-      const { ledgerId, type, parentId, includeDeleted = false } = query
-      return s.categories
-        .filter((c) => (includeDeleted ? true : alive(c)))
-        .filter((c) => (ledgerId ? c.ledgerId === ledgerId : true))
-        .filter((c) => (type ? c.type === type : true))
-        .filter((c) => (parentId === undefined ? true : c.parentId === parentId))
-        .sort((a, b) => a.order - b.order)
-        .map((c) => ({ ...c }))
+      return filterCategories(s.categories, query)
     },
 
     async get(id) {
@@ -306,19 +265,6 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
   /* ---------------- 账单 ---------------- */
 
-  function decorate(bill) {
-    const cat = categoryOf(bill.categoryId)
-    const primary = categoryOf(bill.primaryCategoryId)
-    return {
-      ...bill,
-      categoryName: cat ? cat.name : '未分类',
-      categoryIcon: cat ? cat.icon : 'more',
-      primaryCategoryName: primary ? primary.name : '',
-      primaryCategoryIcon: primary ? primary.icon : 'more',
-      displayName: categoryLabel(bill.categoryId)
-    }
-  }
-
   const billApi = {
     /**
      * @param {{ledgerId?:string, month?:string, from?:string, to?:string, date?:string,
@@ -327,57 +273,18 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
      */
     async list(query = {}) {
       const s = await ready()
-      const { ledgerId, month, from, to, date, type, categoryId, keyword, order = 'desc' } = query
-      const kw = String(keyword || '').trim().toLowerCase()
-
-      let rows = s.bills
-        .filter((b) => alive(b))
-        .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
-        .filter((b) => (type ? b.type === type : true))
-        .filter((b) => (categoryId ? b.categoryId === categoryId : true))
-        .filter((b) => (month ? monthKeyOf(b.date) === month : true))
-        .filter((b) => (from ? b.date >= from : true))
-        .filter((b) => (to ? b.date <= to : true))
-        .filter((b) => (date ? b.date === date : true))
-
-      rows = rows.map(decorate)
-
-      if (kw) {
-        rows = rows.filter((b) => {
-          const amountText = b.amount.toFixed(2)
-          return (
-            b.displayName.toLowerCase().includes(kw) ||
-            String(b.remark || '').toLowerCase().includes(kw) ||
-            amountText.includes(kw)
-          )
-        })
-      }
-
-      rows.sort((a, b) => {
-        const diff = a.date === b.date ? b.createdAt - a.createdAt : a.date < b.date ? 1 : -1
-        return order === 'desc' ? diff : -diff
-      })
-      return rows
+      return filterBills(s.bills, s.categories, query)
     },
 
     /** 按日期分组的账单（账单页流水视图） */
     async listGrouped(query = {}) {
-      const rows = await this.list(query)
-      const map = new Map()
-      rows.forEach((b) => {
-        if (!map.has(b.date)) map.set(b.date, { date: b.date, income: 0, expense: 0, items: [] })
-        const group = map.get(b.date)
-        group.items.push(b)
-        if (b.type === 'income') group.income = round2(group.income + b.amount)
-        else group.expense = round2(group.expense + b.amount)
-      })
-      return Array.from(map.values())
+      return groupBillsByDate(await this.list(query))
     },
 
     async get(id) {
-      await ready()
+      const s = await ready()
       const bill = findBill(id)
-      return bill ? decorate(bill) : null
+      return bill ? decorateBill(bill, lookupOf(s)) : null
     },
 
     async create(payload) {
@@ -409,7 +316,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       s.bills.push(doc)
       persist()
       enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
-      return decorate(doc)
+      return decorateBill(doc, lookupOf(s))
     },
 
     async update(id, patch) {
@@ -437,7 +344,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       Object.assign(doc, next, { updatedAt: now(), version: (doc.version || 1) + 1 })
       persist()
       enqueue(COLLECTIONS.BILL, 'update', doc.id, { ...doc })
-      return decorate(doc)
+      return decorateBill(doc, lookupOf(s))
     },
 
     async remove(id) {
@@ -457,54 +364,12 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
      */
     async summary(query = {}) {
       const s = await ready()
-      const ledgerId = query.ledgerId
-      const { from, to } = query
-      const month = query.month || (from ? '' : currentMonthKey())
-      const rows = s.bills
-        .filter((b) => alive(b))
-        .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
-        .filter((b) => (month ? monthKeyOf(b.date) === month : true))
-        .filter((b) => (from ? b.date >= from : true))
-        .filter((b) => (to ? b.date <= to : true))
-
-      const expense = round2(rows.filter((b) => b.type === 'expense').reduce((a, b) => a + b.amount, 0))
-      const income = round2(rows.filter((b) => b.type === 'income').reduce((a, b) => a + b.amount, 0))
-
-      // 已过天数：区间起始日到今天，落在区间内；区间还没开始为 0，已经结束为整天数
-      const start = from || monthFirstKey(month)
-      const end = to || monthLastKey(month)
-      const today = todayKey()
-      const totalDays = daysBetween(start, end) + 1
-      const elapsed =
-        today >= end ? totalDays : today < start ? 0 : Math.min(totalDays, daysBetween(start, today) + 1)
-
-      return {
-        month,
-        from: start,
-        to: end,
-        expense,
-        income,
-        balance: round2(income - expense),
-        budget: 0,
-        remain: 0,
-        dailyAvg: elapsed > 0 ? round2(expense / elapsed) : 0,
-        daysElapsed: elapsed,
-        daysInMonth: totalDays
-      }
+      return summarizeBills(s.bills, query)
     },
 
     /** 某天的收支汇总（日历视图） */
     async dailySummary(query = {}) {
-      const rows = await this.list({ ...query, order: 'asc' })
-      const map = new Map()
-      rows.forEach((b) => {
-        const cur = map.get(b.date) || { date: b.date, income: 0, expense: 0, count: 0 }
-        if (b.type === 'income') cur.income = round2(cur.income + b.amount)
-        else cur.expense = round2(cur.expense + b.amount)
-        cur.count += 1
-        map.set(b.date, cur)
-      })
-      return Array.from(map.values())
+      return dailySummaryOf(await this.list({ ...query, order: 'asc' }))
     },
 
     /** 全账本最近 N 条（首页今日账单） */
@@ -514,34 +379,12 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
     /**
      * 某分类下的历史备注（记账页「填写备注」的候选）
-     * - 只取该分类的账单，空备注过滤掉
-     * - 同一条备注去重，保留最近一次保存的时间
-     * - 按最近保存时间从新到旧，最多 limit 条
      * @param {{ledgerId?:string, categoryId:string, limit?:number}} query
      * @returns {Promise<string[]>}
      */
     async remarkHistory(query = {}) {
       const s = await ready()
-      const { ledgerId, categoryId, limit = 15 } = query
-      if (!categoryId) return []
-
-      const latest = new Map()
-      s.bills
-        .filter((b) => alive(b))
-        .filter((b) => (ledgerId ? b.ledgerId === ledgerId : true))
-        .filter((b) => b.categoryId === categoryId)
-        .forEach((b) => {
-          const text = String(b.remark || '').trim()
-          if (!text) return
-          const ts = b.updatedAt || b.createdAt || 0
-          const prev = latest.get(text)
-          if (!prev || ts > prev) latest.set(text, ts)
-        })
-
-      return Array.from(latest.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, limit)
-        .map(([text]) => text)
+      return remarkHistoryOf(s.bills, query)
     }
   }
 

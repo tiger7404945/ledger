@@ -21,12 +21,17 @@ const pending = ref(0)
 const entries = [
   { icon: 'settings', label: '分类管理', desc: '一级 / 二级分类的增删改', to: '/category' },
   { icon: 'piggy', label: '账本管理', desc: '多账本与共享（后续版本）' },
-  { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已预留接口）' },
-  { icon: 'sync', label: '云端同步', desc: 'LeanCloud 增量同步（已预留接口）' },
-  { icon: 'star', label: '关于', desc: '随手记账 · 前端演示版 v0.1' }
+  { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已启用）' },
+  { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（第二阶段）' },
+  { icon: 'star', label: '关于', desc: '随手记账 · 前端演示版 v0.2' }
 ]
 
+/** 本地存储的呈现随数据源变化，避免界面写着 A、实际跑着 B */
+const storageLabel = DATA_SOURCE === 'idb' ? 'IndexedDB（ledger 库）' : '内存 + localStorage'
+const cacheLabel = DATA_SOURCE === 'idb' ? '已启用' : '未启用（仍是内存）'
+
 onMounted(async () => {
+  await db.ready?.()
   await Promise.all([categoryStore.ensureLoaded(), billStore.ensureLoaded()])
   pending.value = outbox.pendingCount()
 })
@@ -37,11 +42,11 @@ async function handleEntry(entry) {
     return
   }
   if (entry.label === '离线缓存') {
-    toast.show('第二阶段接入 IndexedDB，接口已就绪')
+    toast.show(`当前数据源：${DATA_SOURCE}，账单存在 ${storageLabel}`)
     return
   }
   if (entry.label === '云端同步') {
-    toast.show(`待同步 ${pending.value} 条，接口已预留`)
+    toast.show(`待同步 ${pending.value} 条，推送队列已就绪，云端待第二阶段接入`)
     return
   }
   toast.show('该功能将在后续版本开放')
@@ -94,10 +99,10 @@ async function resetDemo() {
           <span class="tag">{{ DATA_SOURCE }}</span>
         </header>
         <ul class="status-list">
-          <li><em>本地存储</em><span>memory + localStorage</span></li>
+          <li><em>本地存储</em><span>{{ storageLabel }}</span></li>
           <li><em>待同步队列</em><span>{{ pending }} 条</span></li>
-          <li><em>离线缓存</em><span>idbAdapter（预留）</span></li>
-          <li><em>云端</em><span>leancloudAdapter（预留）</span></li>
+          <li><em>离线缓存</em><span>{{ cacheLabel }}</span></li>
+          <li><em>云端</em><span>腾讯云开发（第二阶段）</span></li>
         </ul>
         <button class="reset" type="button" @click="resetDemo">重置演示数据</button>
       </section>
