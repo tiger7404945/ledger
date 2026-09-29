@@ -4,7 +4,7 @@
 > 用法：按 S0 → S6 顺序做，**不要跳步**。每个任务都写了「做完怎么算通过」，没通过就别往下走。
 > 配套文档：`page-structure.md`（页面真相源）、`ui-implementation-plan.md`（第一阶段计划）、`README.md`（快速开始）。
 
-**当前进度：S1（本地 IndexedDB）已完成并验证通过，下一步是 S2。**
+**当前进度：S1（本地 IndexedDB）已完成并验证通过；S2（同步引擎骨架）的设计已定稿，见下方 S2 小节。**
 
 ---
 
@@ -14,11 +14,12 @@
 
 **目标**：数据"本地优先"——没网也能正常记账；一联网，自动同步到云端；换台设备登录同一账号，数据完整地在那儿。
 
-拆成三个可以独立交付的目标，**只有 2B 往后才需要注册账号**：
+拆成几个可以独立交付的目标，**只有 2B 往后才需要注册账号**：
 
 | 子阶段 | 做什么 | 要注册账号吗 | 状态 |
 | --- | --- | --- | --- |
 | **2A** | 本地存储从 localStorage 换成 IndexedDB | 不用 | ✅ **已完成（S1）** |
+| **2A+** | 同步引擎骨架（假云端，仍不联网） | 不用 | 设计已定稿（S2） |
 | **2B** | 接上腾讯云开发，实现云同步 | 要 | 待开始 |
 | **2C** | 用户登录 + 多设备 | 要 | 待开始 |
 
@@ -42,10 +43,12 @@
 | **`_openid`** | 云开发自动给每条数据盖的"主人印章" | 安全规则靠它实现"只能看自己的账" |
 | **安全规则** | 在服务端配置的权限表达式，客户端改不了也绕不过 | 替代 Supabase 的 RLS，见 5.3 |
 | **本地优先**（local-first） | 先写本地、立刻返回成功，同步是后台的事 | 「完成」按钮的落库已经是这个模式 |
-| **outbox**（发件箱） | 像寄信：先把信投进本地信箱，邮递员（同步器）负责送出去 | `src/api/sync/outbox.js` 已实现 |
+| **outbox**（发件箱） | 像寄信：先把信投进本地信箱，邮递员（同步器）负责送出去 | `src/api/sync/outbox.js` 已实现；S2 里会从 localStorage 搬进 IndexedDB |
 | **幂等** | 同一个操作执行 1 次和 3 次，结果一样 | 重试推送不会记出两笔账 |
 | **水位线** | "我上次同步到哪个时间点"，下次只拉这之后的 | `updatedAt > 上次同步时间` |
-| **冲突解决** | 两边都改了同一条，听谁的 | 本项目：`updatedAt` 新者胜 |
+| **冲突解决** | 两边都改了同一条，听谁的 | 本项目：`updatedAt` 新者胜（LWW） |
+| **条件 upsert** | 只在"我这份更新"时才覆盖云端 | 云端的较新版本不会被迟到的新推送冲掉 |
+| **收敛** | 一段时间后，所有设备看到同一份数据 | 没有中心锁时「互斥」做不到，**保证收敛才是目标** |
 
 ### ⚠️ 两个容易搞错的地方
 
@@ -160,7 +163,7 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 | S1-2 | 查询走索引 | 已建 5 个 objectStore 与全部索引；当前查询用 `getAll` 读入内存后计算（千条级毫秒级），索引留给后续数据量上来时优化 |
 | S1-3 | 写入的原子性 | 批量 upsert 在一个事务内完成；「读-改-写」分两次事务（原因见下） |
 | S1-4 | 旧数据迁移 | 首次打开时接管 `localStorage` 的 `ledger.db.v1`，**导入后不删除旧库**，留作回退；靠 meta 标记保证只接管一次 |
-| S1-5 | 契约一致性测试 | `.preview/contract-test.mjs`：同一套断言跑 mock 与 idb 两个适配器 |
+| S1-5 | 契约一致性测试 | `scripts/contract-test.mjs`（S1 期间从 `.preview/` 迁入）：同一套断言跑 mock 与 idb 两个适配器 |
 
 **顺手做的两件结构性改进（都很关键）**
 
@@ -187,22 +190,201 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 
 ### S2 · 同步引擎骨架（先不联网，1.5 天，**下一步做这个**）
 
-**目标**：先写"什么时候该同步"的调度逻辑，用**内存里的假云端**测通。这样调 bug 时不用怀疑网络。
+**目标**：先把「什么时候该同步、失败了怎么办」这套调度逻辑写出来，用**内存里的假云端**测通。这样调 bug 时不用怀疑网络。
 
-| 编号 | 任务 | 说明 |
+**S2 真正交付的不是「能同步」，而是「同步的调度骨架」**：`fakeCloud` 与 S3 的 `cloudbaseAdapter` 实现**同一套接口**，所以 S3 接真云端时 `syncEngine` 一行都不用改。这是 S1「core 层只写一份」思路的延续。
+
+#### 任务分解
+
+| 编号 | 任务 | 说明 | 交付物 |
+| --- | --- | --- | --- |
+| S2-1 | 抽出 `src/api/core/idb.js` | 把 `openDB()` 与 store 原语（`readAll` / `putMany` / `clearStore` / meta 读写）从 `idbAdapter.js` 抽出 | 供 outbox 复用，**避免循环依赖**（outbox 要用 `openDB`，而 `idbAdapter` 又 import 了 outbox） |
+| S2-2 | outbox 支持注入存储后端 | 新增 `src/api/sync/outboxStore.js`，提供 `memory` / `idb` 两种后端；`outbox.js` 改为依赖注入，方法全部 async | mock 数据源用 memory，idb 数据源用 idb |
+| S2-3 | outbox 搬进 IndexedDB | S1 已建好 `outbox` objectStore（keyPath `id` + `synced` 索引），只是一直没接上；旧 localStorage 队列按「只导入一次、不删旧键」接管 | 两套存储的持久化语义归一 |
+| S2-4 | 定义云端客户端接口 | 新增 `src/api/sync/cloudClient.js`：只声明 `pull` / `push` / `serverTime` 的形状，不含实现 | S3 的适配器对照它实现 |
+| S2-5 | 写 `fakeCloud` | 内存 Map，实现上面那套接口；额外带**身份维度**、**条件 upsert**、**分页游标**、**失败注入**、**时钟偏移** | 测试与本地调试用 |
+| S2-6 | 写 `syncEngine` | 四态状态机 + 四种触发时机 + 防重入 + 指数退避；对外 `sync()` / `schedule()` / `start()` / `stop()` / `onStateChange()` | 调度逻辑本体 |
+| S2-7 | 装配与降级 | `src/api/index.js` 导出 `syncEngine`；未配置云端时装配一个 no-op 客户端，应用照常启动 | 顺带修掉 `index.js` 里仍写着 Supabase 的**过期注释**（选型早已改为腾讯云开发） |
+| S2-8 | 验收脚本 | `scripts/sync-test.mjs`（17 组用例），接入 `npm run test:data` | 见下方验收标准 |
+
+#### 状态机：四态
+
+> 原计划写的是三态（`idle / syncing / error`）。实施设计增加 **`offline`**：浏览器报告离线时根本不该发请求 —— 省电、省 CloudBase 资源点，也不该污染重试计数。
+
+| 状态 | 含义 | 怎么进来 | 怎么出去 |
+| --- | --- | --- | --- |
+| `idle` | 没有进行中的同步 | 初始状态；同步成功结束 | 任一触发源调用 `sync()` |
+| `syncing` | 正在 pull / push | `sync()` 通过防重入检查 | 成功 → `idle`；抛错 → `error` |
+| `error` | 上次同步失败，保留 `lastError` | pull / push 抛错 | 退避到期 / 手动 / `online` → `syncing` |
+| `offline` | 浏览器报告离线，不发请求 | `offline` 事件；或 `sync()` 时 `navigator.onLine === false` 且非手动 | `online` 事件 → `syncing` |
+
+**防重入是唯一的闸门。** `syncing` 期间再调 `sync()`，必须**返回同一个 in-flight Promise**，而不是并发发第二次请求。
+
+- 错误的写法：调用前判一下 `state === 'syncing'` 就 `return`。调用方拿不到结果，也没法 `await`。
+- 正确的写法：把 Promise 存起来复用。`online` 事件、写后 debounce、手动按钮可能在 200ms 内同时触发，这条是唯一的防重入保证。
+
+#### 单次 sync 做什么
+
+| 步 | 动作 | 细节 |
 | --- | --- | --- |
-| S2-1 | 新增 `src/api/sync/syncEngine.js` | 状态机：`idle / syncing / error`；对外暴露 `sync()`、`pendingCount`、`onStateChange` |
-| S2-2 | 触发时机 | ① 应用启动；② 浏览器 `online` 事件；③ 写操作后 debounce 2 秒合并；④ 用户手动触发 |
-| S2-3 | 写 `fakeCloud`（测试用） | 一个内存 Map，实现与云端同样的 `push / pull` 接口 |
-| S2-4 | 失败重试 | 复用 `outbox.bumpRetry()`，指数退避（2s → 4s → 8s…，设上限）；到上限后标记失败但**不阻塞用户操作** |
-| S2-5 | 顺手把 outbox 搬进 IndexedDB | 当前 outbox 还在 localStorage（与第一阶段一致）；S2 既然有了 idb，就该让它与业务数据同库，避免两套存储的持久化语义不一致 |
+| 0 | 防重入 / 离线检查 | 有 in-flight → 复用它；`offline` 且非手动 → 挂起，等 `online` |
+| ① | `pull({ since, cursor, limit })` | 按水位拉增量，游标循环直到 `hasMore === false` |
+| ② | 合并远端增量 | `updatedAt` 新者胜；**远端胜出时，作废对应的 outbox 条目** |
+| ③ | `push(pending)` | 按 `collection` 分组批量提交；**条件 upsert**；返回 `upserted` 与 `rejected` |
+| ④ | 处理 `rejected` | 立即补一次 pull，把云端较新版本拉回本地 |
+| ⑤ | 落水位 · 压缩队列 · 广播 | `markSynced` 后清掉已同步条目；广播 `state = idle` 与新 `pendingCount` |
 
-**验收标准**：新增 `.preview/sync-test.mjs`，至少覆盖：
+**为什么 pull 在前、push 在后**
 
-- 本地写 3 条 → `push` → 清空本地 → `pull` → 3 条完整回来；
-- 离线（假云端抛错）连续写 5 条 → 恢复后一次 `sync()` 全部补推成功；
-- 同一条重复 `push` 两次，云端不出现两条（**幂等**）；
-- 推送失败时 `retry` 递增，UI 状态回调能拿到 `error`。
+假设某笔账单本地改成 20（`updatedAt` = T1），云端已是 15（`updatedAt` = T2 > T1）：
+
+| 顺序 | 结果 |
+| --- | --- |
+| 先 push 后 pull | 用 T1 的旧版本覆盖云端 → 云端变 20 → pull 又拉回 20。**另一台设备的修改被无声抹掉** |
+| **先 pull 后 push（采用）** | pull 发现 T2 更新 → 采用云端 15 → 同时**作废本地那条 pending** → 两端收敛到 15 |
+
+**push 推的是「当前本地的文档」，不是入队时的 payload 快照。** 入队时存的 `payload` 只作为审计信息。否则一条已被远端否决的旧快照会被原样推上去，把云端的正确版本又改回去。
+
+#### 接口签名
+
+```js
+// src/api/sync/cloudClient.js —— 只有形状，没有实现
+
+// pull(collection, { since, cursor, limit })
+//   -> { docs, serverTime, hasMore, cursor }
+// push(collection, docs)     // 条件 upsert：仅当 docs[i].updatedAt >= 云端.updatedAt 才覆盖
+//   -> { upserted: string[], rejected: [{ id, cloudUpdatedAt }] }
+// serverTime()               // -> number（毫秒）
+```
+
+```js
+// src/api/sync/syncEngine.js
+export function createSyncEngine({
+  outbox,        // 待推队列（方法已 async 化）
+  store,         // { get(collection, id), applyRemote(collection, docs) }
+  cloud,         // cloudClient 接口的实现
+  debounceMs = 2000,
+  maxRetry = 5,
+  now = Date.now
+}) {
+  return {
+    sync({ reason, manual } = {}),   // Promise<{ ok, pushed, pulled, rejected, error }>
+    schedule(),                      // 写后防抖；由 outbox 变更通知唤醒
+    start(), stop(),                 // 挂 online / offline 监听、启动时同步
+    get state(), get pendingCount(), get lastSyncAt(), get lastError(),
+    onStateChange(cb)                // cb({ state, pendingCount, lastSyncAt, lastError })
+  }
+}
+```
+
+`rejected` 这个字段是**关键**。它长得不起眼，但如果被拒的条目**静默跳过**，本地会以为自己推成功了、云端还停在旧版本，两端就此分叉。这个 bug 在单设备上测不出来，要等真的两台设备才暴露。
+
+`store.applyRemote` 把「远端增量写回本地」留在适配器手里，`syncEngine` 不碰存储细节 —— 这样 S3 换云端时它一行不用改。
+
+#### 触发时机与防重入
+
+| 触发源 | 实现方式 | 说明 |
+| --- | --- | --- |
+| 应用启动 | `start()` 里调一次 | 补推上次没送出去的 |
+| 浏览器 `online` | `window.addEventListener('online', ...)` | 同时把状态从 `offline` 拉回 |
+| 写操作后 | outbox 变更 → `schedule()`，debounce 2 秒 | **不用 adapter 直接调 syncEngine**：adapter 只写 outbox，syncEngine 订阅 outbox 的变更通知。否则 adapter 会拖上「云端客户端」的依赖 |
+| 用户手动 | `sync({ manual: true })` | `manual` 为真时跳过 `offline` 检查（用户可能刚恢复网络但事件还没到） |
+
+四种触发都收敛到同一个 `sync()`，由防重入保证只发一轮请求。
+
+#### 失败重试与退避
+
+`retry` 存在 outbox 条目上（S1 已预留该字段），所以**刷新页面后重试计数不丢**。
+
+| 失败次数 | 下次延迟 | 触发方式 |
+| --- | --- | --- |
+| 1 | 2 秒 | 自动 |
+| 2 | 4 秒 | 自动 |
+| 3 | 8 秒 | 自动 |
+| 4 | 16 秒 | 自动 |
+| 5 | 32 秒 | 自动 |
+| ≥6 | 封顶 60 秒，**不再自动重试** | 只等外部触发：手动 / `online` / 下次写入 |
+
+到上限后标记失败但**绝不阻塞用户操作** —— 记账、改分类、删账单都必须照常可用，同步永远只是后台的事。
+
+#### outbox 搬进 IndexedDB
+
+S1 其实**已经把 `outbox` objectStore 建好了**（keyPath `id` + `synced` 索引），只是一直没接上。
+
+| 关注点 | 做法 |
+| --- | --- |
+| 一次性导入 | 首次打开读 `localStorage['ledger.outbox.v1']`，非空则批量写进库，写 meta 键 `outboxImported` |
+| 旧键处置 | **不删**，与 S1 接管 `ledger.db.v1` 同策略，留作回退 |
+| 幂等 | 靠 meta 键，不靠「旧键是否为空」 |
+| 方法签名 | 全部改 async；`idbAdapter.enqueue()` 及其 6 处调用点加 `await` |
+| 入队失败 | 先 `await` 落业务数据、再 `await` 入队；入队失败只记日志**不抛** —— 绝不能因为队列写不进去而让用户的账白记 |
+| mock 数据源 | 注入 memory 后端，不建库（保持「纯内存」语义） |
+
+#### 多用户隔离与多终端收敛
+
+这三个维度性质完全不同，必须分开谈：
+
+| 维度 | S2 能测吗 | 关键机制 |
+| --- | --- | --- |
+| 多用户之间的数据隔离 | 部分能测 | fakeCloud 必须带「身份」维度 |
+| 同用户多终端的数据同步 | 能完整测 | 两个 syncEngine 实例共用一个假云端 |
+| 多终端之间的**互斥** | **做不到，也不该做** | 没有中心锁，只能保证收敛 |
+
+「互斥」在单台设备内靠防重入就能做到；但**跨终端的互斥在无中心锁的架构下不存在** —— A 设备改的时候 B 设备不知道，等它们都推上来时冲突早就发生了。所以目标不是「避免并发写」，而是「**并发写之后两端一定收敛到同一个状态**」。
+
+**fakeCloud 要带身份维度**，否则两个用户的数据躺在同一个 Map 里，测出来天然全通、毫无意义：
+
+```js
+const cloud = createFakeCloud()
+cloud.as('user_b')        // 同一后端，切换身份（模拟换账号 / 换设备登录）
+// push 时自动注入 _openid，pull 时只返回 _openid 匹配的文档
+```
+
+**能测的**：A 写 3 条 → 切到 B → `pull` 得 0 条；B 写 2 条 → 切回 A → A 仍是自己的 3 条。
+
+**测不了的，得说清楚**：真实隔离靠服务端安全规则（`doc._openid == auth.openid`），fakeCloud 里的隔离只是「客户端自觉」。S2 能保证的是**我们的代码没有把身份维度抹掉**，不能保证云端真的拒绝越权读 —— 那要靠 S3 验收标准第 3 条（换匿名身份访问看不到上一个身份的数据）。
+
+**真正的风险不在云端，在本地。** CloudBase 有安全规则兜底，本地 IndexedDB 没有。如果 A 退出登录、B 登录，两人共用同一个 `ledger` 库：B 会看到 A 的账，更糟的是 **A 残留在 outbox 里的待推条目会被推到 B 的账号下** —— 这是数据串号，比越权读更严重。契约里 `Ledger.ownerId` 已预留字段，但 adapter 的查询没有按它过滤。
+
+| 方案 | 做法 | 代价 |
+| --- | --- | --- |
+| **库名分区（建议）** | `ledger_<openid>`，一人一库 | 最干净；匿名转正时要搬一次数据 |
+| 单库 + 过滤 | 一个库，所有查询带 `ownerId` | 改动面大，每处查询都得记得带，容易漏 |
+| 切账号清库 | 退出时清空本地、重新 pull | 最简单；离线数据会丢 |
+
+**S2 只做预留**：outbox 的库名从外部传入（`openDB({ dbName })` 在 S1 就支持传库名了），**实际启用放到 S5**，因为 S2 还没有登录。
+
+#### 已知但不在 S2 修的问题
+
+「新者胜」依赖客户端时钟。两台设备时钟不一致时，慢的那台永远输。正确的修法是 S4-2 用服务端时间裁决。S2 的 `fakeCloud` 会提供 `_skew(ms)` 模拟时钟偏移，**但只记录行为、不做断言** —— 把问题暴露出来留给 S4，避免 S2 变成一个"假装解决了时钟问题"的骨架。
+
+#### 验收标准
+
+新增 `scripts/sync-test.mjs`（接入 `npm run test:data`），17 组用例：
+
+| # | 用例 | 断言 |
+| --- | --- | --- |
+| 1 | 基本往返 | 本地写 3 条 → sync → 清空本地 → sync → 3 条逐字段回来 |
+| 2 | 幂等 | 同批 push 两次，云端文档数不变（`_id` = 本地 id） |
+| 3 | 离线补推 | 连抛 5 次错期间写 5 条 → 恢复 → 一次 sync 全推完，`pending = 0` |
+| 4 | 重试与回调 | 失败时 `retry` 0→1→2 递增，`onStateChange` 收到 `error` + `lastError` |
+| 5 | 防重入 | 并发 5 次 `sync()` → 云端只被调用 1 轮，5 个 Promise 结果相同 |
+| 6 | 写后防抖 | debounce 50ms 下连写 3 次 → 只触发 1 次 sync |
+| 7 | 新者胜 | 云端同 `_id` 且 `updatedAt` 更大 → 本地取云端版本 |
+| 8 | 否决本地版本 | 远端胜出后，对应的 outbox 条目被作废，不会推回云端覆盖（**最易漏**） |
+| 9 | 软删除 | 本地 `deleted=1` → push → 另一实例 pull → 保持删除态、不复活 |
+| 10 | 水位增量 | 第二次 pull 只拿到 `updatedAt > since` 的文档 |
+| 11 | 队列搬迁 | 预置旧 localStorage 键 → 首次打开 → 条目进了 IndexedDB 且旧键仍在 |
+| 12 | 队列压缩 | 全部同步后 `pendingCount() === 0` |
+| 13 | 双实例收敛 | 同一 fakeCloud 挂两个 syncEngine（模拟两台设备），各改同一条 → 交替 sync → 两边本地状态深度相等 |
+| 14 | 陈旧推送被拒 | 先推 T2 再推 T1 → 云端保留 T2，T1 出现在 `rejected` 里 |
+| 15 | 拒绝后回拉 | 收到 `rejected` 自动触发一次 pull → A 从 T1 变 T2，该 outbox 条目作废 |
+| 16 | 身份隔离 | 切身份后 `pull` 得 0；A 的 pending 不会被推到 B 名下 |
+| 17 | 分页拉取 | 云端 250 条、`limit=100` → 循环拉到 250 条，不重不漏 |
+
+用例 **5、8、13、15** 是真正会咬人的地方：防重入、否决回拉、双实例收敛、拒绝后回拉 —— 这四个都只能在多实例或并发场景下暴露，单设备手动点几下永远测不出来。
+
+S2 完成后「我的」页可以顺带接上 `onStateChange` 显示一个只读的同步状态行（正式的可视化归 S6-1，S2 不做强制要求）。
 
 ---
 
@@ -212,10 +394,10 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 | --- | --- | --- |
 | S3-1 | 在控制台建好 `bills` / `categories` 集合 | 结构见第 5 节 |
 | S3-2 | 配好**安全规则** | 见 5.3。**这一步没做，你的数据对所有人可见** |
-| S3-3 | 新增 `src/api/adapters/cloudbaseAdapter.js` | 实现 `initialize / push / pull / syncAll`；策略沿用 `leancloudAdapter.js` 注释里那套（本地为主、outbox 推送、水位拉取、新者胜） |
+| S3-3 | 新增 `src/api/adapters/cloudbaseAdapter.js` | 实现 `cloudClient.js` 那套接口（`pull` / `push` / `serverTime`），套进 S2 的 `syncEngine`；策略沿用 `leancloudAdapter.js` 注释里那套（本地为主、outbox 推送、水位拉取、新者胜） |
 | S3-4 | 匿名登录起手 | `cloudbase.init({ env })` → `app.auth({ persistence: 'local' })` → `signInAnonymously()`；登录态存本地 |
-| S3-5 | `push` 做幂等 | 用**云端 `_id` = 本地 id**（见 5.1）做 upsert 语义 |
-| S3-6 | `pull` 用水位 | 查 `updatedAt > 上次同步时间`，按 `updatedAt` 升序，注意分页拉取 |
+| S3-5 | `push` 做幂等 + 条件 upsert | 用**云端 `_id` = 本地 id**（见 5.1）；仅当本地 `updatedAt` 不旧于云端才覆盖，否则回 `rejected` |
+| S3-6 | `pull` 用水位 + 游标 | 查 `updatedAt > 上次同步时间`，按 `updatedAt` 升序，分页拉取直到 `hasMore === false` |
 | S3-7 | 首次绑定策略 | 让用户选：「本地数据推到云端」还是「云端数据拉到本地」。别自己猜 |
 
 **验收标准**
@@ -231,12 +413,12 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 | 编号 | 任务 | 说明 |
 | --- | --- | --- |
 | S4-1 | 软删除的云端表示 | 删除 = 把 `deleted` 置 1 并同步，**绝不真删**。否则另一台设备会把已删的记录又拉回来 |
-| S4-2 | 时间裁决用服务端时间 | 客户端时钟可能不准。可用云开发的 `serverDate()`，或在云函数里打时间戳 |
-| S4-3 | 拉取分页 | 单次查询有行数上限，超过要循环拉取直到拿完 |
+| S4-2 | 时间裁决用服务端时间 | 客户端时钟可能不准（S2 已用 `_skew` 把这个风险暴露出来）。可用云开发的 `serverDate()`，或在云函数里打时间戳 |
+| S4-3 | 拉取分页 | 单次查询有行数上限，超过要循环拉取直到拿完（S2 已把游标留在接口里） |
 | S4-4 | 网络错误分类 | 区分"没网"（静默重试）/"登录态失效"（重新匿名登录）/"服务端错误"（提示稍后重试），不要让三种都跳同一个红字 |
 | S4-5 | 边界用例脚本 | 剧本：同一账号，A 设备改金额、B 设备改备注、两边同时同步 |
 
-**验收标准**：`.preview/conflict-test.mjs` 构造"两边都改同一条"，断言最终取 `updatedAt` 较大的那版，且两边收敛到同一状态；拔网操作 5 次 → 恢复网络 → 无报错、无重复、无丢失。
+**验收标准**：`scripts/conflict-test.mjs` 构造"两边都改同一条"，断言最终取 `updatedAt` 较大的那版，且两边收敛到同一状态；拔网操作 5 次 → 恢复网络 → 无报错、无重复、无丢失。
 
 ---
 
@@ -248,7 +430,8 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 | S5-2 | 登录态持久化 | SDK 会存 session，确认刷新页面后仍登录 |
 | S5-3 | 未登录也能用 | 保持"本地匿名记账"，登录后再把本地数据合并上去 |
 | S5-4 | 退出登录的数据处置 | **先定产品规则再写代码**：保留本地 / 清空 / 标记待确认？（建议保留并提示） |
-| S5-5 | 「我的」页改造 | 显示：当前账号 / 上次同步时间 / 待同步条数 / 手动同步 / 退出登录 |
+| S5-5 | **本地库按用户分区** | S2 已把库名做成可注入；这里启用「库名分区」（见 S2 小节），避免两个账号共用一个本地库导致数据串号 |
+| S5-6 | 「我的」页改造 | 显示：当前账号 / 上次同步时间 / 待同步条数 / 手动同步 / 退出登录 |
 
 **验收标准**：两个浏览器（或电脑 + 手机）登录同一账号，A 记一笔 → 5 秒内 B 能刷到。
 
@@ -258,7 +441,7 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 
 | 编号 | 任务 | 说明 |
 | --- | --- | --- |
-| S6-1 | 同步状态可视化 | 「我的」页一眼看出：已同步 / 同步中 / 失败（带重试按钮） |
+| S6-1 | 同步状态可视化 | 「我的」页一眼看出：已同步 / 同步中 / 失败（带重试按钮）；直接消费 S2 的 `onStateChange` |
 | S6-2 | 数据导出 | 导出全部账单为 JSON（或 CSV）。**这不是可选项**——LeanCloud 的教训就是不能把数据只交给一家厂商 |
 | S6-3 | 真机测试 | 手机浏览器实测：布局、手势、同步 |
 | S6-4 | 部署 | 前端静态托管可以直接放在同一个云开发环境里，省掉跨域配置 |
@@ -346,14 +529,14 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 | 里程碑 | 内容 | 完成标志 | 状态 |
 | --- | --- | --- | --- |
 | **M2.1** | 本地 IndexedDB 上线 | S1 验收全过，`DATA_SOURCE = 'idb'`，用户无感 | ✅ **已完成** |
-| **M2.2** | 同步引擎跑通（假云端） | S2 用例全绿，调度逻辑稳定 | 待开始 |
+| **M2.2** | 同步引擎跑通（假云端） | S2 用例全绿（17 组），调度逻辑稳定 | 设计已定稿，待实施 |
 | **M2.3** | 真云端单设备同步 | S3 验收全过，换浏览器能恢复数据 | 待开始 |
 | **M2.4** | 多设备 + 登录 | S4 + S5 验收全过 | 待开始 |
 | **M2.5** | 可上线 | S6 全过，含数据导出与部署 | 目标 **v1.0.0** |
 
 ---
 
-## 7. 新手最容易踩的 10 个坑
+## 7. 新手最容易踩的 11 个坑
 
 1. **没配安全规则就上线**。云开发集合默认权限可能比你想象的宽松，**建完集合第一件事就是配规则**。
 2. **把管理端凭据写进前端**。前端只用环境 ID + 登录态；能绕过规则管理数据的凭据只能留在服务端。
@@ -364,7 +547,8 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 7. **用客户端时间判断谁更新**。手机时钟可能差几分钟，会导致新数据被旧数据覆盖。
 8. **真删除**。你这边删了，另一台设备下一次拉取会把它当成"云端新增"又拉回来。必须软删除。
 9. **同步写成"全量覆盖"而不是"增量合并"**。全量覆盖会在多设备下互相冲掉数据。
-10. **忘了续期免费环境**。（CloudBase 特有）单次 6 个月且不支持自动续费，过期会停用。
+10. **把推送失败当成推送成功**。云端因为"你这份更旧"而拒绝时，必须能收到回执并回拉；否则本地以为推成功了，两端悄悄分叉。
+11. **忘了续期免费环境**。（CloudBase 特有）单次 6 个月且不支持自动续费，过期会停用。
 
 ---
 
@@ -373,7 +557,7 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 按需查，不要一开始就读完：
 
 1. **做 S1 前**：MDN 的 IndexedDB 概念页（只看 key / index / transaction 三个概念）。**已完成**。
-2. **做 S2 前**：搞懂 outbox 模式（关键词 `transactional outbox pattern`），看 `src/api/sync/outbox.js` 与 `.preview/contract-test.mjs` 的结构。
+2. **做 S2 前**：搞懂 outbox 模式（关键词 `transactional outbox pattern`），看 `src/api/sync/outbox.js` 与 `scripts/contract-test.mjs` 的结构；再分清「互斥」与「收敛」——无中心锁时前者做不到，后者才是目标。
 3. **做 S3 前**：腾讯云开发官方文档的 **Web 端快速开始**、**数据库增删改查**、**安全规则** 三节。
 4. **做 S4 前**：搜 `last write wins` 与 `CRDT` 的区别，知道本项目选了最简单的 LWW 及其代价。
 5. **文档型数据库**：只需要懂"集合 / 文档 / 索引 / where / orderBy / limit"就够，遇到再学。
@@ -390,6 +574,16 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 - [x] 写入确认落在 IndexedDB（localStorage 旧库不被写）
 - [x] 刷新后数据保留；重置演示数据正常
 
+### 2A+ 同步引擎骨架（S2）
+- [ ] `syncEngine` 四态状态机齐全，`onStateChange` 能拿到完整状态
+- [ ] 四种触发时机都收敛到同一次同步，防重入通过（并发 5 次只发 1 轮请求）
+- [ ] 失败退避 2s → 4s → 8s → 16s → 32s → 封顶，且**不阻塞用户操作**
+- [ ] outbox 已从 localStorage 搬进 IndexedDB，旧队列一次性导入且旧键保留
+- [ ] 多终端收敛：两个实例交替同步后状态深度相等
+- [ ] 陈旧推送被拒后能自动回拉，两端不分叉
+- [ ] 身份隔离：切换身份后拉不到别人的文档
+- [ ] `scripts/sync-test.mjs` 17 组用例全绿，且无既有断言回归
+
 ### 2B 云同步
 - [ ] `.env.local` 未被 git 跟踪（`git check-ignore` 验证过）
 - [ ] 免费环境已创建，且**设了续期提醒**
@@ -402,6 +596,7 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 
 ### 2C 账号与上线
 - [ ] 匿名转正式账号流程可用，数据不丢
+- [ ] 本地库已按账号分区，切换账号不串号
 - [ ] 两个浏览器同账号，5 秒内互见新账单
 - [ ] 未登录仍可记账，登录后数据正确合并
 - [ ] 「我的」页能看到：账号、上次同步时间、待同步条数、手动同步
