@@ -1,7 +1,24 @@
 import { COLLECTIONS, NAME_MAX_LENGTH, RepositoryError, SCHEMA_VERSION } from '../contract.js'
-import { outbox } from '../sync/outbox.js'
+import { createOutbox } from '../sync/outbox.js'
+import { createIdbOutboxStore } from '../sync/outboxStore.js'
 import { buildSeed } from '../mock/seed.js'
 import { migrateSeedData } from '../core/migrate.js'
+import { partitionRemote } from '../core/merge.js'
+import {
+  DB_NAME,
+  DB_VERSION,
+  LEGACY_DB_KEY,
+  META_KEYS,
+  STORES,
+  clearStore as idbClearStore,
+  createIdbKeyValue,
+  openDB,
+  putMany as idbPutMany,
+  readAll as idbReadAll,
+  readMeta as idbReadMeta,
+  readOne as idbReadOne,
+  writeMeta as idbWriteMeta
+} from '../core/idb.js'
 import { now, uid } from '../../utils/id.js'
 import { todayKey } from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
@@ -27,167 +44,60 @@ import {
  *
  * 设计取舍（为什么这么写）：
  *
- *  1) 业务规则不在这里重写一遍。过滤、排序、聚合、派生字段、种子迁移全部来自
- *     core/query.js 与 core/migrate.js，与 mockAdapter 共用同一份实现，
- *     从构造上杜绝「两个适配器行为漂移」。
+ *  1) 业务规则不在这里重写一遍。过滤、排序、聚合、派生字段、种子迁移、远端合并
+ *     全部来自 core/ 目录（query.js / migrate.js / merge.js），与 mockAdapter
+ *     共用同一份实现，从构造上杜绝「两个适配器行为漂移」。
  *
  *  2) 读写分两次事务：先读（readAll）→ 纯 JS 计算 → 再写（putMany）。
  *     IndexedDB 的事务在跨 task 的 await 之后会失效，把「读-改-写」塞进一个
  *     事务里很容易踩 TransactionInactiveError；页面内操作是单线程串行的，
  *     不存在并发写入，因此这里用「读一次、写一次」换取可靠与可读。
- *     （同源多标签页同时写同一条属于未覆盖场景，第二阶段接云端时由
- *       updatedAt 新者胜兜底。）
+ *     （同源多标签页同时写同一条属于未覆盖场景，接云端后由 updatedAt 新者胜兜底。）
  *
  *  3) 查询用 readAll 把集合读进内存再算。个人记账的数据量（千条级）下
- *     getAll 是毫秒级；outbox 队列仍在 localStorage（与 mockAdapter 一致），
- *     第二阶段接云端时再一起搬进 IndexedDB 的 outbox 表。
+ *     getAll 是毫秒级。
  *
- *  4) 首次使用会**接管第一阶段留在 localStorage 里的数据**（见 LEGACY_KEY），
+ *  4) **同步队列与业务数据同库**。S1 时 outbox 还在 localStorage，S2 把它
+ *     搬进了 IndexedDB 的 outbox 表 —— 同一个库、同一套事务语义、同一份备份，
+ *     不用再操心「两套存储各自什么时候丢」。
+ *
+ *  5) 首次使用会**接管第一阶段留在 localStorage 里的数据**（见 LEGACY_DB_KEY），
  *     导入后不删除旧库，留作回退；导入只做一次，靠 meta 标记判断。
+ *
+ *  6) 真正的推送/拉取不在这里，而在 sync/syncEngine.js。适配器只做两件事：
+ *     写的时候把改动 `enqueue` 进队列（**先落数据、再入队**），
+ *     以及给引擎提供一个「读一条 / 写回一批」的本地读写口（`syncStore`）。
+ *     同步是跨集合、跨存储的行为，不属于某个适配器。
  */
 
-const DB_NAME = 'ledger'
-const DB_VERSION = 2
-const LEGACY_KEY = 'ledger.db.v1'
+export { STORES, openDB }
 
-export const STORES = {
-  LEDGER: 'ledger',
-  CATEGORY: 'category',
-  BILL: 'bill',
-  OUTBOX: 'outbox',
-  META: 'meta'
-}
-
-/** meta 表的键 */
-const META_SCHEMA = 'schemaVersion'
-const META_SEED = 'seedMeta'
-const META_IMPORTED = 'importedFromLocalStorage'
-
-/**
- * 写入前做一次 JSON 深拷贝。
- * 目的：IndexedDB 用结构化克隆存数据，而 Vue 的响应式对象是 Proxy，
- * 直接 put 会抛 DataCloneError（新手最常踩的坑之一）。本适配器存储的都是
- * JSON 安全的原始类型，深拷贝一次即可彻底免疫，代价可忽略。
- */
-const toPlain = (doc) => JSON.parse(JSON.stringify(doc))
-
-/** 打开数据库（含建库与索引；已存在则直接复用） */
-export function openDB({ dbName = DB_NAME, version = DB_VERSION } = {}) {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      reject(new Error('[ledger] 当前环境不支持 IndexedDB'))
-      return
-    }
-    const req = indexedDB.open(dbName, version)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORES.LEDGER)) {
-        db.createObjectStore(STORES.LEDGER, { keyPath: 'id' })
-      }
-      if (!db.objectStoreNames.contains(STORES.CATEGORY)) {
-        const store = db.createObjectStore(STORES.CATEGORY, { keyPath: 'id' })
-        store.createIndex('ledgerId', 'ledgerId')
-        store.createIndex('parentId', 'parentId')
-        store.createIndex('type', 'type')
-        store.createIndex('updatedAt', 'updatedAt')
-      }
-      if (!db.objectStoreNames.contains(STORES.BILL)) {
-        const store = db.createObjectStore(STORES.BILL, { keyPath: 'id' })
-        store.createIndex('ledgerId', 'ledgerId')
-        store.createIndex('date', 'date')
-        store.createIndex('month', 'month')
-        store.createIndex('categoryId', 'categoryId')
-        store.createIndex('updatedAt', 'updatedAt')
-      }
-      if (!db.objectStoreNames.contains(STORES.OUTBOX)) {
-        const store = db.createObjectStore(STORES.OUTBOX, { keyPath: 'id' })
-        store.createIndex('synced', 'synced')
-      }
-      if (!db.objectStoreNames.contains(STORES.META)) {
-        db.createObjectStore(STORES.META, { keyPath: 'key' })
-      }
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-    req.onblocked = () =>
-      reject(new Error('[ledger] 数据库升级被其它标签页占用，请关闭其它页签后重试'))
-  })
-}
+const LEGACY_KEY = LEGACY_DB_KEY
 
 /**
  * @returns 与 mockAdapter 同契约的适配器实例
  */
 export function createIdbAdapter(options = {}) {
-  const { dbName = DB_NAME, version = DB_VERSION } = options
+  const { dbName = DB_NAME, version = DB_VERSION, seed = true } = options
 
   let dbPromise = null
   let initPromise = null
 
   const getDB = () => (dbPromise ||= openDB({ dbName, version }))
 
-  /* ---------------- 底层读写 ---------------- */
+  /** 队列与业务数据同库；换账号时只需把 dbName 换掉即可实现分区（见 S5） */
+  const outbox = createOutbox(createIdbOutboxStore({ dbName, version }))
+  /** 键值仓，syncEngine 用它存水位线 */
+  const kv = createIdbKeyValue(getDB())
 
-  function readAll(storeName) {
-    return getDB().then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const req = db.transaction(storeName, 'readonly').objectStore(storeName).getAll()
-          req.onsuccess = () => resolve(req.result || [])
-          req.onerror = () => reject(req.error)
-        })
-    )
-  }
+  /* ---------------- 底层读写（薄包装，绑定本实例的 db） ---------------- */
 
-  function readOne(storeName, key) {
-    return getDB().then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const req = db.transaction(storeName, 'readonly').objectStore(storeName).get(key)
-          req.onsuccess = () => resolve(req.result || null)
-          req.onerror = () => reject(req.error)
-        })
-    )
-  }
-
-  /** 批量 upsert（一个事务内写完，要么都成功要么都不写） */
-  function putMany(storeName, docs) {
-    if (!docs || !docs.length) return Promise.resolve(0)
-    return getDB().then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readwrite')
-          const store = tx.objectStore(storeName)
-          docs.forEach((doc) => store.put(toPlain(doc)))
-          tx.oncomplete = () => resolve(docs.length)
-          tx.onerror = () => reject(tx.error)
-          tx.onabort = () => reject(tx.error || new Error('[ledger] 写入事务被中止'))
-        })
-    )
-  }
-
-  function clearStore(storeName) {
-    return getDB().then(
-      (db) =>
-        new Promise((resolve, reject) => {
-          const tx = db.transaction(storeName, 'readwrite')
-          tx.objectStore(storeName).clear()
-          tx.oncomplete = () => resolve(true)
-          tx.onerror = () => reject(tx.error)
-        })
-    )
-  }
-
-  async function readMeta() {
-    const rows = await readAll(STORES.META)
-    return Object.fromEntries(rows.map((r) => [r.key, r.value]))
-  }
-
-  function writeMeta(patch) {
-    return putMany(
-      STORES.META,
-      Object.entries(patch).map(([key, value]) => ({ key, value }))
-    )
-  }
+  const readAll = (storeName) => getDB().then((db) => idbReadAll(db, storeName))
+  const readOne = (storeName, key) => getDB().then((db) => idbReadOne(db, storeName, key))
+  const putMany = (storeName, docs) => getDB().then((db) => idbPutMany(db, storeName, docs))
+  const clearStore = (storeName) => getDB().then((db) => idbClearStore(db, storeName))
+  const readMeta = () => getDB().then((db) => idbReadMeta(db))
+  const writeMeta = (patch) => getDB().then((db) => idbWriteMeta(db, patch))
 
   /* ---------------- 初始化：接管旧数据 / 播种 / 迁移 ---------------- */
 
@@ -214,12 +124,12 @@ export function createIdbAdapter(options = {}) {
   /** 幂等的演示数据迁移（规则见 core/migrate.js），只写回有变化的部分 */
   async function runSeedMigration() {
     const meta = await readMeta()
-    const seedMeta = meta[META_SEED] || {}
+    const seedMeta = meta[META_KEYS.SEED] || {}
     const bills = await readAll(STORES.BILL)
     const result = migrateSeedData(bills, seedMeta)
     if (result.changed) {
       await putMany(STORES.BILL, [...result.added, ...result.updated])
-      await writeMeta({ [META_SEED]: seedMeta })
+      await writeMeta({ [META_KEYS.SEED]: seedMeta })
     }
     return result.changed
   }
@@ -228,27 +138,33 @@ export function createIdbAdapter(options = {}) {
     await getDB()
     const meta = await readMeta()
 
-    if (meta[META_SCHEMA] !== SCHEMA_VERSION) {
+    if (meta[META_KEYS.SCHEMA] !== SCHEMA_VERSION) {
       // 已经接管过一次就不再接管：否则用户点过「重置演示数据」后，
       // 旧库又会被重新导入一遍，把重置结果覆盖掉
-      const legacy = meta[META_IMPORTED] ? null : readLegacy()
+      const legacy = meta[META_KEYS.IMPORTED] ? null : readLegacy()
 
       if (legacy) {
         await putMany(STORES.LEDGER, legacy.ledgers)
         await putMany(STORES.CATEGORY, legacy.categories)
         await putMany(STORES.BILL, legacy.bills)
-        await writeMeta({ [META_SEED]: legacy.meta, [META_IMPORTED]: now() })
-      } else {
-        const seed = buildSeed()
-        await putMany(STORES.LEDGER, seed.ledgers)
-        await putMany(STORES.CATEGORY, seed.categories)
-        await putMany(STORES.BILL, seed.bills)
-        await writeMeta({ [META_SEED]: seed.meta || {} })
+        await writeMeta({ [META_KEYS.SEED]: legacy.meta, [META_KEYS.IMPORTED]: now() })
+      } else if (seed) {
+        const seedData = buildSeed()
+        await putMany(STORES.LEDGER, seedData.ledgers)
+        await putMany(STORES.CATEGORY, seedData.categories)
+        await putMany(STORES.BILL, seedData.bills)
+        await writeMeta({ [META_KEYS.SEED]: seedData.meta || {} })
       }
-      await writeMeta({ [META_SCHEMA]: SCHEMA_VERSION })
+      await writeMeta({ [META_KEYS.SCHEMA]: SCHEMA_VERSION })
     }
 
-    await runSeedMigration()
+    // 队列搬迁（旧 localStorage → IndexedDB）在这里顺带做完，
+    // 幂等标记由 outboxStore 负责
+    await outbox.store.prepare?.()
+
+    // 演示数据迁移：seed=false（测试用的空库）时必须跳过，
+    // 否则 migrateSeedData 会把演示账单当成「缺失的补充数据」补进来
+    if (seed) await runSeedMigration()
     return true
   }
 
@@ -258,15 +174,24 @@ export function createIdbAdapter(options = {}) {
     return initPromise
   }
 
-  function enqueue(collection, op, docId, payload) {
-    outbox.enqueue({
-      id: uid('ob'),
-      collection,
-      op,
-      docId,
-      payload,
-      ts: now()
-    })
+  /**
+   * 入队。
+   * 刻意 try/catch 掉：**绝不能因为队列写不进去而让用户的账白记** ——
+   * 数据已经落库了，同步晚一轮是小事，丢一笔账是大事。
+   */
+  async function enqueue(collection, op, docId, payload) {
+    try {
+      await outbox.enqueue({
+        id: uid('ob'),
+        collection,
+        op,
+        docId,
+        payload,
+        ts: now()
+      })
+    } catch (e) {
+      console.error('[ledger] 同步队列写入失败，该条改动本轮不会上云', e)
+    }
   }
 
   /* ---------------- 账本 ---------------- */
@@ -289,7 +214,7 @@ export function createIdbAdapter(options = {}) {
       if (!item) throw new RepositoryError('NOT_FOUND', '账本不存在')
       const next = { ...item, ...patch, updatedAt: now() }
       await putMany(STORES.LEDGER, [next])
-      enqueue(COLLECTIONS.LEDGER, 'update', id, { ...next })
+      await enqueue(COLLECTIONS.LEDGER, 'update', id, { ...next })
       return { ...next }
     }
   }
@@ -359,7 +284,7 @@ export function createIdbAdapter(options = {}) {
         deleted: 0
       }
       await putMany(STORES.CATEGORY, [doc])
-      enqueue(COLLECTIONS.CATEGORY, 'create', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.CATEGORY, 'create', doc.id, { ...doc })
       return { ...doc }
     },
 
@@ -386,7 +311,7 @@ export function createIdbAdapter(options = {}) {
 
       const next = { ...doc, ...patch, name, updatedAt: now() }
       await putMany(STORES.CATEGORY, [next])
-      enqueue(COLLECTIONS.CATEGORY, 'update', next.id, { ...next })
+      await enqueue(COLLECTIONS.CATEGORY, 'update', next.id, { ...next })
       return { ...next }
     },
 
@@ -399,18 +324,19 @@ export function createIdbAdapter(options = {}) {
 
       const ts = now()
       const touched = [{ ...doc, deleted: 1, updatedAt: ts }]
-      enqueue(COLLECTIONS.CATEGORY, 'delete', doc.id, { ...touched[0] })
 
       if (cascade && !doc.parentId) {
         categories
           .filter((c) => c.parentId === id && alive(c))
           .forEach((child) => {
-            const next = { ...child, deleted: 1, updatedAt: ts }
-            touched.push(next)
-            enqueue(COLLECTIONS.CATEGORY, 'delete', child.id, { ...next })
+            touched.push({ ...child, deleted: 1, updatedAt: ts })
           })
       }
+
       await putMany(STORES.CATEGORY, touched)
+      await Promise.all(
+        touched.map((item) => enqueue(COLLECTIONS.CATEGORY, 'delete', item.id, { ...item }))
+      )
       return { id }
     },
 
@@ -494,7 +420,7 @@ export function createIdbAdapter(options = {}) {
         version: 1
       }
       await putMany(STORES.BILL, [doc])
-      enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
       return decorateBill(doc, createCategoryLookup(categories))
     },
 
@@ -531,7 +457,7 @@ export function createIdbAdapter(options = {}) {
         version: (doc.version || 1) + 1
       }
       await putMany(STORES.BILL, [merged])
-      enqueue(COLLECTIONS.BILL, 'update', merged.id, { ...merged })
+      await enqueue(COLLECTIONS.BILL, 'update', merged.id, { ...merged })
       return decorateBill(merged, createCategoryLookup(categories))
     },
 
@@ -541,7 +467,7 @@ export function createIdbAdapter(options = {}) {
       if (!doc || !alive(doc)) throw new RepositoryError('NOT_FOUND', '账单不存在')
       const next = { ...doc, deleted: 1, updatedAt: now() }
       await putMany(STORES.BILL, [next])
-      enqueue(COLLECTIONS.BILL, 'delete', next.id, { ...next })
+      await enqueue(COLLECTIONS.BILL, 'delete', next.id, { ...next })
       return { id }
     },
 
@@ -575,20 +501,51 @@ export function createIdbAdapter(options = {}) {
     }
   }
 
-  /* ---------------- 同步（第二阶段接云端后实现真实推送/拉取） ---------------- */
+  /* ---------------- 同步 ---------------- */
 
+  /**
+   * 队列状态查询。真正的推送/拉取在 sync/syncEngine.js ——
+   * 适配器只负责「写的时候把改动放进队列」。
+   */
   const syncApi = {
     async pendingCount() {
       return outbox.pendingCount()
     },
-    async push() {
-      return { pushed: 0, pending: outbox.pendingCount() }
+    /** 仅调试用 */
+    async clearOutbox() {
+      await outbox.clear()
+      return true
+    }
+  }
+
+  /** 集合名 → objectStore 名 */
+  const STORE_OF = {
+    [COLLECTIONS.LEDGER]: STORES.LEDGER,
+    [COLLECTIONS.CATEGORY]: STORES.CATEGORY,
+    [COLLECTIONS.BILL]: STORES.BILL
+  }
+
+  /**
+   * 给 syncEngine 用的本地读写口（不挂在契约上，也不属于视图层的依赖）。
+   * 引擎只知道「读一条文档」「把远端增量写回本地」，不关心底层是 IndexedDB。
+   */
+  const syncStore = {
+    async get(collection, id) {
+      await ready()
+      const name = STORE_OF[collection]
+      if (!name) return null
+      return readOne(name, id)
     },
-    async pull() {
-      return { updated: 0 }
-    },
-    subscribe() {
-      return () => {}
+
+    async applyRemote(collection, docs) {
+      await ready()
+      const name = STORE_OF[collection]
+      if (!name || !docs || !docs.length) return { applied: 0, kept: 0 }
+      const locals = await readAll(name)
+      // 新者胜：远端更新才覆盖，本地更新的保留（它还在 outbox 里等下一轮推送）
+      const { take, keep } = partitionRemote(locals, docs)
+      if (take.length) await putMany(name, take)
+      return { applied: take.length, kept: keep.length }
     }
   }
 
@@ -598,6 +555,12 @@ export function createIdbAdapter(options = {}) {
     category: categoryApi,
     bill: billApi,
     sync: syncApi,
+    /** 同步队列实例（syncEngine 与调试面板用） */
+    outbox,
+    /** 给 syncEngine 的本地读写口 */
+    syncStore,
+    /** 键值仓（syncEngine 存水位线用） */
+    kv,
     /** 建库 + 接管/播种 + 迁移（切换数据源后可显式 await，确认一切就绪） */
     ready,
 
@@ -605,18 +568,21 @@ export function createIdbAdapter(options = {}) {
     async reset() {
       await getDB()
       const meta = await readMeta()
-      // 保留「已接管旧库」的标记：重置应该得到干净的演示数据，
-      // 而不是把 localStorage 里的旧数据又导入一遍
-      const keepImported = meta[META_IMPORTED]
+
+      // 保留两个「已经导入过了」的标记：重置应该得到干净的演示数据，
+      // 而不是把 localStorage 里的旧数据（旧库 / 旧队列）又导入一遍
+      const kept = {}
+      ;[META_KEYS.IMPORTED, META_KEYS.OUTBOX_IMPORTED].forEach((key) => {
+        if (meta[key]) kept[key] = meta[key]
+      })
 
       await clearStore(STORES.LEDGER)
       await clearStore(STORES.CATEGORY)
       await clearStore(STORES.BILL)
-      await clearStore(STORES.OUTBOX)
       await clearStore(STORES.META)
-      outbox.clear()
+      await outbox.clear()
 
-      if (keepImported) await writeMeta({ [META_IMPORTED]: keepImported })
+      if (Object.keys(kept).length) await writeMeta(kept)
       initPromise = null
       await ready()
       return true
@@ -631,7 +597,7 @@ export function createIdbAdapter(options = {}) {
         ledgers: await readAll(STORES.LEDGER),
         categories: await readAll(STORES.CATEGORY),
         bills: await readAll(STORES.BILL),
-        meta: meta[META_SEED] || {}
+        meta: meta[META_KEYS.SEED] || {}
       }
     }
   }

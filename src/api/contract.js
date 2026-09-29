@@ -108,7 +108,14 @@ export const NAME_MAX_LENGTH = 8
  *           | summary({ ledgerId, month, from, to })
  *           | listByMonthGroups({ ledgerId, month })
  *           | remarkHistory({ ledgerId, categoryId, limit })
- * sync:     pendingCount() | push() | pull(since) | subscribe(cb)
+ * sync:     pendingCount()
+ *
+ * 关于同步：真正的推送 / 拉取**不在适配器上**，而在 `sync/syncEngine.js`。
+ * 同步是「跨集合、跨存储」的行为，不属于某个适配器 —— 把它塞进适配器，
+ * 每接一个新的云端就要把重试、水位、防抖重写一遍。适配器的职责只有两件事：
+ *   1) 写操作时把改动 enqueue 进 outbox（**先落数据、再入队**）；
+ *   2) 提供一个本地读写口 `syncStore`（get / applyRemote）给引擎用。
+ * 云端需要提供什么，见 `sync/cloudClient.js`（S2 用 fakeCloud，S3 换成 CloudBase）。
  *
  * 关于账单的区间条件：month（'YYYY-MM'）与 from / to（'YYYY-MM-DD'，含首尾）是两套等价写法，
  * 同时传入时按 AND 处理。账单页「按月 / 按年」筛选统一用 from / to 表达区间。

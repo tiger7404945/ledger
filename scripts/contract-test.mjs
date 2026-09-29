@@ -328,7 +328,14 @@ for (const [name, adapter] of [
       'remarkHistory'
     ])
   )
-  ok(`${name}.sync 方法齐全`, has(adapter.sync, ['pendingCount', 'push', 'pull', 'subscribe']))
+  ok(`${name}.sync 方法齐全`, has(adapter.sync, ['pendingCount']))
+  // 同步引擎的接缝：适配器把队列与本地读写口暴露出去，引擎才不用认识适配器
+  ok(
+    `${name} 暴露了 outbox / syncStore（同步引擎的接缝）`,
+    !!adapter.outbox &&
+      has(adapter.outbox, ['enqueue', 'pending', 'markSynced', 'bumpRetry', 'compact', 'onChange'])
+  )
+  ok(`${name}.syncStore 方法齐全`, has(adapter.syncStore, ['get', 'applyRemote']))
   ok(`${name} 有 reset / snapshot`, has(adapter, ['reset', 'snapshot']))
   ok(`${name}.name 为 ${name === 'mock' ? 'mock' : 'idb'}`, adapter.name === (name === 'mock' ? 'mock' : 'idb'))
 }

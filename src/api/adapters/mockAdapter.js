@@ -4,9 +4,11 @@ import {
   RepositoryError,
   SCHEMA_VERSION
 } from '../contract.js'
-import { outbox } from '../sync/outbox.js'
+import { createOutbox } from '../sync/outbox.js'
+import { createMemoryOutboxStore } from '../sync/outboxStore.js'
 import { buildSeed } from '../mock/seed.js'
 import { migrateSeedData } from '../core/migrate.js'
+import { partitionRemote } from '../core/merge.js'
 import { now, uid } from '../../utils/id.js'
 import { todayKey } from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
@@ -34,6 +36,13 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } = {}) {
   let state = null
   let loadPromise = null
+
+  /**
+   * mock 数据源用**内存**队列：它本来就「纯内存 + localStorage」，
+   * 不该为了记账顺手在浏览器里建一个 IndexedDB。
+   * 换数据源时队列的语义不变，只是落点不同（见 sync/outboxStore.js）。
+   */
+  const outbox = createOutbox(createMemoryOutboxStore())
 
   /* ---------------- 内部：持久化 ---------------- */
 
@@ -82,15 +91,23 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     return state
   }
 
-  function enqueue(collection, op, docId, payload) {
-    outbox.enqueue({
-      id: uid('ob'),
-      collection,
-      op,
-      docId,
-      payload,
-      ts: now()
-    })
+  /**
+   * 入队。刻意 try/catch 掉：**绝不能因为队列写不进去而让用户的账白记** ——
+   * 数据已经落库了，同步晚一轮是小事，丢一笔账是大事。
+   */
+  async function enqueue(collection, op, docId, payload) {
+    try {
+      await outbox.enqueue({
+        id: uid('ob'),
+        collection,
+        op,
+        docId,
+        payload,
+        ts: now()
+      })
+    } catch (e) {
+      console.error('[ledger] 同步队列写入失败，该条改动本轮不会上云', e)
+    }
   }
 
   function findCategory(id) {
@@ -124,7 +141,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       if (!item) throw new RepositoryError('NOT_FOUND', '账本不存在')
       Object.assign(item, patch, { updatedAt: now() })
       persist()
-      enqueue(COLLECTIONS.LEDGER, 'update', id, { ...item })
+      await enqueue(COLLECTIONS.LEDGER, 'update', id, { ...item })
       return { ...item }
     }
   }
@@ -195,7 +212,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       }
       s.categories.push(doc)
       persist()
-      enqueue(COLLECTIONS.CATEGORY, 'create', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.CATEGORY, 'create', doc.id, { ...doc })
       return { ...doc }
     },
 
@@ -221,7 +238,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
       Object.assign(doc, patch, { name, updatedAt: now() })
       persist()
-      enqueue(COLLECTIONS.CATEGORY, 'update', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.CATEGORY, 'update', doc.id, { ...doc })
       return { ...doc }
     },
 
@@ -231,9 +248,11 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       const doc = s.categories.find((c) => c.id === id && alive(c))
       if (!doc) throw new RepositoryError('NOT_FOUND', '分类不存在')
       const ts = now()
+      const touched = []
+
       doc.deleted = 1
       doc.updatedAt = ts
-      enqueue(COLLECTIONS.CATEGORY, 'delete', doc.id, { ...doc })
+      touched.push(doc)
 
       if (cascade && !doc.parentId) {
         s.categories
@@ -241,10 +260,14 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
           .forEach((child) => {
             child.deleted = 1
             child.updatedAt = ts
-            enqueue(COLLECTIONS.CATEGORY, 'delete', child.id, { ...child })
+            touched.push(child)
           })
       }
       persist()
+      // 先落本地、再入队（与 idbAdapter 保持同一顺序）
+      await Promise.all(
+        touched.map((item) => enqueue(COLLECTIONS.CATEGORY, 'delete', item.id, { ...item }))
+      )
       return { id }
     },
 
@@ -315,7 +338,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       }
       s.bills.push(doc)
       persist()
-      enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
       return decorateBill(doc, lookupOf(s))
     },
 
@@ -343,7 +366,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
       Object.assign(doc, next, { updatedAt: now(), version: (doc.version || 1) + 1 })
       persist()
-      enqueue(COLLECTIONS.BILL, 'update', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.BILL, 'update', doc.id, { ...doc })
       return decorateBill(doc, lookupOf(s))
     },
 
@@ -354,7 +377,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       doc.deleted = 1
       doc.updatedAt = now()
       persist()
-      enqueue(COLLECTIONS.BILL, 'delete', doc.id, { ...doc })
+      await enqueue(COLLECTIONS.BILL, 'delete', doc.id, { ...doc })
       return { id }
     },
 
@@ -388,22 +411,56 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     }
   }
 
-  /* ---------------- 同步（预留） ---------------- */
+  /* ---------------- 同步 ---------------- */
 
+  /**
+   * 队列状态查询。真正的推送/拉取在 sync/syncEngine.js ——
+   * 同步是跨集合、跨存储的行为，不属于某个适配器。
+   */
   const syncApi = {
     async pendingCount() {
       return outbox.pendingCount()
     },
-    /** TODO(第二阶段)：接入云端后实现真实推送 */
-    async push() {
-      return { pushed: 0, pending: outbox.pendingCount() }
+    /** 仅调试用 */
+    async clearOutbox() {
+      await outbox.clear()
+      return true
+    }
+  }
+
+  /** 给 syncEngine 用的本地读写口（与 idbAdapter 同形） */
+  const syncStore = {
+    async get(collection, id) {
+      const s = await ready()
+      if (collection === COLLECTIONS.LEDGER) return s.ledgers.find((l) => l.id === id) || null
+      if (collection === COLLECTIONS.CATEGORY) return s.categories.find((c) => c.id === id) || null
+      if (collection === COLLECTIONS.BILL) return s.bills.find((b) => b.id === id) || null
+      return null
     },
-    /** TODO(第二阶段)：接入云端后实现增量拉取 */
-    async pull() {
-      return { updated: 0 }
-    },
-    subscribe() {
-      return () => {}
+
+    async applyRemote(collection, docs) {
+      const s = await ready()
+      const list =
+        collection === COLLECTIONS.LEDGER
+          ? s.ledgers
+          : collection === COLLECTIONS.CATEGORY
+            ? s.categories
+            : collection === COLLECTIONS.BILL
+              ? s.bills
+              : null
+      if (!list) return { applied: 0, kept: 0 }
+
+      // 新者胜：远端更新才覆盖，本地更新的保留（它还在 outbox 里等下一轮推送）
+      const { take, keep } = partitionRemote(list, docs)
+      if (!take.length) return { applied: 0, kept: keep.length }
+
+      take.forEach((doc) => {
+        const index = list.findIndex((d) => d.id === doc.id)
+        if (index >= 0) list[index] = { ...list[index], ...doc }
+        else list.push({ ...doc })
+      })
+      persist()
+      return { applied: take.length, kept: keep.length }
     }
   }
 
@@ -413,11 +470,15 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
     category: categoryApi,
     bill: billApi,
     sync: syncApi,
+    /** 同步队列实例（syncEngine 与调试面板用） */
+    outbox,
+    /** 给 syncEngine 的本地读写口 */
+    syncStore,
     /** 仅调试用：清空本地数据并重新播种 */
     async reset() {
       state = { schemaVersion: SCHEMA_VERSION, ...buildSeed() }
       persist()
-      outbox.clear()
+      await outbox.clear()
       return true
     },
     /** 仅调试用：直接读取内部状态 */

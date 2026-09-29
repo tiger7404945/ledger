@@ -5,7 +5,9 @@
 - **第一阶段（已完成，v0.2.0）**：前端 UI 与交互复刻，全部页面跑通。
 - **第二阶段（进行中）**：数据从「只在这台浏览器」变成「本地优先 + 云端同步」。
   **S1 已完成** —— 本地存储已从 localStorage 切到 IndexedDB，用户无感。
-  **S2 设计已定稿** —— 同步引擎骨架（四态状态机 + 假云端 + 多终端收敛），实施前请先看 `phase2-backend-plan.md` 的 S2 小节。
+  **S2 已完成** —— 同步引擎骨架落地：四态状态机、pull/push 收敛、拒收回拉、服务端单调水位线；
+  云端用内存假实现（`fakeCloud.js`）跑通全链路，真实云端留给 S3。
+  设计说明见 `phase2-backend-plan.md` 的 S2 小节。
 
 ## 快速开始
 
@@ -13,7 +15,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移）
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎）
 ```
 
 ## 页面清单（对应 8 张参考图）
@@ -55,10 +57,16 @@ src/
     index.js               适配器装配（改 DATA_SOURCE 即可切换数据源）
     core/query.js          查询与派生（纯函数，无 IO）—— 各适配器共用
     core/migrate.js        演示数据的幂等迁移 —— 各适配器共用
+    core/idb.js            IndexedDB 库名/版本/objectStore 原语（破解 adapter ↔ outbox 循环依赖）
+    core/merge.js          远端文档合并规则（剥元数据 / 新者胜 / 分流 take|keep）
     adapters/mockAdapter.js      内存 + localStorage（对照基准，保留）
     adapters/idbAdapter.js       当前启用：IndexedDB 离线缓存
     adapters/leancloudAdapter.js 已废弃（LeanCloud 停服），仅保留同步策略注释作参考
-    sync/outbox.js         增量同步队列（本地写入即入队）
+    sync/outbox.js         增量同步队列（本地写入即入队，变更通知订阅者）
+    sync/outboxStore.js    队列的存储后端（IndexedDB 表 / 内存）+ 旧 localStorage 队列一次性搬迁
+    sync/cloudClient.js    云端客户端接口约定（只有形状，无实现）
+    sync/fakeCloud.js      内存假云端（真云端同接口，S3 换实现即可）
+    sync/syncEngine.js     同步调度：四态状态机 + pull/push + 退避重试 + 水位线
     mock/seed.js           种子数据
   stores/                  Pinia：ledger / category / bill
   composables/             可复用交互：useRecordDraft（记账草稿）、useSwipeViews（左右滑动切屏）
@@ -84,14 +92,31 @@ src/
 ### 已切到 IndexedDB（S1）
 
 - 首次打开会**接管**第一阶段留在 localStorage 的 `ledger.db.v1`，且**不删除旧库**（可回退）；只接管一次，靠 meta 标记判断。
-- 写入落在 IndexedDB；`localStorage` 里只剩同步队列 `ledger.outbox.v1`。
+- 写入落在 IndexedDB（库 `ledger`，版本 2，5 个 objectStore：`ledger / category / bill / outbox / meta`）。
 - 切换数据源：改 `src/api/index.js` 的 `DATA_SOURCE`（`'mock' | 'idb'`）。
+
+### 同步引擎骨架（S2）
+
+代码在 `src/api/sync/`，装配在 `src/api/index.js`（`createSyncEngine` 注入 `db.outbox` / `db.syncStore` / `db.kv` / `cloud`），`src/main.js` 里 `syncEngine.start()`。
+
+- **状态机四态**：`idle / syncing / error / offline`。离线时不发请求（省流量、也不污染重试计数），联网后由 `online` 事件自动补推。
+- **单次同步的顺序固定为 pull → push → 回拉被拒 → compact**。反序会用本地旧版本盖掉云端较新版本。
+- **防重入**：`syncing` 期间再调 `sync()` 返回**同一个 in-flight Promise**（而不是直接 `return`），四种触发源都收敛到此。触发源：启动、`online`、写后 debounce（2s）、手动。
+- **水位线只认服务端接收时间**（`_serverTs`），且服务端时间**严格单调**，区间为 `(since, snapshotAt]` 左开右闭 —— 否则同一毫秒的写入会被永久漏掉。
+- **推送被拒必须回拉**：云端仅当本地不旧于云端才覆盖，被拒条目进 `rejected`，引擎据此把云端版本拉回本地并**作废对应队列条目**；否则本地以为推成功，两端静默分叉。
+- 队列已从 localStorage 迁到 IndexedDB 的 `outbox` 表；旧的 `ledger.outbox.v1` 键**保留不删**，搬迁靠 meta 的 `outboxImported` 标记幂等（旧键里可能残留 S1 留下的空数组 `[]`，属正常）。
+- 适配器**不 import syncEngine**，靠 `outbox.onChange` 通知解耦，依赖方向保持 `适配器 → outbox ← syncEngine`。
+- **已知不修**：本地「新者胜」依赖客户端时钟，跨设备乱序写入时可能判错；S4 用服务端时间裁决。
 
 ### 接腾讯云开发的步骤（第二阶段 S3）
 
 1. 按 `phase2-backend-plan.md` 第 3 节完成账号与环境准备，**配好安全规则**（不配等于数据库公开）。
-2. 新增 `src/api/adapters/cloudbaseAdapter.js`：实现 `initialize / push / pull / syncAll`，按 `outbox.pending()` 推送，以 `updatedAt` 为水位拉取，冲突「新者胜」。
-3. 视图层与 store 层无需改动 —— 所有调用都走同一套 Promise 契约。
+2. 新增 `src/api/adapters/cloudbaseAdapter.js`，实现 `cloudClient.js` 约定的三件事：
+   - `pull(collection, { since, cursor, limit, ids }) -> { docs, serverTime, hasMore, cursor }` —— 必须返回**服务端时间**作为水位，不能拿客户端 `updatedAt` 顶替；
+   - `push(collection, docs) -> { upserted, rejected }` —— 条件 upsert，被拒条目要带上 `cloudUpdatedAt`；
+   - `serverTime()`。
+3. 在 `src/api/index.js` 把 `export const cloud = null` 换成该实现的实例。**syncEngine、适配器、store、视图都不需要改**。
+4. 验收重点：S3 的安全规则是**真**权限（fakeCloud 只测「代码没抹掉身份」，测不了规则本身），要用两个真实账号交叉验证。
 
 ## 第一阶段验收结论（v0.2.0）
 
@@ -127,7 +152,7 @@ src/
 | 验收项 | 结果 |
 | --- | --- |
 | `npm run build` | 通过（100 modules，JS gzip 约 78.5 kB） |
-| 契约一致性测试（mock vs idb） | **83 条断言全绿** |
+| 契约一致性测试（mock vs idb） | **83 条断言全绿**（S2 补了 outbox / syncStore 断言，现为 87 条） |
 | 既有数据层断言 | 无回归（22 + 14 + 11） |
 | 两适配器只读结果一致 | 通过（列表派生字段 / 区间汇总 / 日历分组 / 备注候选 / 关键字搜索） |
 | 两适配器写入结果一致 | 通过（10 个错误码 / 分类 CRUD / 级联软删除 / 改分类后一级联动 / 软删除标记） |
@@ -137,12 +162,36 @@ src/
 | 浏览器运行时未捕获异常 | 无 |
 
 
+## 第二阶段 S2 验收结论（同步引擎骨架）
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm run build` | 通过（104 modules，JS 229.30 kB / gzip 81.40 kB） |
+| 数据层断言合计 | **259 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125） |
+| 服务端单调水位线 | 通过（同毫秒连续写入不漏、`(since, snapshotAt]` 左开右闭） |
+| 双设备同改一条 → 收敛 | 通过（不裂成两条，且不无限重推） |
+| 陈旧推送被拒 → 回拉 | 通过（云端版本拉回本地，被拒条目就地作废） |
+| 离线补推 / 退避重试 | 通过（延迟断言为 2 → 4 → 8 → 16 → 32 秒，超 5 次不再自动重试） |
+| 防重入 | 通过（并发调用拿到同一个 in-flight Promise） |
+| 分页拉取 | 通过（250 条 / 3 页一次同步拉完） |
+| 多用户隔离（fakeCloud 身份维度） | 通过（A 的数据不会出现在 B 名下） |
+| 未配置云端时降级 | 通过（`sync()` 返回 `{ ok:false, skipped:true, reason:'no-cloud' }`，不报错） |
+| 队列搬迁幂等 | 通过（旧 localStorage 队列只导入一次，重复 `prepare()` 不翻倍） |
+| 端到端（真实 idbAdapter + fake-indexeddb） | 通过（写入 → 入队 → 同步 → 落本地，且落地的文档不带 `_` 前缀云端元数据） |
+| 浏览器端到端 | 通过（写入一笔账后「我的」页待同步队列 0 → 1 条，重置后回 0；无未捕获异常） |
+
+> 走查过程中新建的测试账单已删除，本地库已重置回种子数据（44 条）。
+> **说明**：fakeCloud 带身份维度只能验「代码没抹掉身份」，**测不了真实安全规则** —— 那是 S3 用两个真实账号验收的事。
+
+
 ## 说明
 
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
-- 数据当前持久化在 **IndexedDB**（库名 `ledger`）；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」可恢复初始种子。
+- 数据当前持久化在 **IndexedDB**（库名 `ledger`，版本 2）；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」可恢复初始种子。
+- 云端目前是 `fakeCloud.js`（内存），所以「我的」页显示**未接入**；接 S3 时只需在 `src/api/index.js` 换掉 `cloud` 一个变量。
 - **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
-  - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，83 条断言）
+  - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
+  - `sync-test.mjs` —— 同步引擎 18 组场景（125 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。

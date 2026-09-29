@@ -1,5 +1,4 @@
 import { NotImplementedError } from '../contract.js'
-import { outbox } from '../sync/outbox.js'
 
 /**
  * LeanCloud 适配器（已废弃的选型，保留作参考）
@@ -9,11 +8,15 @@ import { outbox } from '../sync/outbox.js'
  *     2027-01-12 正式关闭全部对外服务（应用访问 / 数据读写 / API / 控制台）。
  *   第一阶段预留本骨架时尚未停服，现已无法开通，**不要照此实现**。
  *
- *   第二阶段云端同步改用 Supabase，见 phase2-backend-plan.md。
+ *   第二阶段云端同步最终定为**腾讯云开发 CloudBase**（中间一度考虑 Supabase，
+ *   因国内直连不稳而放弃），见 phase2-backend-plan.md。
  *   本文件保留的原因：其中的「本地为主、云端为副本、outbox 增量推送 +
  *   水位增量拉取 + updatedAt 新者胜」这套同步策略与厂商无关，
- *   supabaseAdapter 会沿用同一套思路，可作为设计参考。
+ *   cloudbaseAdapter 会沿用同一套思路，可作为设计参考。
  *
+ *   注意：接口形状以 `sync/cloudClient.js` 为准（pull / push / serverTime），
+ *   调度逻辑在 `sync/syncEngine.js` —— 适配器只需实现云端客户端契约，
+ *   不再自己管重试与水位。
  * ------------------------------------------------------------
  * 目标：本地 IndexedDB 为主存储，云端作为副本，
  *      支持离线写入 → 联网后按 outbox 增量推送，以及按 updatedAt 增量拉取。
@@ -67,8 +70,7 @@ export function createLeanCloudAdapter(options = {}) {
     },
     /** 增量推送本地 outbox */
     async push() {
-      const pending = outbox.pending()
-      throw new NotImplementedError(`leancloudAdapter.push（当前待推送 ${pending.length} 条）`)
+      throw new NotImplementedError('leancloudAdapter.push')
     },
     /** 增量拉取云端变更 */
     async pull() {

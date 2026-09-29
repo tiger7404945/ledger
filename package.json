@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 4173",
-    "test:data": "node scripts/contract-test.mjs && node scripts/period-test.mjs && node scripts/seed-test.mjs && node scripts/migrate-test.mjs"
+    "test:data": "node scripts/contract-test.mjs && node scripts/period-test.mjs && node scripts/seed-test.mjs && node scripts/migrate-test.mjs && node scripts/sync-test.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

@@ -3,7 +3,7 @@
 ## 项目性质
 移动端记账 Web App 的前端复刻。设计原型来自仓库根目录的设计稿：8 张微信截图（`微信图片_*.jpg`）+ 后续补充的 `填写备注.jpg`（记账页备注候选条）+ `月选择器.jpg` / `年选择器.jpg`（账期筛选弹层）。补充稿同样放在仓库根目录、纳入版本管理。
 **统计页没有参考稿**，是按需求补齐的（视觉沿用全局设计语言）。
-**第一阶段只做前端 + Mock 数据**（已完成，v0.2.0）；第二阶段为「本地离线 + 云端同步」——**S1（本地 IndexedDB）已完成**，当前 `DATA_SOURCE = 'idb'`；云端选型定为**腾讯云开发 CloudBase**（计划见 `phase2-backend-plan.md`）。
+**第一阶段只做前端 + Mock 数据**（已完成，v0.2.0）；第二阶段为「本地离线 + 云端同步」——**S1（本地 IndexedDB）与 S2（同步引擎骨架 + 假云端）均已完成**，当前 `DATA_SOURCE = 'idb'`、`cloud = null`（未接真云端）；云端选型定为**腾讯云开发 CloudBase**（计划见 `phase2-backend-plan.md`）。
 
 ## 强制约定
 - 视图层**不得**直接调用 adapter，只依赖 `src/api/index.js` 导出的 repository 与 Pinia store。
@@ -29,20 +29,38 @@
 - **Vue 的 DOM 更新是异步的**：用 `eval` 派发合成手势后，必须在**另一次** `eval` 里读状态，同一次调用里读到的还是旧值。
 - **agent-browser 用法**：二进制在 `C:\Users\DELL\.workbuddy\binaries\node\workspace\node_modules\agent-browser\bin\agent-browser-win32-x64.exe`。**必须先 `open <url>` 再 `set viewport <w> <h>`**；没有打开页面就调 `set viewport` 会一直挂住不返回。命令都可能挂起，一律套 `timeout`。`eval` 用最简单的表达式（如 `document.querySelector('.scroll-area').scrollTop = 99999`）不会挂。
 
-## 数据层（第二阶段 S1 已完成）
+## 数据层（第二阶段 S1 / S2 已完成）
 - **业务规则只在 `src/api/core/` 写一次**，被各适配器共用：
   - `core/query.js` —— 过滤 / 排序 / 聚合 / 派生字段（纯函数，无 IO）：`alive`、`createCategoryLookup`、`filterCategories`、`filterBills`、`groupBillsByDate`、`dailySummaryOf`、`summarizeBills`、`remarkHistoryOf`、`decorateBill`。
   - `core/migrate.js` —— 种子迁移 `migrateSeedData(bills, meta)`，幂等、只补不覆盖。
-  - **新增适配器必须复用这两处**，不要另写一套查询 —— 本项目已吃过「两处实现各写一套、慢慢漂开」的亏（`PeriodSwitch` 那次）。
+  - `core/idb.js` —— IndexedDB 库名 / 版本 / objectStore 名 / `META_KEYS` 常量与全部库原语。**抽出来只为破解循环依赖**：outbox 要用 `openDB()`，而 `idbAdapter` 又 import outbox。新增任何「队列 / 引擎也要用」的库操作都放这里，别放进适配器。
+  - `core/merge.js` —— 远端文档合并：`fromRemote`（剥 `_id`/`_openid`/`_serverTs`）、`shouldTakeRemote`、`partitionRemote → {take, keep}`。**合并规则只写这一份**，mock 与 idb 共用。
+  - **新增适配器必须复用这几处**，不要另写一套查询 —— 本项目已吃过「两处实现各写一套、慢慢漂开」的亏（`PeriodSwitch` 那次）。
 - **适配器**：`mockAdapter`（内存 + localStorage，保留作契约对照基准）、`idbAdapter`（**当前启用**）、`cloudbaseAdapter`（待实现，第二阶段 S3）。
-- **IndexedDB 约定**（`idbAdapter`）：库名 `ledger`、版本 2、5 个 objectStore（ledger / category / bill / outbox / meta）；meta 表键为 `schemaVersion` / `seedMeta` / `importedFromLocalStorage`。
+- **IndexedDB 约定**（`idbAdapter`）：库名 `ledger`、版本 2、5 个 objectStore（ledger / category / bill / outbox / meta）；meta 表键为 `schemaVersion` / `seedMeta` / `importedFromLocalStorage` / `outboxImported` / `syncWatermark`（水位线经 `kv`）。
   - 首次打开**接管** localStorage 的 `ledger.db.v1`（`LEGACY_KEY`），**导入后不删旧库**（可回退）；靠 `importedFromLocalStorage` 标记保证只接管一次，`reset()` 会**保留**该标记（否则重置后旧库会被重新导入）。
+  - 同理 `outboxImported` 标记也要在 `reset()` 里保留 —— 否则重置后 localStorage 里的旧队列会被重新导入一遍。
   - 写入前一律 `toPlain()` JSON 深拷贝 —— IndexedDB 的结构化克隆处理不了 Vue 的 Proxy，直接 `put` 会抛 `DataCloneError`。
   - **「读-改-写」必须分两次事务**，不要塞进一个事务：事务跨 `await` 会失效并抛 `TransactionInactiveError`。页面内单线程串行，无并发问题。
   - 查询用 `readAll` 把集合读进内存再算（千条级毫秒级）；索引已建好，数据量上来后再改走索引。
-  - outbox 目前仍在 localStorage（`ledger.outbox.v1`），S2 再与业务数据同库。
+  - `createIdbAdapter` 有 **`seed` 选项**（默认 true）。写测试 / 建空库时传 `seed: false`，否则 `runSeedMigration()` 会把演示账单当「缺失的补充数据」灌进空库。
 - **存储顺序不是契约**：IndexedDB 的 `getAll` 按主键序返回，内存数组是插入序。凡有顺序语义处必须显式排序 —— `filterCategories` 已加 id 兜底，因为 `order` 只在同级同类型内唯一。
-- 改动数据层的验证姿势：`node .preview/contract-test.mjs`（契约一致性，mock 与 idb 双跑，83 条）+ `period-test` / `seed-test` / `migrate-test`。Node 里跑 IndexedDB 用 `fake-indexeddb`（devDependency）。
+- 改动数据层的验证姿势：`npm run test:data`（五个脚本，259 条断言，见下）。Node 里跑 IndexedDB 用 `fake-indexeddb`（devDependency）。
+
+## 同步引擎（第二阶段 S2 已完成，`src/api/sync/`）
+- **装配点唯一**：`src/api/index.js` 里 `createSyncEngine({ outbox: db.outbox, store: db.syncStore, meta: db.kv, cloud })`；启动在 `src/main.js` 的 `syncEngine.start()`。换真云端**只需改 `export const cloud = null` 这一处**，引擎 / 适配器 / store / 视图一行都不用动。
+- **依赖方向单向**：适配器 → outbox ← syncEngine。**适配器绝不 import syncEngine**，靠 `outbox.onChange` 通知解耦。新增适配器时照抄这个接法。
+- **状态机四态**：`idle / syncing / error / offline`。离线时**不发请求**（省 CloudBase 资源点、也不污染 retry 计数）。
+- **防重入是唯一闸门**：`syncing` 期间再调 `sync()` 必须 **`return` 同一个 in-flight Promise**，不能直接 return undefined —— 否则调用方拿不到结果也没法 `await`。四种触发源（启动 / `online` / 写后 debounce 2s / 手动）都收敛到这一处。
+- **单次同步顺序固定为 pull → push → 回拉被拒 → compact**。反序会用本地旧版本盖掉云端较新版本。push 推的是**当前本地文档**，不是入队时的 payload 快照。
+- **水位线只认服务端接收时间 `_serverTs`**，不认客户端 `updatedAt`。且服务端时间必须**严格单调递增**（`base > serverClock ? base : serverClock + 1`），pull 区间是 **(since, snapshotAt] 左开右闭**，`snapshotAt` 在查询**开始前**取。
+  - 这两条各对应一个真实漏数据缺陷：用客户端时间过滤 → 慢推上来的改动被永久漏掉；区间右端开 → 同一毫秒的写入被漏掉。**别改回去。**
+- **推送被拒必须回拉**：云端条件 upsert，只有「本地不旧于云端」才覆盖，被拒条目进 `rejected` 并带 `cloudUpdatedAt`；引擎据此把云端版本拉回本地并 `outbox.drop()` 作废该条目。否则本地以为推成功、两端静默分叉 —— **单设备永远测不出这个 bug**。
+- **`fakeCloud` 必须带身份维度**（`cloud.as('openid')`），否则两用户数据躺在同一 Map 里、测出来天然全通。它只能验「代码没抹掉身份」，**测不了真实安全规则**（那是 S3 用两个真实账号的事）。
+- **串号风险在本地不在云端**：两账号共用一个 `ledger` 库时，A 残留的 outbox 条目会被推到 B 名下。方案是库名分区 `ledger_<openid>`（`openDB({ dbName })` 已支持注入），**S2 只预留、S5 启用**。
+- **已知不修，留给 S4**：本地「新者胜」依赖客户端时钟。`fakeCloud._skew(ms)` 能暴露问题但 S2 **刻意不断言** —— 不要为了让测试变绿在这里打补丁，那是 S4 用服务端时间裁决的事。
+- **测试时间与定时器必须注入**：`createClock()`（serverTime 与 updatedAt 同源，否则水位跑到文档时间前面导致假失败）+ `createFakeTimer()`（退避延迟可断言且不用真等 2 秒）。
+- **`localStorage['ledger.outbox.v1']` 里残留 `"[]"` 是正常的**：S1 旧 outbox 排空后写下的空数组。S2 只读不写该键，搬迁有 `outboxImported` 标记兜底 → 无害，不要去清理它。
 
 ## 布局约定
 - **账单 store 有两份互相独立的数据切片**，不要合并：
@@ -86,15 +104,16 @@
 
 ## 本地运行
 `npm install && npm run dev` → http://127.0.0.1:5173
-Mock 数据持久化在 localStorage `ledger.db.v1`，「我的 → 重置演示数据」可恢复种子数据。
+数据持久化在 **IndexedDB**（库名 `ledger`，版本 2）；首次打开会自动接管 localStorage 里的旧库 `ledger.db.v1`。「我的 → 重置演示数据」可恢复种子数据（44 账单 / 42 分类），并会保留两个「已导入」标记。
 
 ## 数据层断言（scripts/，已纳入版本管理）
 数据层用 Node 打桩跑（适配器只依赖相对路径 + localStorage / IndexedDB）：
-- `npm run test:data` 一次跑完四个脚本。
-- `contract-test.mjs`（83 条）：契约一致性 —— 同一套断言跑 mock 与 idb，顺带验证「idb 首次打开接管 localStorage 旧库」。
+- `npm run test:data` 一次跑完五个脚本，**合计 259 条断言**。
+- `contract-test.mjs`（87 条）：契约一致性 —— 同一套断言跑 mock 与 idb，顺带验证「idb 首次打开接管 localStorage 旧库」，并断言 `outbox` / `syncStore` 方法齐全（注意 `outbox` 是**对象**，要先断言 `!!adapter.outbox` 再查其方法，写成 `has(adapter, ['outbox'])` 恒假）。
 - `period-test.mjs`（22 条）：区间筛选 / 汇总与日期工具。
 - `seed-test.mjs`（14 条）：种子数字 + 迁移幂等。
-- `migrate-test.mjs`（11 条）：备注回填迁移。
+- `migrate-test.mjs`（11 条）：备注回填迁移（输出格式是 `PASS xxx`，不是「N 通过」）。
+- `sync-test.mjs`（125 条 / 18 组场景）：同步引擎。真正会咬人的是防重入、否决回拉、双实例收敛、身份隔离、分页拉取、队列搬迁幂等 —— **都只能在多实例/并发场景暴露，单设备手点永远测不出来**。
 - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩。脚本用 `new URL('../src/', import.meta.url)` 解析路径，**不要写死绝对路径**。
 - store 的 getter 依赖 `@/` 别名，Node 直接 import 不了，那部分靠浏览器读 DOM 断言。
 

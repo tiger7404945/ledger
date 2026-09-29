@@ -1,10 +1,9 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCategoryStore } from '@/stores/category.js'
 import { useBillStore } from '@/stores/bill.js'
-import { db, DATA_SOURCE } from '@/api'
-import { outbox } from '@/api/sync/outbox.js'
+import { db, DATA_SOURCE, cloud, syncEngine } from '@/api'
 import { useToast } from '@/composables/useToast.js'
 import { clearRecordDraft } from '@/composables/useRecordDraft.js'
 import AppHeader from '@/components/AppHeader.vue'
@@ -17,12 +16,14 @@ const billStore = useBillStore()
 const toast = useToast()
 
 const pending = ref(0)
+const syncState = ref(syncEngine.state)
+let offSync = null
 
 const entries = [
   { icon: 'settings', label: '分类管理', desc: '一级 / 二级分类的增删改', to: '/category' },
   { icon: 'piggy', label: '账本管理', desc: '多账本与共享（后续版本）' },
   { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已启用）' },
-  { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（第二阶段）' },
+  { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（S3 接入）' },
   { icon: 'star', label: '关于', desc: '随手记账 · 前端演示版 v0.2' }
 ]
 
@@ -30,10 +31,37 @@ const entries = [
 const storageLabel = DATA_SOURCE === 'idb' ? 'IndexedDB（ledger 库）' : '内存 + localStorage'
 const cacheLabel = DATA_SOURCE === 'idb' ? '已启用' : '未启用（仍是内存）'
 
+const SYNC_STATE_LABEL = {
+  idle: '空闲',
+  syncing: '同步中',
+  error: '同步失败',
+  offline: '离线'
+}
+const syncLabel = computed(() => SYNC_STATE_LABEL[syncState.value] || syncState.value)
+
+/** 云端那一行：没接入就说清楚，接入了就说当前状态 */
+const cloudLabel = computed(() => {
+  if (!cloud) return '未接入（S3 接腾讯云开发）'
+  if (syncState.value === 'syncing') return '同步中…'
+  if (syncState.value === 'error') return '同步失败，稍后自动重试'
+  if (syncState.value === 'offline') return '离线，联网后自动补推'
+  return pending.value ? `待推 ${pending.value} 条` : '已同步'
+})
+
 onMounted(async () => {
   await db.ready?.()
   await Promise.all([categoryStore.ensureLoaded(), billStore.ensureLoaded()])
-  pending.value = outbox.pendingCount()
+  // 队列方法已改为异步，而且「全貌」（状态 / 待推数 / 上次同步时间）只有引擎知道，
+  // 所以这里订阅引擎，而不是直接问 outbox。订阅时会立刻回调一次当前状态。
+  offSync = syncEngine.onStateChange((s) => {
+    syncState.value = s.state
+    pending.value = s.pendingCount
+  })
+})
+
+onUnmounted(() => {
+  offSync?.()
+  offSync = null
 })
 
 async function handleEntry(entry) {
@@ -46,7 +74,11 @@ async function handleEntry(entry) {
     return
   }
   if (entry.label === '云端同步') {
-    toast.show(`待同步 ${pending.value} 条，推送队列已就绪，云端待第二阶段接入`)
+    toast.show(
+      cloud
+        ? `同步状态：${syncLabel.value}，待推 ${pending.value} 条`
+        : `待推 ${pending.value} 条，队列已就绪；云端待 S3 接入腾讯云开发`
+    )
     return
   }
   toast.show('该功能将在后续版本开放')
@@ -58,7 +90,7 @@ async function resetDemo() {
   billStore.resetPeriod()
   await Promise.all([categoryStore.ensureLoaded(true), billStore.ensureLoaded()])
   await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
-  pending.value = outbox.pendingCount()
+  pending.value = await db.sync.pendingCount()
   toast.success('演示数据已重置')
 }
 </script>
@@ -102,7 +134,7 @@ async function resetDemo() {
           <li><em>本地存储</em><span>{{ storageLabel }}</span></li>
           <li><em>待同步队列</em><span>{{ pending }} 条</span></li>
           <li><em>离线缓存</em><span>{{ cacheLabel }}</span></li>
-          <li><em>云端</em><span>腾讯云开发（第二阶段）</span></li>
+          <li><em>云端</em><span>{{ cloudLabel }}</span></li>
         </ul>
         <button class="reset" type="button" @click="resetDemo">重置演示数据</button>
       </section>
