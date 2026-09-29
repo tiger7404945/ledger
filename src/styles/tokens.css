@@ -7,6 +7,9 @@
   --brand-soft: #e4f8f2;
   --brand-soft-2: #d3f4ea;
   --brand-ink: #0f8f76;
+  /* 设计稿里的浅薄荷底（账期切换器的圆钮）：9 张设计稿一致采样到 #DCFDF6，
+     不是 JPEG 压缩噪声，故单列一个 token（与 --brand-soft-2 的 #d3f4ea 不同）。 */
+  --brand-mint: #dcfdf6;
 
   /* ---------- Ink ---------- */
   --ink: #16181c;
@@ -44,8 +47,12 @@
   --tab-h: 56px;
   --frame-w: 430px;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  /* TabBar 中间的深色加号是 54px 圆、bottom 20px，会凸出标签栏上沿 18px。
+     底部占位必须把它算进去，否则滚到底时最后一行交互元素（如「查看更多」）
+     正好压在加号下面，点不动。 */
+  --plus-overhang: 20px;
   /* 底部标签栏的占位高度：TabBar 是 fixed，带 TabBar 的页面要自己留出这么多底部内边距 */
-  --tabbar-space: calc(var(--tab-h) + var(--safe-b));
+  --tabbar-space: calc(var(--tab-h) + var(--safe-b) + var(--plus-overhang));
 
   /* ---------- Type ---------- */
   --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',

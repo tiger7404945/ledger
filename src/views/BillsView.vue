@@ -9,7 +9,8 @@ import TabBar from '@/components/TabBar.vue'
 import BillRow from '@/components/BillRow.vue'
 import AmountText from '@/components/AmountText.vue'
 import SearchOverlay from '@/components/SearchOverlay.vue'
-import PeriodPicker from '@/components/PeriodPicker.vue'
+import PeriodSwitch from '@/components/PeriodSwitch.vue'
+import { useSwipeViews } from '@/composables/useSwipeViews.js'
 import { formatDateDots, monthGrid, weekdayLabels, todayKey } from '@/utils/date.js'
 
 const router = useRouter()
@@ -20,7 +21,6 @@ const ledgerStore = useLedgerStore()
 const VIEWS = ['flow', 'calendar']
 
 const searchOpen = ref(false)
-const pickerOpen = ref(false)
 const view = ref('flow')
 const activeDay = ref('')
 
@@ -58,57 +58,10 @@ watch(
 
 /* ---------------- 左右滑动切换流水 / 日历 ---------------- */
 
-const drag = ref({ dx: 0, active: false })
-
-let startX = 0
-let startY = 0
-/** '' 未定 | 'x' 横向（切换视图） | 'y' 纵向（交给滚动） */
-let axis = ''
-/** 滑动阈值 */
-const SWITCH_THRESHOLD = 56
-
-const trackStyle = computed(() => {
-  const base = view.value === 'flow' ? 0 : -50
-  return { transform: `translateX(calc(${base}% + ${drag.value.dx}px))` }
+const { drag, trackStyle, paneStyle, onTouchStart, onTouchMove, onTouchEnd } = useSwipeViews({
+  views: VIEWS,
+  current: view
 })
-
-function onTouchStart(e) {
-  if (e.touches.length !== 1) return
-  startX = e.touches[0].clientX
-  startY = e.touches[0].clientY
-  axis = ''
-  drag.value = { dx: 0, active: true }
-}
-
-function onTouchMove(e) {
-  if (!drag.value.active || e.touches.length !== 1) return
-  const mx = e.touches[0].clientX - startX
-  const my = e.touches[0].clientY - startY
-  if (!axis) {
-    // 先判定主方向：纵向就完全放手给滚动区域，避免抢滚动手势
-    if (Math.abs(mx) < 6 && Math.abs(my) < 6) return
-    axis = Math.abs(mx) > Math.abs(my) ? 'x' : 'y'
-    if (axis === 'y') {
-      drag.value = { dx: 0, active: false }
-      return
-    }
-  }
-  // 已经在首/末屏还继续往外拖时加阻尼
-  const atEdge = (view.value === 'flow' && mx > 0) || (view.value === 'calendar' && mx < 0)
-  const limit = window.innerWidth
-  const d = atEdge ? mx * 0.35 : mx
-  drag.value = { dx: Math.max(-limit, Math.min(limit, d)), active: true }
-}
-
-function onTouchEnd() {
-  if (!drag.value.active) return
-  const dx = drag.value.dx
-  drag.value = { dx: 0, active: false }
-  if (Math.abs(dx) < SWITCH_THRESHOLD) return
-  const next = dx < 0 ? 1 : -1
-  const index = VIEWS.indexOf(view.value) + next
-  if (index >= 0 && index < VIEWS.length) view.value = VIEWS[index]
-}
 
 /* ---------------- 事件 ---------------- */
 
@@ -128,14 +81,6 @@ function drillToMonth(m) {
 function monthExpense(m) {
   const key = `${billStore.period.year}-${String(m).padStart(2, '0')}`
   return monthlyMap.value[key]?.expense || 0
-}
-
-function onPickMonth(month) {
-  billStore.setPeriodMonth(month)
-}
-
-function onPickYear(year) {
-  billStore.setPeriodYear(year)
 }
 </script>
 
@@ -175,32 +120,7 @@ function onPickYear(year) {
           </button>
         </div>
 
-        <div class="month-switch">
-          <button
-            class="arrow"
-            type="button"
-            :aria-label="isYear ? '上一年' : '上个月'"
-            @click="billStore.shiftPeriod(-1)"
-          >
-            <IconBase name="chevronLeft" :size="15" :stroke-width="2" />
-          </button>
-          <button
-            class="month-label"
-            type="button"
-            aria-label="选择月份或年份"
-            @click="pickerOpen = true"
-          >
-            {{ billStore.periodLabel }}
-          </button>
-          <button
-            class="arrow"
-            type="button"
-            :aria-label="isYear ? '下一年' : '下个月'"
-            @click="billStore.shiftPeriod(1)"
-          >
-            <IconBase name="chevronRight" :size="15" :stroke-width="2" />
-          </button>
-        </div>
+        <PeriodSwitch />
       </div>
 
       <!-- 结余卡片 -->
@@ -249,7 +169,7 @@ function onPickYear(year) {
         @touchcancel="onTouchEnd"
       >
         <!-- 流水视图 -->
-        <div class="view-pane">
+        <div class="view-pane" :style="paneStyle">
           <div class="scroll-area">
             <section class="card list-card">
               <template v-for="group in groups" :key="group.date">
@@ -276,7 +196,7 @@ function onPickYear(year) {
         </div>
 
         <!-- 日历视图 -->
-        <div class="view-pane">
+        <div class="view-pane" :style="paneStyle">
           <div class="scroll-area">
             <!-- 按月：月历 + 当日明细 -->
             <section v-if="!isYear" class="card calendar-card">
@@ -359,14 +279,6 @@ function onPickYear(year) {
 
     <TabBar />
     <SearchOverlay v-model="searchOpen" />
-    <PeriodPicker
-      v-model="pickerOpen"
-      :mode="billStore.period.mode"
-      :month="billStore.period.month"
-      :year="billStore.period.year"
-      @pick-month="onPickMonth"
-      @pick-year="onPickYear"
-    />
   </div>
 </template>
 
@@ -423,42 +335,14 @@ function onPickYear(year) {
   font-weight: 500;
 }
 
-.month-switch {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.arrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--surface-3);
-  color: var(--ink-2);
-}
-
-.month-label {
-  font-size: 13.5px;
-  color: var(--ink);
-  min-width: 74px;
-  text-align: center;
-  border-radius: var(--r-sm);
-  padding: 3px 0;
-}
-
-.month-label:active {
-  background: var(--surface-3);
-}
+/* 账期切换器的样式在 components/PeriodSwitch.vue 里，两页共用 */
 
 /* ---------- 流水 / 日历 滑动轨道 ---------- */
+/* 轨道宽度与每屏宽度由 useSwipeViews 绑定的行内样式给出，这里只管排布与过渡 */
 .view-track {
   flex: 1;
   min-height: 0;
   display: flex;
-  width: 200%;
   transition: transform 0.26s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
@@ -468,7 +352,6 @@ function onPickYear(year) {
 }
 
 .view-pane {
-  flex: 0 0 50%;
   min-width: 0;
   min-height: 0;
   display: flex;

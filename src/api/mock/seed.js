@@ -1,4 +1,12 @@
-import { addDays, toDateKey, currentMonthKey, monthKeyOf } from '../../utils/date.js'
+import {
+  addDays,
+  toDateKey,
+  todayKey,
+  currentMonthKey,
+  monthKeyOf,
+  shiftMonth,
+  pad2
+} from '../../utils/date.js'
 import { round2 } from '../../utils/money.js'
 
 /**
@@ -130,6 +138,64 @@ const BILL_TEMPLATES = [
 /** 本月支出目标值（与参考截图一致） */
 const MONTH_EXPENSE_TARGET = 8720.72
 
+/**
+ * 补充账单模板（收入 + 往月流水）
+ *
+ * 原始种子只有「本月支出」，统计页的收入视图、按天/按月趋势都没有数据可看。
+ * 这里补两层：
+ * - `monthOffset: 0` 的收入 —— 本月用 `offset`（距今天数）表达并夹在本月月内，
+ *   保证月初运行时也不会落到上月；本月支出目标 8720.72 不受影响。
+ * - `monthOffset: -1 / -2` 的收支 —— 让「按年」趋势有多个点，而不是一个月独苗。
+ */
+const EXTRA_BILL_TEMPLATES = [
+  { monthOffset: 0, offset: 2, type: 'income', cat: 'salary', amount: 12000, remark: '月薪' },
+  { monthOffset: 0, offset: 7, type: 'income', cat: 'parttime', amount: 1200, remark: '周末兼职' },
+  { monthOffset: 0, offset: 12, type: 'income', cat: 'reimburse', amount: 368.5, remark: '差旅报销' },
+  { monthOffset: 0, offset: 19, type: 'income', cat: 'iredpacket', amount: 200, remark: '朋友红包' },
+  { monthOffset: -1, day: 10, type: 'income', cat: 'salary', amount: 12000, remark: '月薪' },
+  { monthOffset: -1, day: 15, type: 'income', cat: 'bonus', amount: 3000, remark: '季度奖金' },
+  { monthOffset: -1, day: 1, type: 'expense', cat: 'house', sub: 'house-rent', amount: 4500, remark: '房租' },
+  { monthOffset: -1, day: 8, type: 'expense', cat: 'food', amount: 326.5, remark: '朋友聚餐' },
+  { monthOffset: -1, day: 20, type: 'expense', cat: 'shopping', amount: 899, remark: '蓝牙耳机' },
+  { monthOffset: -2, day: 10, type: 'income', cat: 'salary', amount: 12000, remark: '月薪' },
+  { monthOffset: -2, day: 18, type: 'income', cat: 'parttime', amount: 2600, remark: '外包项目' },
+  { monthOffset: -2, day: 1, type: 'expense', cat: 'house', sub: 'house-rent', amount: 4500, remark: '房租' },
+  { monthOffset: -2, day: 6, type: 'expense', cat: 'traffic', sub: 'traffic-fuel', amount: 300, remark: '加油' },
+  { monthOffset: -2, day: 24, type: 'expense', cat: 'medical', amount: 420, remark: '体检' }
+]
+
+/** 补充账单的播种版本：适配器据此给早期本地库补数据（幂等，只补缺的 id） */
+export const SEED_EXTRA_VERSION = 1
+
+/**
+ * 生成补充账单。id 固定，便于按 id 幂等回填到已有本地库。
+ * @param {number} ts 时间戳，用于 createdAt / updatedAt
+ */
+export function buildExtraBills(ts = Date.now()) {
+  const month = currentMonthKey()
+  const todayDay = Number(todayKey().slice(8, 10))
+  return EXTRA_BILL_TEMPLATES.map((tpl, index) => {
+    const targetMonth = shiftMonth(month, tpl.monthOffset || 0)
+    const day = tpl.offset != null ? Math.max(1, todayDay - tpl.offset) : tpl.day
+    const primaryId = CAT_ID(tpl.cat)
+    return {
+      id: `bill_seed_extra_${pad2(index + 1)}`,
+      ledgerId: LEDGER_ID,
+      type: tpl.type,
+      amount: round2(tpl.amount),
+      categoryId: tpl.sub ? SUB_ID(tpl.sub) : primaryId,
+      primaryCategoryId: primaryId,
+      remark: tpl.remark || '',
+      date: `${targetMonth}-${pad2(day)}`,
+      noReimburse: false,
+      createdAt: ts - 5000 - index * 1000,
+      updatedAt: ts - 5000 - index * 1000,
+      deleted: 0,
+      version: 1
+    }
+  })
+}
+
 /** 补齐差额那笔「购物」账单的备注 */
 const GAP_BILL_REMARK = '数码配件'
 
@@ -221,7 +287,7 @@ export function buildSeed() {
   // 让「本月支出」精确等于目标值：补一笔本月的购物支出
   const month = currentMonthKey()
   const monthSum = bills
-    .filter((b) => monthKeyOf(b.date) === month)
+    .filter((b) => b.type === 'expense' && monthKeyOf(b.date) === month)
     .reduce((sum, b) => sum + b.amount, 0)
   const gap = round2(MONTH_EXPENSE_TARGET - monthSum)
   if (gap > 0) {
@@ -242,11 +308,14 @@ export function buildSeed() {
     })
   }
 
+  // 补充账单放在差额补齐之后，保证「本月支出 = 8720.72」的等式不受收入影响
+  bills.push(...buildExtraBills(ts))
+
   return {
     ledgers: [ledger],
     categories,
     bills,
-    // 迁移标记：本次播种已带备注，适配器无需再回填
-    meta: { seedNotes: SEED_NOTES_VERSION }
+    // 迁移标记：本次播种已带备注、已带补充账单，适配器无需再回填
+    meta: { seedNotes: SEED_NOTES_VERSION, seedExtra: SEED_EXTRA_VERSION }
   }
 }

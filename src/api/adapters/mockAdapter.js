@@ -5,7 +5,7 @@ import {
   SCHEMA_VERSION
 } from '../contract.js'
 import { outbox } from '../sync/outbox.js'
-import { buildSeed, SEED_BILL_NOTES, SEED_NOTES_VERSION } from '../mock/seed.js'
+import { buildSeed, buildExtraBills, SEED_BILL_NOTES, SEED_NOTES_VERSION, SEED_EXTRA_VERSION } from '../mock/seed.js'
 import { now, uid } from '../../utils/id.js'
 import {
   monthKeyOf,
@@ -34,24 +34,41 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
 
   /**
    * 轻量数据迁移（幂等）
-   * 演示账单的备注是后加的字段，早期版本播种出来的本地库里这些账单备注为空，
-   * 导致记账页「填写备注」看不到历史候选。这里按 id 一次性回填，
-   * 只补「种子账单 + 备注为空」的记录，不动用户自己记的账。
+   * 1) 演示账单的备注是后加的字段，早期版本播种出来的本地库里这些账单备注为空，
+   *    导致记账页「填写备注」看不到历史候选。这里按 id 一次性回填。
+   * 2) 后加的演示账单（本月收入 + 往月收支）按 id 补齐，让统计页有数据可看。
+   * 两步都只补「本地库里没有 / 字段为空」的记录，不动用户自己记的账。
    * @returns {boolean} 是否有改动
    */
   function migrate(s) {
     const meta = s.meta || (s.meta = {})
-    if (meta.seedNotes === SEED_NOTES_VERSION) return false
     let changed = false
-    ;(s.bills || []).forEach((b) => {
-      const note = SEED_BILL_NOTES[b.id]
-      if (note && !b.remark) {
-        b.remark = note
+
+    if (meta.seedNotes !== SEED_NOTES_VERSION) {
+      ;(s.bills || []).forEach((b) => {
+        const note = SEED_BILL_NOTES[b.id]
+        if (note && !b.remark) {
+          b.remark = note
+          changed = true
+        }
+      })
+      meta.seedNotes = SEED_NOTES_VERSION
+      changed = true
+    }
+
+    if (meta.seedExtra !== SEED_EXTRA_VERSION) {
+      const bills = s.bills || (s.bills = [])
+      const have = new Set(bills.map((b) => b.id))
+      buildExtraBills().forEach((b) => {
+        if (have.has(b.id)) return
+        bills.push(b)
         changed = true
-      }
-    })
-    meta.seedNotes = SEED_NOTES_VERSION
-    return true
+      })
+      meta.seedExtra = SEED_EXTRA_VERSION
+      changed = true
+    }
+
+    return changed
   }
 
   function load() {

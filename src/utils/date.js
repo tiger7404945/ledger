@@ -52,6 +52,12 @@ export function addDays(date, days) {
   return d
 }
 
+/** 日期键加减天数：('2026-09-01', 1) -> '2026-09-02'。按本地时间构造，避免 UTC 解析导致跨天 */
+export function addDaysToKey(dateKey, days) {
+  const [y, m, d] = String(dateKey).split('-').map(Number)
+  return toDateKey(new Date(y, m - 1, d + days))
+}
+
 export function shiftMonth(monthKey, delta) {
   const [y, m] = String(monthKey).split('-').map(Number)
   const d = new Date(y, m - 1 + delta, 1)

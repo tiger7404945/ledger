@@ -22,9 +22,16 @@ export const ledgerRepo = db.ledger
 export const categoryRepo = db.category
 export const billRepo = db.bill
 
-/** 云端同步引擎（第二阶段启用） */
+/**
+ * 云端同步引擎（第二阶段启用）
+ *
+ * 注意：LeanCloud 已停服（2026-01 冻结注册、2027-01 关闭服务），
+ * 第二阶段改接 Supabase，本占位会在那时替换为 supabaseAdapter，
+ * 详见 phase2-backend-plan.md。当前导出未接入任何运行时路径，
+ * 仅作为「同步引擎入口」的位置标记。
+ */
 export const cloudSync = createLeanCloudAdapter({
-  // appId / appKey / serverURL 由运行时配置注入
+  // 凭据由运行时配置注入（第二阶段改为 Supabase 的 url / anonKey）
 })
 
 export { COLLECTIONS, BILL_TYPES, CATEGORY_TYPES, NAME_MAX_LENGTH } from './contract.js'

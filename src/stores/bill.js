@@ -11,7 +11,9 @@ import {
   yearLastKey,
   shiftMonth as shiftMonthKey,
   formatMonthLabel,
-  daysInMonth
+  formatDateCN,
+  daysInMonth,
+  pad2
 } from '@/utils/date.js'
 import { round2 } from '@/utils/money.js'
 
@@ -42,13 +44,78 @@ function groupByDate(bills) {
   return Array.from(map.values()).sort((a, b) => (a.date < b.date ? 1 : -1))
 }
 
+/** 按 key 聚合收支：keyOf 负责把账单映射成桶的 key（按日 / 按月） */
+function sumByKey(bills, keyOf) {
+  const map = {}
+  bills.forEach((b) => {
+    const key = keyOf(b)
+    if (!key) return
+    const cur = map[key] || { income: 0, expense: 0 }
+    if (b.type === 'income') cur.income = round2(cur.income + b.amount)
+    else cur.expense = round2(cur.expense + b.amount)
+    map[key] = cur
+  })
+  return map
+}
+
+/**
+ * 趋势图的横轴桶
+ * - 按月模式：区间内每一天（未来不画，避免折线尾巴掉到 0）
+ * - 按年模式：区间内每个月（同理只到当前月）
+ * @returns {{key:string, axis:string, full:string}[]}
+ */
+function trendBuckets(period, today) {
+  const out = []
+  if (period.mode === 'year') {
+    const year = period.year
+    const nowYear = Number(today.slice(0, 4))
+    const last = year > nowYear ? 0 : year < nowYear ? 12 : Number(today.slice(5, 7))
+    for (let m = 1; m <= last; m += 1) {
+      out.push({ key: `${year}-${pad2(m)}`, axis: `${m}月`, full: `${year}年${m}月` })
+    }
+    return out
+  }
+
+  const month = period.month
+  const nowMonth = monthKeyOf(today)
+  const total = daysInMonth(month)
+  const last = month > nowMonth ? 0 : month < nowMonth ? total : Number(today.slice(8, 10))
+  for (let d = 1; d <= last; d += 1) {
+    const key = `${month}-${pad2(d)}`
+    out.push({ key, axis: String(d), full: formatDateCN(key) })
+  }
+  return out
+}
+
+/**
+ * 分类排行：按一级分类聚合某一类型的账单，金额降序
+ * @returns {{id:string, amount:number, count:number, ratio:number}[]}
+ */
+function rankOf(bills, type) {
+  const map = new Map()
+  bills
+    .filter((b) => b.type === type)
+    .forEach((b) => {
+      const id = b.primaryCategoryId || b.categoryId || 'unknown'
+      const cur = map.get(id) || { id, amount: 0, count: 0 }
+      cur.amount = round2(cur.amount + b.amount)
+      cur.count += 1
+      map.set(id, cur)
+    })
+  const total = Array.from(map.values()).reduce((sum, item) => sum + item.amount, 0) || 1
+  return Array.from(map.values())
+    .map((item) => ({ ...item, ratio: item.amount / total }))
+    .sort((a, b) => b.amount - a.amount)
+}
+
 /**
  * 账单 store
  *
  * 两份互相独立的数据切片：
- * - **本月视角**（`month` / `bills` / `summary`）：首页与统计页固定用当前月，不受账单页筛选影响。
- * - **账单页筛选取景**（`period` / `periodBills` / `periodSummary`）：可切「按月 / 按年」。
- *   拆开是为了让账单页切到某一年时，首页与统计页仍然显示本月数据。
+ * - **本月视角**（`month` / `bills` / `summary`）：首页固定用当前月，不受账期筛选影响。
+ * - **账期筛选取景**（`period` / `periodBills` / `periodSummary`）：可切「按月 / 按年」，
+ *   账单页与统计页共用同一份「当期」。拆开是为了让这两个页面切到某一年时，
+ *   首页仍然显示本月数据。
  *
  * 所有写操作走 repository，本地先行，后续由同步引擎推送到云端。
  */
@@ -59,7 +126,7 @@ export const useBillStore = defineStore('bill', {
     bills: [],
     summary: emptySummary(),
 
-    /** 账单页筛选取景 */
+    /** 账期筛选取景（账单页 + 统计页共用） */
     period: {
       /** 'month' 按月 | 'year' 按年 */
       mode: 'month',
@@ -150,27 +217,31 @@ export const useBillStore = defineStore('bill', {
 
     /** 区间内每日收支（日历视图，按月模式） */
     periodDailyMap(state) {
-      const map = {}
-      state.periodBills.forEach((b) => {
-        const cur = map[b.date] || { income: 0, expense: 0 }
-        if (b.type === 'income') cur.income = round2(cur.income + b.amount)
-        else cur.expense = round2(cur.expense + b.amount)
-        map[b.date] = cur
-      })
-      return map
+      return sumByKey(state.periodBills, (b) => b.date)
     },
 
     /** 区间内各月收支（日历视图，按年模式的年度总览） */
     periodMonthlyMap(state) {
-      const map = {}
-      state.periodBills.forEach((b) => {
-        const key = b.date.slice(0, 7)
-        const cur = map[key] || { income: 0, expense: 0 }
-        if (b.type === 'income') cur.income = round2(cur.income + b.amount)
-        else cur.expense = round2(cur.expense + b.amount)
-        map[key] = cur
-      })
-      return map
+      return sumByKey(state.periodBills, (b) => monthKeyOf(b.date))
+    },
+
+    /** 趋势图数据：按月模式一天一个点，按年模式一个月一个点 */
+    periodTrend(state) {
+      const keyOf = state.period.mode === 'year' ? (b) => monthKeyOf(b.date) : (b) => b.date
+      const map = sumByKey(state.periodBills, keyOf)
+      return trendBuckets(state.period, todayKey()).map((bucket) => ({
+        ...bucket,
+        expense: map[bucket.key] ? map[bucket.key].expense : 0,
+        income: map[bucket.key] ? map[bucket.key].income : 0
+      }))
+    },
+
+    /** 分类排行（统计页），支出与收入各一份 */
+    periodRankMap(state) {
+      return {
+        expense: rankOf(state.periodBills, 'expense'),
+        income: rankOf(state.periodBills, 'income')
+      }
     }
   },
 
@@ -208,7 +279,7 @@ export const useBillStore = defineStore('bill', {
       await this.refresh()
     },
 
-    /* ---------------- 账单页筛选取景 ---------------- */
+    /* ---------------- 账期筛选取景 ---------------- */
 
     async ensurePeriodLoaded(force = false) {
       if (this.periodInitialized && !force) return
@@ -262,7 +333,7 @@ export const useBillStore = defineStore('bill', {
       return this.setPeriodMonth(shiftMonthKey(this.period.month, delta))
     },
 
-    /** 「重置演示数据」后把账单页筛选退回本月 */
+    /** 「重置演示数据」后把账期筛选退回本月 */
     resetPeriod() {
       const m = currentMonthKey()
       this.period = { mode: 'month', month: m, year: Number(m.slice(0, 4)) }
