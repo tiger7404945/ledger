@@ -1,5 +1,9 @@
 # ui-implementation-plan.md
 
+> **状态：已完成并验收归档（v0.2.0，2026-09-29）**。构建、数据层测试与浏览器端到端走查全部通过，验收结论见 `README.md` 的「第一阶段验收结论」。
+> 下一步见 `phase2-backend-plan.md`（第二阶段：接后端与云同步）。
+> 注：第 6 节末条「预留 LeanCloud 增量同步」因 LeanCloud 停服而作废，云端选型改为 Supabase。
+
 ## 1. 现状分析
 - 目标目录 `D:\projects\ledger` 为空工程（仅参考截图）。
 - 无既有组件库 / 设计系统，需要从零建立 tokens 与组件层。
@@ -13,7 +17,7 @@
 | 状态 | Pinia（`category` / `bill` / `ledger` / `sync`） |
 | 样式 | 原生 CSS + CSS 变量（`styles/tokens.css`），组件内 `<style scoped>` |
 | 图标 | 自建 SVG 图标库（`components/icons/index.js`），stroke=currentColor，离线可用 |
-| 数据 | `api/contract.js` 定义契约 → `api/adapters/mockAdapter.js` 实现；预留 `idbAdapter` / `leancloudAdapter` |
+| 数据 | `api/contract.js` 定义契约 → `api/adapters/mockAdapter.js` 实现；预留 `idbAdapter` / `leancloudAdapter`（后者因 LeanCloud 停服废弃，云端改 Supabase） |
 
 ## 3. 目录结构
 ```
@@ -84,4 +88,5 @@ src/
 - [x] 修改支出：点击账单条目进入编辑态，可改分类/金额/备注/日期，可删除
 - [x] 一级分类：创建、展示（宫格）、更新（编辑/删除）
 - [x] 二级分类：创建（归属一级）、展示（列表 + 记账页展开）、更新（编辑/删除）
-- [x] 预留 IndexedDB 离线缓存与 LeanCloud 增量同步适配器与 outbox 队列
+- [x] 预留 IndexedDB 离线缓存适配器与 outbox 增量同步队列
+- [x] ~~预留 LeanCloud 增量同步适配器~~ → LeanCloud 已公告停服（2027-01-12 关停），云端选型改为 Supabase，见 `phase2-backend-plan.md`
