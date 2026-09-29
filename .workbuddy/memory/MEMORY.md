@@ -3,7 +3,7 @@
 ## 项目性质
 移动端记账 Web App 的前端复刻。设计原型来自仓库根目录的设计稿：8 张微信截图（`微信图片_*.jpg`）+ 后续补充的 `填写备注.jpg`（记账页备注候选条）+ `月选择器.jpg` / `年选择器.jpg`（账期筛选弹层）。补充稿同样放在仓库根目录、纳入版本管理。
 **统计页没有参考稿**，是按需求补齐的（视觉沿用全局设计语言）。
-**第一阶段只做前端 + Mock 数据**（已完成，v0.2.0）；第二阶段接 IndexedDB 离线缓存 + **Supabase** 云同步（计划见 `phase2-backend-plan.md`）。
+**第一阶段只做前端 + Mock 数据**（已完成，v0.2.0）；第二阶段为「本地离线 + 云端同步」——**S1（本地 IndexedDB）已完成**，当前 `DATA_SOURCE = 'idb'`；云端选型定为**腾讯云开发 CloudBase**（计划见 `phase2-backend-plan.md`）。
 
 ## 强制约定
 - 视图层**不得**直接调用 adapter，只依赖 `src/api/index.js` 导出的 repository 与 Pinia store。
@@ -28,6 +28,21 @@
 - **agent-browser 的 click 命中第一个匹配元素**：`click ".grid .cell:nth-child(9)"` 在账单页会点到月历的日期格（页面里有两个 `.grid`），必须写成 `.picker .grid .cell:nth-child(9)`。改完文件若页面空白又无报错，先重新 `open` 一次（HMR 半改状态）。
 - **Vue 的 DOM 更新是异步的**：用 `eval` 派发合成手势后，必须在**另一次** `eval` 里读状态，同一次调用里读到的还是旧值。
 - **agent-browser 用法**：二进制在 `C:\Users\DELL\.workbuddy\binaries\node\workspace\node_modules\agent-browser\bin\agent-browser-win32-x64.exe`。**必须先 `open <url>` 再 `set viewport <w> <h>`**；没有打开页面就调 `set viewport` 会一直挂住不返回。命令都可能挂起，一律套 `timeout`。`eval` 用最简单的表达式（如 `document.querySelector('.scroll-area').scrollTop = 99999`）不会挂。
+
+## 数据层（第二阶段 S1 已完成）
+- **业务规则只在 `src/api/core/` 写一次**，被各适配器共用：
+  - `core/query.js` —— 过滤 / 排序 / 聚合 / 派生字段（纯函数，无 IO）：`alive`、`createCategoryLookup`、`filterCategories`、`filterBills`、`groupBillsByDate`、`dailySummaryOf`、`summarizeBills`、`remarkHistoryOf`、`decorateBill`。
+  - `core/migrate.js` —— 种子迁移 `migrateSeedData(bills, meta)`，幂等、只补不覆盖。
+  - **新增适配器必须复用这两处**，不要另写一套查询 —— 本项目已吃过「两处实现各写一套、慢慢漂开」的亏（`PeriodSwitch` 那次）。
+- **适配器**：`mockAdapter`（内存 + localStorage，保留作契约对照基准）、`idbAdapter`（**当前启用**）、`cloudbaseAdapter`（待实现，第二阶段 S3）。
+- **IndexedDB 约定**（`idbAdapter`）：库名 `ledger`、版本 2、5 个 objectStore（ledger / category / bill / outbox / meta）；meta 表键为 `schemaVersion` / `seedMeta` / `importedFromLocalStorage`。
+  - 首次打开**接管** localStorage 的 `ledger.db.v1`（`LEGACY_KEY`），**导入后不删旧库**（可回退）；靠 `importedFromLocalStorage` 标记保证只接管一次，`reset()` 会**保留**该标记（否则重置后旧库会被重新导入）。
+  - 写入前一律 `toPlain()` JSON 深拷贝 —— IndexedDB 的结构化克隆处理不了 Vue 的 Proxy，直接 `put` 会抛 `DataCloneError`。
+  - **「读-改-写」必须分两次事务**，不要塞进一个事务：事务跨 `await` 会失效并抛 `TransactionInactiveError`。页面内单线程串行，无并发问题。
+  - 查询用 `readAll` 把集合读进内存再算（千条级毫秒级）；索引已建好，数据量上来后再改走索引。
+  - outbox 目前仍在 localStorage（`ledger.outbox.v1`），S2 再与业务数据同库。
+- **存储顺序不是契约**：IndexedDB 的 `getAll` 按主键序返回，内存数组是插入序。凡有顺序语义处必须显式排序 —— `filterCategories` 已加 id 兜底，因为 `order` 只在同级同类型内唯一。
+- 改动数据层的验证姿势：`node .preview/contract-test.mjs`（契约一致性，mock 与 idb 双跑，83 条）+ `period-test` / `seed-test` / `migrate-test`。Node 里跑 IndexedDB 用 `fake-indexeddb`（devDependency）。
 
 ## 布局约定
 - **账单 store 有两份互相独立的数据切片**，不要合并：
@@ -73,11 +88,15 @@
 `npm install && npm run dev` → http://127.0.0.1:5173
 Mock 数据持久化在 localStorage `ledger.db.v1`，「我的 → 重置演示数据」可恢复种子数据。
 
-## 本地断言脚本（.preview/，不入库）
-数据层用 Node 打桩跑（adapter 只依赖相对路径 + localStorage，最省事）：
-- `seed-test.mjs`：种子数字 + 迁移幂等（14 条）。
-- `period-test.mjs`：区间筛选 / 汇总与日期工具（22 条）。
-运行：`node .preview/xxx-test.mjs`（用托管 node）。store 的 getter 依赖 `@/` 别名，Node 直接 import 不了，那部分靠浏览器读 DOM 断言。
+## 数据层断言（scripts/，已纳入版本管理）
+数据层用 Node 打桩跑（适配器只依赖相对路径 + localStorage / IndexedDB）：
+- `npm run test:data` 一次跑完四个脚本。
+- `contract-test.mjs`（83 条）：契约一致性 —— 同一套断言跑 mock 与 idb，顺带验证「idb 首次打开接管 localStorage 旧库」。
+- `period-test.mjs`（22 条）：区间筛选 / 汇总与日期工具。
+- `seed-test.mjs`（14 条）：种子数字 + 迁移幂等。
+- `migrate-test.mjs`（11 条）：备注回填迁移。
+- IndexedDB 在 Node 里用 `fake-indexeddb` 打桩。脚本用 `new URL('../src/', import.meta.url)` 解析路径，**不要写死绝对路径**。
+- store 的 getter 依赖 `@/` 别名，Node 直接 import 不了，那部分靠浏览器读 DOM 断言。
 
 ## 版本管理
 - **本机 Git 环境**：未安装 Git for Windows（无 `C:\Program Files\Git`），用户 PATH 中无 git；本会话执行 git 用的是 WorkBuddy 内置 PortableGit `~/.workbuddy/binaries/PortableGit/versions/1.2.0`（2.55.0）。另装有 GitHub Desktop 3.5.12，其自带精简版 git 在 `%LOCALAPPDATA%\GitHubDesktop\app-3.5.12\resources\app\git\cmd\git.exe`（2.53.0，无 bash/gitk）。全局身份 `tiger7404945 <tiger7404945@163.com>`。
@@ -87,8 +106,14 @@ Mock 数据持久化在 localStorage `ledger.db.v1`，「我的 → 重置演示
 - 不提交 `node_modules/`、`dist/`、`.preview/`（见 `.gitignore`）；`dist` 为可重建产物。
 - 设计参考图与 `.workbuddy/memory/` 纳入版本管理，作为设计来源与决策记录。
 
-## 后端选型（重要变更）
-- **LeanCloud 已停服**：2026-01-12 起停止新用户注册与创建应用，2027-01-12 关闭全部对外服务（应用访问 / 数据读写 / API / 控制台），平台数据将被销毁。第一阶段的 `leancloudAdapter.js` 骨架因此**作废**，仅保留其中「本地为主 + outbox 推送 + 水位拉取 + `updatedAt` 新者胜」的同步策略作设计参考，**不要再照它实现**。
-- **第二阶段云端改用 Supabase**（用户 2026-09-29 选定）：PostgreSQL + PostgREST + Auth + RLS，开源可自托管。任务清单见仓库根目录 `phase2-backend-plan.md`。
-- 教训要记住：后端选型必须在架构上可替换。第一阶段「契约 + 适配器」分层做到了这点——换云厂商只改适配器层，视图与 store 零改动。**继续维持这个纪律**。
-- Supabase 接入约定（写在计划里，实现时遵守）：本地 id 是字符串（如 `bill_mumgc7yq17y0il4`），云端用 `local_id text` + `unique(user_id, local_id)` 做 upsert 幂等键；时间用 `timestamptz` + 数据库 `now()` 触发触发器维护 `updated_at`；金额用 `numeric(12,2)` 不用浮点；建表后**立刻开 RLS**；前端只用 `anon key`，`service_role` 绝不进前端；`.env.local` 不入库（`.gitignore` 已覆盖，`git check-ignore` 验过）。
+## 后端选型（两次变更，教训）
+- **LeanCloud 已停服**：2026-01-12 起停止新用户注册与创建应用，2027-01-12 关闭全部对外服务（应用访问 / 数据读写 / API / 控制台），平台数据将被销毁。第一阶段的 `leancloudAdapter.js` 骨架因此**作废**，仅保留「本地为主 + outbox 推送 + 水位拉取 + `updatedAt` 新者胜」的同步策略作设计参考，**不要再照它实现**。
+- **Supabase 曾一度选定，后放弃**：技术方案没问题（Postgres + RLS + 开源可自托管），但**国内直连其官方域名不稳定**，真机测试常需自备域名与代理。
+- **终选腾讯云开发 CloudBase**（用户 2026-09-29 拍定）：国内访问快、合规、有免费额度，且前端静态托管与后端同平台，省掉跨域与域名配置。
+  - **免费体验版**：每个账号限 1 个环境，3,000 资源点/月（1,000 点 ≈ ¥1），**单次续期 6 个月、不支持自动续费，过期会停用** —— 必须设续期提醒。
+  - 数据库用**文档型**（本项目数据是嵌套对象、不需要 JOIN，且 Web SDK 直连最成熟）；也提供 MySQL / PostgreSQL。
+  - 权限靠**安全规则**（服务端下发，客户端改不了也绕不过）；云开发自动给带登录态的写入注入 `_openid`，规则写法 `doc._openid == auth.openid`。
+  - 云端文档 `_id` 直接用**本地 id** 当幂等键；字段名保持 camelCase 与本地同名（文档型不需要 snake_case 转换）。
+  - Web SDK：`@cloudbase/js-sdk`，`cloudbase.init({ env })` → `app.auth({ persistence: 'local' })` → `signInAnonymously()` → `app.database()`。**Web 端必须把开发/线上域名加入「安全来源」**，否则第一次调用就失败。
+- 教训要记住：后端选型必须在架构上可替换。第一阶段「契约 + 适配器」分层在**两次换厂商**时都只动了适配器层，视图与 store 零改动。**继续维持这个纪律**。
+- `.env.local` 不入库（`.gitignore` 已覆盖，`git check-ignore` 验过）。

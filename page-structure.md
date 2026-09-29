@@ -220,7 +220,7 @@
 
 ---
 
-## 8. 数据与接口（第一阶段约定）
+## 8. 数据与接口
 
 ### 实体
 
@@ -257,11 +257,14 @@ Bill {
 Ledger { id, name, ownerId, createdAt }
 ```
 
-### 需预留的接口（Repository 契约）
-- Category：`list({ ledgerId, type })`、`get(id)`、`create(payload)`、`update(id, patch)`、`remove(id)`、`moveOrder(ids)`、`listSub(parentId)`
-- Bill：`list({ ledgerId, month, from, to, type, categoryId, keyword, order })`、`get(id)`、`create(payload)`、`update(id, patch)`、`remove(id)`、`summary({ ledgerId, month, from, to })`、`listByMonthGroups({ ledgerId, month })`、`remarkHistory({ ledgerId, categoryId, limit })`
+### Repository 契约
+已全部实现，且 **mockAdapter 与 idbAdapter 由同一套断言验证结果一致**（`.preview/contract-test.mjs`，83 条）。
+
+- Category：`list({ ledgerId, type, parentId })`、`get(id)`、`create(payload)`、`update(id, patch)`、`remove(id, { cascade })`、`reorder(ids)`、`listChildren(parentId)`
+- Bill：`list({ ledgerId, month, from, to, type, categoryId, keyword, order })`、`get(id)`、`create(payload)`、`update(id, patch)`、`remove(id)`、`summary({ ledgerId, month, from, to })`、`listGrouped({ ledgerId, month })`、`dailySummary(...)`、`recent(...)`、`remarkHistory({ ledgerId, categoryId, limit })`
   - `from` / `to` 为 `'YYYY-MM-DD'`（含首尾），`month` 是它的特例；两者同时传时按 AND 过滤。账期筛选（按月 / 按年）都用它表达。
-- Sync：`push()`、`pull(since)`、`subscribe(cb)`，本地写入时写 `outbox` 增量队列
+- Ledger：`list()`、`get(id)`、`update(id, patch)`
+- Sync：`pendingCount()`、`push()`、`pull(since)`、`subscribe(cb)`，本地写入时写 `outbox` 增量队列
 
 ### 演示数据（种子）
 - 本月支出固定为 `8720.72`（与账单页参考截图一致），差额由一笔「购物 / 数码配件」账单补齐。
@@ -274,6 +277,11 @@ views / components
       ↓ (Pinia stores)
    repository  ← 接口契约（不变）
       ↓
-  adapter 可切换：mockAdapter（本期） | idbAdapter（IndexedDB 离线） | leancloudAdapter（联网增量同步）
+  adapter 可切换：idbAdapter（当前启用） | mockAdapter（对照基准） | cloudbaseAdapter（第二阶段 S3）
+      ↑
+  core/query.js、core/migrate.js  ← 各适配器共用的业务规则（纯函数，无 IO）
 ```
-- 本期仅实现 `mockAdapter`（内存 + 可持久化到 localStorage 便于刷新保留），`idbAdapter` / `leancloudAdapter` 提供骨架与 TODO。
+- **当前数据源是 `idbAdapter`**：IndexedDB，库名 `ledger`、版本 2、5 个 objectStore（ledger / category / bill / outbox / meta）。首次打开会接管第一阶段留在 localStorage 的 `ledger.db.v1`，导入后**不删旧库**（可回退），且只接管一次。
+- `mockAdapter` 保留作契约对照基准；切回它只需改 `src/api/index.js` 的 `DATA_SOURCE`。
+- 云端选型经历两次变更：LeanCloud（已停服作废）→ Supabase（国内直连不稳）→ **腾讯云开发 CloudBase**。见 `phase2-backend-plan.md`。
+- **业务规则不写在适配器里**：过滤 / 排序 / 聚合 / 派生字段在 `core/query.js`，种子迁移在 `core/migrate.js`，各适配器共用同一份实现，避免多份实现漂移。

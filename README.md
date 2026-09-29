@@ -1,13 +1,18 @@
-# 随手记账 · 移动端 H5（第一阶段：前端复刻）
+# 随手记账 · 移动端 H5
 
-基于参考截图复刻的记账 App 前端，Vue 3 + Vite。当前阶段**只做前端 UI、Mock 数据与前端交互**，已按「本地优先 + 增量同步」的目标预留接口。
+基于参考截图复刻的记账 App，Vue 3 + Vite。
+
+- **第一阶段（已完成，v0.2.0）**：前端 UI 与交互复刻，全部页面跑通。
+- **第二阶段（进行中）**：数据从「只在这台浏览器」变成「本地优先 + 云端同步」。
+  **S1 已完成** —— 本地存储已从 localStorage 切到 IndexedDB，用户无感；下一步 S2（同步引擎）。任务清单见 `phase2-backend-plan.md`。
 
 ## 快速开始
 
 ```bash
 npm install
-npm run dev      # http://127.0.0.1:5173
-npm run build    # 产物输出到 dist/
+npm run dev       # http://127.0.0.1:5173
+npm run build     # 产物输出到 dist/
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移）
 ```
 
 ## 页面清单（对应 8 张参考图）
@@ -47,11 +52,13 @@ src/
   api/                    数据层（视图只依赖契约，不依赖实现）
     contract.js            实体类型 + Repository 接口契约 + 错误类型
     index.js               适配器装配（改 DATA_SOURCE 即可切换数据源）
-    adapters/mockAdapter.js      本期实现：内存 + localStorage
-    adapters/idbAdapter.js       预留：IndexedDB 离线缓存（含建库与索引定义）
+    core/query.js          查询与派生（纯函数，无 IO）—— 各适配器共用
+    core/migrate.js        演示数据的幂等迁移 —— 各适配器共用
+    adapters/mockAdapter.js      内存 + localStorage（对照基准，保留）
+    adapters/idbAdapter.js       当前启用：IndexedDB 离线缓存
     adapters/leancloudAdapter.js 已废弃（LeanCloud 停服），仅保留同步策略注释作参考
     sync/outbox.js         增量同步队列（本地写入即入队）
-    mock/seed.js           Mock 种子数据
+    mock/seed.js           种子数据
   stores/                  Pinia：ledger / category / bill
   composables/             可复用交互：useRecordDraft（记账草稿）、useSwipeViews（左右滑动切屏）
   components/              通用组件（含 icons 图标库、PeriodSwitch + PeriodPicker 账期切换器与弹层、TrendChart 趋势折线、RankList 分类排行）
@@ -60,14 +67,30 @@ src/
   styles/                  tokens.css（设计变量）+ base.css
 ```
 
-## 从 Mock 切到「IndexedDB + Supabase」的步骤
+## 数据层现状
 
-1. `src/api/adapters/idbAdapter.js`：补齐 objectStore 读写（`openDB()` 已写好建库与索引）。写入时在同一事务内写业务表 + `outbox` 表。
-2. 新增 `src/api/adapters/supabaseAdapter.js`：实现 `initialize / push / pull / syncAll`，按 `outbox.pending()` 推送，以 `updated_at` 为水位拉取，冲突「新者胜」。
-3. 修改 `src/api/index.js` 的 `DATA_SOURCE` 为 `'idb'`。
-4. 视图层与 store 层无需改动 —— 所有调用都走同一套 Promise 契约。
+调用链：视图 → Pinia store → `api/index.js` 导出的 repository → 适配器。换实现只动一个装配点，视图与 store 零改动。
 
-> 详细的任务分解、前置准备与验收标准见 `phase2-backend-plan.md`。
+| 适配器 | 状态 |
+| --- | --- |
+| `mockAdapter.js` | 第一阶段实现（内存 + localStorage）。保留作契约对照基准 |
+| `idbAdapter.js` | **当前启用**：IndexedDB，库名 `ledger`、版本 2、5 个 objectStore |
+| `leancloudAdapter.js` | 已废弃（LeanCloud 停服），仅留同步策略注释作参考 |
+| `cloudbaseAdapter.js` | 待实现（第二阶段 S3，腾讯云开发） |
+
+业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。
+
+### 已切到 IndexedDB（S1）
+
+- 首次打开会**接管**第一阶段留在 localStorage 的 `ledger.db.v1`，且**不删除旧库**（可回退）；只接管一次，靠 meta 标记判断。
+- 写入落在 IndexedDB；`localStorage` 里只剩同步队列 `ledger.outbox.v1`。
+- 切换数据源：改 `src/api/index.js` 的 `DATA_SOURCE`（`'mock' | 'idb'`）。
+
+### 接腾讯云开发的步骤（第二阶段 S3）
+
+1. 按 `phase2-backend-plan.md` 第 3 节完成账号与环境准备，**配好安全规则**（不配等于数据库公开）。
+2. 新增 `src/api/adapters/cloudbaseAdapter.js`：实现 `initialize / push / pull / syncAll`，按 `outbox.pending()` 推送，以 `updatedAt` 为水位拉取，冲突「新者胜」。
+3. 视图层与 store 层无需改动 —— 所有调用都走同一套 Promise 契约。
 
 ## 第一阶段验收结论（v0.2.0）
 
@@ -88,18 +111,37 @@ src/
 
 > 走查过程中新建的测试账单已删除，本地库已重置回种子数据。
 
-## 关于后端选型的重要变更
+## 关于后端选型的两次变更
 
-第一阶段的 `leancloudAdapter.js` 是为 **LeanCloud** 预留的，但 LeanCloud 已发布停服公告：
+1. **曾按 LeanCloud 预留 → 作废**。第一阶段为 LeanCloud 写了适配器骨架，但它已发布停服公告：**2026-01-12** 起停止新用户注册与创建应用，**2027-01-12** 起关闭全部对外服务（应用访问、数据读写、API、控制台），平台数据将被销毁。注册通道现已关闭。
+2. **一度改用 Supabase → 因国内访问不稳定放弃**。方案本身没问题（Postgres + RLS + 开源可自托管），但其官方域名在国内直连不稳，真机测试常需自备域名与代理。
+3. **终选腾讯云开发 CloudBase**：国内访问快、合规、有免费额度，且前端静态托管与后端同平台，省掉跨域与域名配置。**注意：免费环境每个账号限 1 个，单次续期 6 个月、不支持自动续费，过期会停用。**
 
-- **2026-01-12** 起：停止新用户注册、停止创建新应用；
-- **2027-01-12** 起：关闭全部对外服务（应用访问、数据读写、API、控制台），平台数据将被销毁。
+`leancloudAdapter.js` 只在注释里保留其同步策略（本地为主 + outbox 推送 + 水位拉取 + 新者胜）作设计参考，不会再被实现。
 
-该选型因此作废。**第二阶段云端同步改用 Supabase**（PostgreSQL + 自动 REST API + 行级安全策略，开源可自托管，避免再次被单一厂商绑定）。`leancloudAdapter.js` 只在注释里保留其同步策略作为设计参考，不会再被实现。
+> 两次换厂商都只动了适配器层，**视图与 store 一行未改** —— 这正是「契约 + 适配器」分层的价值。
+
+## 第二阶段 S1 验收结论（本地 IndexedDB）
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm run build` | 通过（100 modules，JS gzip 约 78.5 kB） |
+| 契约一致性测试（mock vs idb） | **83 条断言全绿** |
+| 既有数据层断言 | 无回归（22 + 14 + 11） |
+| 两适配器只读结果一致 | 通过（列表派生字段 / 区间汇总 / 日历分组 / 备注候选 / 关键字搜索） |
+| 两适配器写入结果一致 | 通过（10 个错误码 / 分类 CRUD / 级联软删除 / 改分类后一级联动 / 软删除标记） |
+| 旧库接管 | 通过（连时间戳逐字段一致；旧库保留未删，可回退） |
+| 写入确实落 IndexedDB | 通过（bill 44 → 45，同时 localStorage 旧库仍为 44） |
+| 刷新后数据保留 / 重置演示数据 | 通过 |
+| 浏览器运行时未捕获异常 | 无 |
 
 
 ## 说明
 
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
-- 数据默认持久化在 `localStorage`（键 `ledger.db.v1`）；「我的 → 重置演示数据」可恢复初始 Mock。
+- 数据当前持久化在 **IndexedDB**（库名 `ledger`）；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」可恢复初始种子。
+- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
+  - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，83 条断言）
+  - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
+  - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
