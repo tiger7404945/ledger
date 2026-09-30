@@ -27,6 +27,8 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
   const ctx = {
     failures: 0,
     failure: null,
+    /** 持续失败（不会自愈）。用 `_failAlways({ kind, message })` 设置 */
+    persistentFailure: null,
     skew: 0,
     /** serverTime() 返回的 source；改成 'watermark-lower-bound' 可模拟云函数不可用 */
     serverTimeSource: 'cloud-function',
@@ -44,17 +46,49 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       ctx.failures -= 1
       throw ctx.failure || new Error('[ledger] 假云端：模拟网络失败')
     }
+    // 持续失败的模式：用于验证「不可重试的类别不该继续退避」
+    // （登录失效、配额用完这类，重试永远好不了）
+    if (ctx.persistentFailure) {
+      const e = ctx.persistentFailure
+      if (e.kind) {
+        const err = new Error(e.message || `[ledger] 假云端：持续失败 ${e.kind}`)
+        err.kind = e.kind
+        throw err
+      }
+      throw e
+    }
   }
 
   /**
    * 服务端时钟：**严格单调递增**。
    * 真实的服务端时间也只会前进；这里额外保证「同一毫秒内的多次写入一定拿到
    * 不同的时间戳」，否则水位线会把同一毫秒里的更新判成「已经拉过了」而漏掉。
+   *
+   * ⚠️ 单调只管「不倒退」，**不能凭空超越底层时钟**。
+   * 早期写法是无条件 `serverClock + 1`，这会让 `serverNow()` 每被调用一次就
+   * 比 `clock()` 往前多爬 1ms：一次同步要调它 4 次（serverTime + 3 个集合的
+   * pull 快照），几十轮下来就爬上几百毫秒。后果是引擎算出的
+   * `clockOffset = 服务端时间 - 本地时间` 被这个漂移污染 —— 于是「本地时钟
+   * 倒退」场景里，本地时间戳被推得比云端还新，LWW 裁决方向整个反过来
+   * （14 组「拒绝后回拉」失效的真正原因）。
+   *
+   * 正确语义是：**同一时刻（`clock() + skew` 没变）的重复调用，返回同一个值**；
+   * 只有「时钟倒退」或「值已被占用」时才 +1 追赶。这与真实服务端一致 ——
+   * 数据库的 serverDate 也不会因为多查了两次就当作时间前进了。
    */
   let serverClock = 0
+  let serverClockBase = null
   const serverNow = () => {
     const base = clock() + ctx.skew
-    serverClock = base > serverClock ? base : serverClock + 1
+    if (serverClockBase === null || base > serverClockBase) {
+      // 时钟真的前进了（或首次调用）：跳到新的基准
+      serverClock = base
+      serverClockBase = base
+    } else if (serverClock < base) {
+      // 时钟倒退过、但还没被追平：先补回 base，避免时间轴出现空洞
+      serverClock = base
+    }
+    // base 没变时返回同一个值：同一毫秒内的多次读取是同一个时刻
     return serverClock
   }
 
@@ -62,12 +96,14 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
     return {
       openid,
 
-      async push(collection, docs) {
+      async push(collection, docs, { clockOffset = 0 } = {}) {
         ctx.calls.push += 1
         ctx.log.push({ op: 'push', collection, count: (docs || []).length, openid })
         await tick()
         maybeFail()
 
+        // 与真云端同语义：把本地时间戳校正到服务端时间轴后再比（S4-2）
+        const offset = Number.isFinite(clockOffset) ? clockOffset : 0
         const upserted = []
         const rejected = []
         for (const doc of docs || []) {
@@ -75,7 +111,7 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
           if (!id) continue
           const key = keyOf(openid, collection, id)
           const prev = rows.get(key)
-          const localTs = doc.updatedAt || 0
+          const localTs = (doc.updatedAt || 0) + offset
           const remoteTs = prev ? prev.updatedAt || 0 : -1
 
           // 条件 upsert：本地这份更旧就不覆盖，并把决定权交回客户端
@@ -123,12 +159,30 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
           const set = new Set(ids)
           matched = matched.filter((d) => set.has(d._id))
         } else {
-          // 区间是 (since, snapshotAt]，**右端闭合**：
-          //   左开 —— 上次已经拉过的不要重复拉
-          //   右闭 —— 恰好在快照时刻写入的那条必须包含进来，否则会永久漏掉
+          /**
+           * 区间是 `[since, snapshotAt]`，**左闭右闭** —— 与真云端同语义。
+           *
+           * ⚠️ 左端**必须闭**（`>=` 而不是 `>`）。这一点很容易想反：
+           * 「上次已经拉到 `since` 了，这次不必再拉」听起来天经地义，但水位线
+           * 记的是**快照时刻**，不是「已拉到的最新文档时间」。两者相等时会出现
+           * 这样的交错：
+           *
+           *   ① 本轮 pull 取快照 `snapshotAt = T`，水位线落成 T；
+           *   ② 同一轮里紧接着 push，服务端接收时间也被盖成 T（同一毫秒）；
+           *   ③ 下一轮 `since = T`，而那条文档的 `_serverTs` 正是 T。
+           *
+           * 左开就会把 `T > T` 判为假、永远拉不到它 —— **数据永久丢失**。
+           * 左闭最多重复拉一次，而重复拉是无副作用的（合并规则会按 updatedAt
+           * 裁决，同一份文档重复到达结果相同）。**宁可重复，不能漏。**
+           *
+           * 右端闭合（`<= snapshotAt`）则是为了「恰好在快照时刻写入的那条」
+           * 必须包含进来，否则同样会漏。
+           *
+           * 真云端 cloudbaseAdapter 用的就是 `_.gte(...)`（左闭），这里是刻意对齐。
+           */
           matched = matched.filter((d) => {
             const ts = d._serverTs || 0
-            return ts > since && ts <= snapshotAt
+            return ts >= since && ts <= snapshotAt
           })
         }
 
@@ -196,6 +250,19 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       return n
     },
 
+    /**
+     * 进入「持续失败」模式：之后每次调用都抛错，不会自愈。
+     * 用来验证**不可重试类别**的处置（登录失效 / 配额用完 / 权限被拒）——
+     * 这些光靠退避重试永远好不了，引擎必须停下来而不是一直打。
+     *
+     * 传 `{ kind: 'auth-expired' }` 会抛一个带 kind 标记的错误。
+     * 传 `null` 恢复正常。
+     */
+    _failAlways(error = null) {
+      ctx.persistentFailure = error
+      return error
+    },
+
     /** 服务端时间偏移。只为把「时钟不可信」暴露出来，S2 不对它做断言 */
     _skew(ms) {
       ctx.skew = Number(ms) || 0
@@ -230,6 +297,7 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       rows.clear()
       ctx.failures = 0
       ctx.failure = null
+      ctx.persistentFailure = null
       ctx.skew = 0
       ctx.serverTimeSource = 'cloud-function'
       ctx.calls = { push: 0, pull: 0, serverTime: 0 }

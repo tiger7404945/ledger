@@ -545,13 +545,18 @@ export function createIdbAdapter(options = {}) {
       return readAll(name)
     },
 
-    async applyRemote(collection, docs) {
+    /**
+     * 把远端增量合并进本地。
+     * `clockOffset`（S4-2）= 服务端时间 - 本地时间，用来把两边的 `updatedAt`
+     * 换算到服务端时间轴上比较。引擎只在服务端时间可信时才传非 0 值。
+     */
+    async applyRemote(collection, docs, clockOffset = 0) {
       await ready()
       const name = STORE_OF[collection]
       if (!name || !docs || !docs.length) return { applied: 0, kept: 0 }
       const locals = await readAll(name)
       // 新者胜：远端更新才覆盖，本地更新的保留（它还在 outbox 里等下一轮推送）
-      const { take, keep } = partitionRemote(locals, docs)
+      const { take, keep } = partitionRemote(locals, docs, clockOffset)
       if (take.length) await putMany(name, take)
       return { applied: take.length, kept: keep.length }
     }

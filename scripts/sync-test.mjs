@@ -130,8 +130,15 @@ const billDoc = (clock, id, amount, extra = {}) => ({
 /**
  * 造一台「内存设备」：独立的队列 + 独立的本地表 + 一个引擎。
  * 两台设备共用同一个 fakeCloud，就是「同一账号的两台机器」。
+ *
+ * ⚠️ `now` 必须把测试时钟注进去。S4-2 之后引擎会用 `now()` 去算
+ * "本地时钟相对服务端的偏差"（`服务端时间 - 本地时间`）。如果引擎用的是真实
+ * `Date.now()` 而 fakeCloud 用的是测试时钟（1.7e12），算出来的 offset 会是
+ * 一个 -9e10 量级的巨大数字，把所有时间戳比较全部掀翻 —— 表现为一片假失败。
+ * 测试时钟与 fakeCloud 同源，所以正确注入后 offset 天然是 0，
+ * 「新者胜」的裁决就回到纯粹的 updatedAt 比较上。
  */
-async function makeDevice({ cloud, user = null, debounceMs, timer, isOnline } = {}) {
+async function makeDevice({ cloud, user = null, debounceMs, timer, isOnline, now } = {}) {
   const outbox = createOutbox(createMemoryOutboxStore())
   const tables = new Map()
   const table = (c) => {
@@ -154,10 +161,10 @@ async function makeDevice({ cloud, user = null, debounceMs, timer, isOnline } = 
     async get(collection, id) {
       return table(collection).get(id) || null
     },
-    async applyRemote(collection, docs) {
+    async applyRemote(collection, docs, clockOffset = 0) {
       const locals = [...table(collection).values()]
       // 与适配器共用同一条合并规则（core/merge.js）
-      const { take, keep } = partitionRemote(locals, docs)
+      const { take, keep } = partitionRemote(locals, docs, clockOffset)
       take.forEach((d) => table(collection).set(d.id, d))
       return { applied: take.length, kept: keep.length }
     }
@@ -168,6 +175,7 @@ async function makeDevice({ cloud, user = null, debounceMs, timer, isOnline } = 
     store,
     meta,
     cloud: user ? cloud.as(user) : cloud,
+    ...(now ? { now } : {}),
     ...(debounceMs !== undefined ? { debounceMs } : {}),
     ...(timer ? { timer } : {}),
     ...(isOnline ? { isOnline } : {})
@@ -214,7 +222,7 @@ group('1. 基本往返：本地写 3 条 → push → 清空本地 → pull → 
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'r1', 100))
   await a.write('bill', billDoc(clock, 'r2', 200))
@@ -226,7 +234,7 @@ group('1. 基本往返：本地写 3 条 → push → 清空本地 → pull → 
   eq('1c 队列已清空', await a.outbox.pendingCount(), 0)
 
   // 换一台设备（本地是空的，水位也是 0）
-  const b = await makeDevice({ cloud })
+  const b = await makeDevice({ cloud, now: clock.now })
   eq('1d 新设备本地为空', b.all('bill').length, 0)
 
   const second = await b.engine.sync({ manual: true })
@@ -251,7 +259,7 @@ group('2. 幂等：重复推送不产生重复文档')
   eq('2a 同一 id 推三次云端只有一条', cloud._dump('bill').filter((d) => d._id === 'i1').length, 1)
 
   // 经由引擎：同一笔账改两次，只会 upsert 不会产生第二条
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
   await a.write('bill', billDoc(clock, 'i2', 50))
   await a.engine.sync({ manual: true })
   await a.write('bill', billDoc(clock, 'i2', 60))
@@ -269,7 +277,7 @@ group('3. 离线补推：写 5 条 → 恢复网络 → 一次同步全部补推
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
   const timer = createFakeTimer()
-  const a = await makeDevice({ cloud, timer })
+  const a = await makeDevice({ cloud, timer, now: clock.now })
 
   cloud._failNext(10) // 这段时间内所有云端调用都失败
   for (let i = 0; i < 5; i += 1) await a.write('bill', billDoc(clock, `off${i}`, 10 + i))
@@ -299,7 +307,7 @@ group('4. 重试与状态回调：retry 递增、回调拿到 error、退避延�
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
   const timer = createFakeTimer()
-  const a = await makeDevice({ cloud, timer })
+  const a = await makeDevice({ cloud, timer, now: clock.now })
 
   const seen = []
   const off = a.engine.onStateChange((s) => seen.push(s.state))
@@ -343,7 +351,7 @@ group('5. 防重入：并发 5 次 sync 只发一轮请求')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'g1', 10))
   const before = cloud._calls()
@@ -373,7 +381,7 @@ group('6. 写后防抖：连写 3 次只触发 1 轮同步')
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
   const timer = createFakeTimer()
-  const a = await makeDevice({ cloud, debounceMs: 2000, timer })
+  const a = await makeDevice({ cloud, debounceMs: 2000, timer, now: clock.now })
 
   a.engine.start()
   await a.engine.sync() // 复用 startup 那一轮，确保基准稳定
@@ -403,7 +411,7 @@ group('7. 新者胜：云端更新时本地取云端版本')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
 
   // 云端先有一条较新的
   await cloud.push('bill', [billDoc(clock, 'w1', 15)])
@@ -449,8 +457,8 @@ group('9. 软删除：删除标记跨设备传播，且不复活')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
-  const b = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
+  const b = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'dl1', 50))
   await a.engine.sync({ manual: true })
@@ -474,7 +482,7 @@ group('9. 软删除：删除标记跨设备传播，且不复活')
 /* 10. 水位增量                                                */
 /* ========================================================== */
 
-group('10. 水位增量：第二次 pull 只拿水位之后的部分')
+group('10. 水位增量：第二次 pull 只拿水位附近的增量，不重不漏')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
@@ -486,28 +494,36 @@ group('10. 水位增量：第二次 pull 只拿水位之后的部分')
 
   // 水位用**云端给的快照时间**，不是本地时钟
   const watermark = all.serverTime
-  const none = await cloud.pull('bill', { since: watermark })
-  eq('10c 水位之后没有新数据（不重复拉）', none.docs.length, 0)
+
+  // ⚠️ 区间是左闭的（与真云端 `_.gte` 一致），所以「用同一个水位再拉一次」
+  //    会**重复**拿到快照时刻那批文档 —— 这是刻意的：
+  //    快照时刻与「本轮 push 的服务端接收时间」可能落在同一毫秒，
+  //    左开会把 `T > T` 判假而永久漏掉它（实测就是 13c 收敛失败那个 bug）。
+  //    重复拉无副作用：合并规则按 updatedAt 裁决，同一份文档重复到达结果相同。
+  //    所以这里断言的是「不丢」与「幂等」，不是「一条都不重复」。
+  const again = await cloud.pull('bill', { since: watermark })
+  eq('10c 同水位重拉不丢数据（左闭，可能重复但不漏）', again.docs.length, 2)
+  eq('10c2 重拉到的就是原来那两条', again.docs.map((d) => d._id).sort(), ['y1', 'y2'])
 
   await cloud.push('bill', [billDoc(clock, 'y3', 3)])
   const inc = await cloud.pull('bill', { since: watermark })
-  eq('10d 增量只含新的一条', inc.docs.map((d) => d._id), ['y3'])
+  eq('10d 新推的那条出现在增量里', inc.docs.map((d) => d._id).includes('y3'), true)
 
   // 关键回归：**推送晚、但本地时间戳更早**的变更也必须能被拉到。
   // 这正是「水位不能按 updatedAt 过滤」的原因 —— 按客户端时间过滤会永久漏掉它。
   clock.advance(-4000)
   await cloud.push('bill', [billDoc(clock, 'y4', 4)])
   const late = await cloud.pull('bill', { since: watermark })
-  eq('10e 时间戳更早但推送更晚的也能拉到', late.docs.map((d) => d._id), ['y3', 'y4'])
+  eq('10e 时间戳更早但推送更晚的也能拉到', late.docs.map((d) => d._id).includes('y4'), true)
 
   // 引擎级：水位持久化后，第二轮同步不会重复拉全量
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
   await a.engine.sync({ manual: true })
   eq('10f 引擎按水位拉到全部 4 条', a.all('bill').length, 4)
   const before = cloud._calls().pull
   await a.engine.sync({ manual: true })
   eq('10g 第二轮仍会查询（但拿不到新数据）', cloud._calls().pull > before, true)
-  eq('10h 本地条数没有翻倍', a.all('bill').length, 4)
+  eq('10h 本地条数没有翻倍（重复到达不会变成两条）', a.all('bill').length, 4)
   eq('10i 水位已推进', a.watermark() > 0, true)
 }
 
@@ -557,7 +573,7 @@ group('12. 队列压缩：同步完不残留已同步条目')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'k1', 1))
   await a.write('bill', billDoc(clock, 'k2', 2))
@@ -577,8 +593,8 @@ group('13. 双实例收敛：两台设备同改一条，最终收敛到同一版
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
-  const b = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
+  const b = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'm1', 10))
   await a.engine.sync({ manual: true })
@@ -613,28 +629,35 @@ group('14. 拒绝后回拉：本地时钟倒退时，必须收敛到云端版本
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
-  const a = await makeDevice({ cloud })
+  const a = await makeDevice({ cloud, now: clock.now })
 
   await a.write('bill', billDoc(clock, 'c1', 10))
   await a.engine.sync({ manual: true })
-  // 再同步一轮，让水位越过这条的**云端接收时间**：
-  // 此后这条不会再被 pull 拉到，push 成了唯一的信息来源 ——
-  // 这正是「推送被拒」最危险的场景。
+  // 再写一条**别的**账单并同步，把水位推到这条之后：
+  // 此后 c1 不会再被 pull 拉到（它的 _serverTs 已经小于水位），
+  // push 成了唯一的信息来源 —— 这正是「推送被拒」最危险的场景。
+  // ⚠️ 不能只靠「多同步一轮」来推水位：区间是左闭的，
+  //    再同步一轮水位仍等于 c1 的 _serverTs，照样能拉到它。
+  await a.write('bill', billDoc(clock, 'c2', 7))
   await a.engine.sync({ manual: true })
   const watermark = a.watermark()
-  eq('14a 首次同步完成', cloud._dump('bill')[0].amount, 10)
+  eq('14a 首次同步完成', cloud._dump('bill').find((d) => d._id === 'c1').amount, 10)
+  ok(
+    '14a1 水位已越过 c1（push 成为唯一信息来源）',
+    watermark > cloud._dump('bill').find((d) => d._id === 'c1')._serverTs
+  )
 
   // 模拟这台设备时钟倒退：本地改成更旧的 updatedAt
   await a.write('bill', billDoc(clock, 'c1', 20, { updatedAt: clock.now() - 5000 }))
   const localTs = a.get('bill', 'c1').updatedAt
-  ok('14a2 本地时间戳确实比云端旧', localTs < cloud._dump('bill')[0].updatedAt)
+  ok('14a2 本地时间戳确实比云端旧', localTs < cloud._dump('bill').find((d) => d._id === 'c1').updatedAt)
 
   const r = await a.engine.sync({ manual: true })
 
   ok('14b 推送被云端拒绝', r.rejected.length === 1, JSON.stringify(r.rejected))
   ok('14c 拒绝原因带回云端时间戳', r.rejected[0].cloudUpdatedAt > localTs)
   eq('14d 本地收敛到云端版本', a.get('bill', 'c1').amount, 10)
-  eq('14e 云端没被旧版本覆盖', cloud._dump('bill')[0].amount, 10)
+  eq('14e 云端没被旧版本覆盖', cloud._dump('bill').find((d) => d._id === 'c1').amount, 10)
   eq('14f 被否决的条目已作废（否则会无限重推）', await a.outbox.pendingCount(), 0)
   ok('14g 水位线在推进', a.watermark() >= watermark)
 
@@ -663,7 +686,7 @@ group('15. 身份隔离：换身份拉不到别人的文档')
   eq('15c 云端注入了 _openid', cloud._dump('bill', 'user_a')[0]._openid, 'user_a')
 
   // 引擎级：A 的队列必须推到 A 名下，不能串到 B
-  const devA = await makeDevice({ cloud, user: 'user_a' })
+  const devA = await makeDevice({ cloud, user: 'user_a', now: clock.now })
   await devA.write('bill', billDoc(clock, 'au2', 3))
   await devA.engine.sync({ manual: true })
 
@@ -705,7 +728,7 @@ group('16. 分页拉取：单页装不下时循环拉，不重不漏')
   eq('16d 不重不漏', ids.size, 250)
 
   // 引擎级：一次 sync 就能拉完（内部循环）
-  const dev = await makeDevice({ cloud })
+  const dev = await makeDevice({ cloud, now: clock.now })
   await dev.engine.sync({ manual: true })
   eq('16e 引擎一次同步拉完 250 条', dev.all('bill').length, 250)
 }
@@ -717,7 +740,7 @@ group('16. 分页拉取：单页装不下时循环拉，不重不漏')
 group('17. 未配置云端：引擎静默跳过，不影响本地记账')
 {
   const clock = createClock()
-  const cold = await makeDevice({ cloud: null })
+  const cold = await makeDevice({ cloud: null, now: clock.now })
 
   await cold.write('bill', billDoc(clock, 'n1', 1))
   const r = await cold.engine.sync({ manual: true })

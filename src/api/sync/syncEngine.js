@@ -22,6 +22,7 @@
 
 import { COLLECTIONS } from '../contract.js'
 import { CLOUD_PAGE_LIMIT } from './cloudClient.js'
+import { SYNC_ERROR_KIND, toSyncError } from './errors.js'
 
 export const SYNC_STATE = {
   IDLE: 'idle',
@@ -64,6 +65,17 @@ export function createSyncEngine({
   let lastSyncAt = 0
   let pendingCache = 0
   let retryCount = 0
+  /**
+   * 连续失败次数。与 `retryCount` 分开：后者会随重试队列语义走动，
+   * 这个只回答「是不是一直没好」，用于 UI 决定要不要显示持续失败提示。
+   */
+  let consecutiveFailures = 0
+  /** 本地时钟相对服务端的偏移（S4-2）。仅用于展示与断言，实际比较在传入适配器时用 */
+  let lastClockOffset = 0
+  /** 这次偏移的来源：'cloud-function' 才算可信 */
+  let lastClockSource = null
+  /** 这一轮是否已经试过重新登录，避免登录本身坏掉时打成死循环 */
+  let reauthTried = false
   let inFlight = null
   let debounceTimer = null
   let retryTimer = null
@@ -78,6 +90,9 @@ export function createSyncEngine({
       lastSyncAt,
       lastError,
       retry: retryCount,
+      consecutiveFailures,
+      clockOffset: lastClockOffset,
+      clockSource: lastClockSource,
       online: isOnline()
     }
   }
@@ -106,7 +121,7 @@ export function createSyncEngine({
 
   /* ---------------- 单次同步 ---------------- */
 
-  async function pullAll() {
+  async function pullAll(clockOffset = 0) {
     const since = meta ? (await meta.get(watermarkKey)) || 0 : 0
     const applied = []
     let watermark = since
@@ -116,7 +131,7 @@ export function createSyncEngine({
       do {
         const page = await cloud.pull(collection, { since, cursor, limit: pageLimit })
         if (page.docs.length) {
-          await store.applyRemote(collection, page.docs)
+          await store.applyRemote(collection, page.docs, clockOffset)
           applied.push(...page.docs)
         }
         // 新水位取「云端给的快照时间」，不是本地时钟，也不是取到的最大 updatedAt。
@@ -130,7 +145,12 @@ export function createSyncEngine({
     return { applied, watermark }
   }
 
-  async function pushPending() {
+  /**
+   * `clockOffset` 要透传给适配器：**推送的裁决也在比客户端时钟**。
+   * 慢时钟的设备会把自己「刚写的新数据」判成比云端旧而放弃推送 ——
+   * 这正是 S4-2 要修的那个缺陷，所以偏移必须一路传到 adapter 的比较处。
+   */
+  async function pushPending(clockOffset = 0) {
     const entries = await outbox.pending()
     const upserted = []
     const rejected = []
@@ -157,7 +177,7 @@ export function createSyncEngine({
         continue
       }
 
-      const result = await cloud.push(collection, docs)
+      const result = await cloud.push(collection, docs, { clockOffset })
       const okIds = new Set(result.upserted || [])
       await outbox.markSynced(group.filter((e) => okIds.has(e.docId)).map((e) => e.id))
       upserted.push(...(result.upserted || []))
@@ -173,7 +193,7 @@ export function createSyncEngine({
    * 并作废那个 outbox 条目。少了这一步，本地会以为自己推成功了，
    * 两端就此静默分叉（这个 bug 单设备永远测不出来）。
    */
-  async function resolveRejected(rejected) {
+  async function resolveRejected(rejected, clockOffset = 0) {
     const applied = []
     const byCollection = new Map()
     for (const item of rejected) {
@@ -184,7 +204,7 @@ export function createSyncEngine({
     for (const [collection, ids] of byCollection) {
       const page = await cloud.pull(collection, { ids, limit: Math.max(ids.length, 1) })
       if (page.docs.length) {
-        await store.applyRemote(collection, page.docs)
+        await store.applyRemote(collection, page.docs, clockOffset)
         applied.push(...page.docs)
       }
       const entries = await outbox.pending()
@@ -197,19 +217,64 @@ export function createSyncEngine({
     return applied
   }
 
+  /* ---------------- 服务端时间与时钟校正（S4-2） ---------------- */
+
+  /**
+   * 取一次服务端时间，算出**本地时钟的偏差**，供合并裁决使用。
+   *
+   *     clockOffset = 服务端时间 - 本地时间
+   *
+   * `> 0` 表示本机时钟**慢**（要把它往前推）；`< 0` 表示快。
+   *
+   * ⚠️ **只在服务端时间可信时才返回非 0**：
+   * `serverTime()` 的 `source` 为 `'cloud-function'` 才是真服务端时钟；
+   * `'watermark-lower-bound'` 是「能观察到的最新 `_serverTs`」，是**下界**，
+   * 拿它算偏移会把本地时钟推慢、反而制造新的错判 → 这种情况返回 0。
+   *
+   * 失败不影响同步本身：时钟校正只是「让裁决更准」，不是必需品。
+   * 拿不到就返回 0，退回原来的纯客户端时钟比较。
+   */
+  async function resolveClockOffset() {
+    if (!cloud || typeof cloud.serverTime !== 'function') return { offset: 0, source: null }
+    try {
+      // 往返中点修正：一次请求有 RTT，用「发出前」和「收到后」的本地时间取中点，
+      // 否则单程延迟会整个算进偏移里（网络慢时能差出上百毫秒）。
+      const t0 = now()
+      const res = await cloud.serverTime()
+      const t1 = now()
+      const value = Number(res?.value)
+      const source = res?.source || null
+      if (!Number.isFinite(value) || value <= 0) return { offset: 0, source }
+      if (source !== 'cloud-function') {
+        // 不可信：宁可不校正，也不要引入新的偏差
+        return { offset: 0, source }
+      }
+      const localMid = t0 + (t1 - t0) / 2
+      return { offset: value - localMid, source }
+    } catch (e) {
+      return { offset: 0, source: null }
+    }
+  }
+
   async function run(reason) {
     setState(SYNC_STATE.SYNCING)
     try {
+      // ⓪ 先取时钟偏移：下面 pull 合并时要用它把两边换算到服务端时间轴上。
+      //    放在 pull 之前是必须的 —— 合并已经发生了再知道偏移就晚了。
+      const clock = await resolveClockOffset()
+      lastClockOffset = clock.offset
+      lastClockSource = clock.source
+
       // ① pull 在前：先合并云端的更新，再推本地未送出的
       //    反过来（先 push）会用本地的旧版本覆盖云端的较新版本，
       //    另一台设备的修改就被无声抹掉了。
-      const pulled = await pullAll()
+      const pulled = await pullAll(clock.offset)
 
       // ② push 未送出的（条件 upsert，云端更旧才覆盖）
-      const pushed = await pushPending()
+      const pushed = await pushPending(clock.offset)
 
       // ③ 被拒的立刻回拉，避免两端分叉
-      const refetched = pushed.rejected.length ? await resolveRejected(pushed.rejected) : []
+      const refetched = pushed.rejected.length ? await resolveRejected(pushed.rejected, clock.offset) : []
 
       // ④ 压缩队列：清掉已同步条目，否则队列会无限长
       await outbox.compact()
@@ -220,6 +285,7 @@ export function createSyncEngine({
       if (meta) await meta.set(watermarkKey, lastSyncAt)
       retryCount = 0
       lastError = null
+      consecutiveFailures = 0
       setState(SYNC_STATE.IDLE)
 
       return {
@@ -227,21 +293,84 @@ export function createSyncEngine({
         reason,
         pushed: pushed.upserted.length,
         pulled: pulled.applied.length + refetched.length,
-        rejected: pushed.rejected
+        rejected: pushed.rejected,
+        clockOffset: clock.offset,
+        clockSource: clock.source
       }
     } catch (e) {
-      lastError = { message: (e && e.message) || String(e), at: now(), reason }
+      return handleSyncFailure(e, reason)
+    }
+  }
+
+  /**
+   * 同步失败的统一处置（S4-4）。
+   *
+   * 分类 → 按策略决定**要不要重试、要不要先重新登录、要不要打扰用户**。
+   * 三件事分开做，才不会出现「登录失效却无限退避」这种永远好不了的循环。
+   */
+  async function handleSyncFailure(e, reason) {
+    const err = toSyncError(e, { online: isOnline() })
+    const policy = err.policy
+    lastError = { message: err.message, kind: err.kind, at: now(), reason, label: policy.label }
+    consecutiveFailures += 1
+
+    // 队列的重试计数只在「重试有意义」时才加。
+    // 配额用完、权限被拒、主键冲突这类，加重试数只会让队列看起来像是「试过了但网差」。
+    if (policy.retryable) {
       retryCount += 1
       try {
         await outbox.bumpRetryAll()
-        await refreshPending()
       } catch (inner) {
         /* 记重试次数失败不该盖掉真正的同步错误 */
       }
-      setState(SYNC_STATE.ERROR)
-      scheduleRetry()
-      return { ok: false, reason, error: lastError, retry: retryCount }
     }
+    try {
+      await refreshPending()
+    } catch (inner) {
+      /* 同上 */
+    }
+
+    // 登录态失效：退避重试永远好不了，必须**先重新登录**再立刻重试一次。
+    // 只重试一次，避免登录本身也坏掉时打成死循环。
+    if (policy.needsReauth && !reauthTried) {
+      reauthTried = true
+      const ok = await tryReauth()
+      if (ok) {
+        setState(SYNC_STATE.IDLE)
+        // 重新登录后立刻再来一轮（不排队退避：刚登录完，网和身份都是新的）
+        return sync({ reason: `${reason}:reauth`, manual: true })
+      }
+    }
+
+    setState(policy.silent || err.kind === SYNC_ERROR_KIND.OFFLINE ? SYNC_STATE.OFFLINE : SYNC_STATE.ERROR)
+    if (policy.retryable) scheduleRetry()
+    else if (retryTimer) {
+      // 不可重试的类别：把已排队的退避取消掉，否则它醒过来还会再打一次
+      timer.clearTimeout(retryTimer)
+      retryTimer = null
+    }
+
+    return {
+      ok: false,
+      reason,
+      error: lastError,
+      kind: err.kind,
+      retry: retryCount,
+      retryable: policy.retryable
+    }
+  }
+
+  /** 尝试重新登录（匿名续期）。适配器有 ensureSignedIn 就用它 */
+  async function tryReauth() {
+    try {
+      if (cloud && typeof cloud.ensureSignedIn === 'function') {
+        await cloud.ensureSignedIn()
+        return true
+      }
+    } catch (e) {
+      /* 重新登录也失败：交给下一轮退避 */
+    }
+    return false
   }
 
   /* ---------------- 对外接口 ---------------- */

@@ -283,13 +283,19 @@ export function createCloudBaseAdapter({
    * 已知窗口（留给 S4-6）：①② 之间不是原子的，两台设备同时推同一条时理论上都
    * 可能通过检查。最终仍是 LWW，只是「谁是最后写入」由到达顺序而非 `updatedAt` 决定。
    * 要彻底消掉得靠云函数或事务。
+   *
+   * `options.clockOffset`（S4-2）：本地时钟偏差 = 服务端时间 - 本地时间。
+   * 比较时给**本地那份**加上它，两边就换算到服务端时间轴上了 ——
+   * 否则慢时钟的设备会把自己刚写的新数据判成「比云端旧」而放弃推送。
+   * 只在服务端时间可信时引擎才传非 0 值。
    */
-  async function push(collection, docs) {
+  async function push(collection, docs, { clockOffset = 0 } = {}) {
     const uid = await ensureSignedIn()
     const db = await getDb()
     const cmd = db.command
     const col = db.collection(collectionName(collection))
     const prefix = accountPrefixOf(uid)
+    const offset = Number.isFinite(clockOffset) ? clockOffset : 0
 
     // 本地 id 是权威来源；`_id` 只作为兜底（mock/fake 云端可能只给 `_id`）
     const list = (docs || [])
@@ -315,7 +321,8 @@ export function createCloudBaseAdapter({
     const rejected = []
     for (const { doc, localId } of list) {
       const alias = toCloudId(localId, prefix)
-      const localTs = doc.updatedAt || 0
+      // 本地时间戳校正到服务端时间轴后再比（S4-2）
+      const localTs = (doc.updatedAt || 0) + offset
       const remoteTs = cloudUpdatedAt.has(alias) ? cloudUpdatedAt.get(alias) : null
 
       if (remoteTs !== null && localTs < remoteTs) {

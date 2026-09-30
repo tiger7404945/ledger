@@ -455,13 +455,14 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       return list ? list.map((d) => ({ ...d })) : []
     },
 
-    async applyRemote(collection, docs) {
+    /** `clockOffset` 见 idbAdapter.applyRemote 的注释（S4-2 时钟校正） */
+    async applyRemote(collection, docs, clockOffset = 0) {
       const s = await ready()
       const list = localListOf(s, collection)
       if (!list) return { applied: 0, kept: 0 }
 
       // 新者胜：远端更新才覆盖，本地更新的保留（它还在 outbox 里等下一轮推送）
-      const { take, keep } = partitionRemote(list, docs)
+      const { take, keep } = partitionRemote(list, docs, clockOffset)
       if (!take.length) return { applied: 0, kept: keep.length }
 
       take.forEach((doc) => {
