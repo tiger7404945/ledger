@@ -69,7 +69,9 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
 
 ```
 src/
-  config/env.js            环境变量读取（cloudEnvId / isCloudConfigured），其它文件不直接读 import.meta.env
+  config/
+    env.js                 环境变量集中读取（cloudEnvId / 网关基址 / 是否已配置），其它文件不直接读 import.meta.env
+    cloud.js               云端资源命名表（集合名前缀 / 云函数名 / 网关路径）—— 云端资源的统一出口
   api/                    数据层（视图只依赖契约，不依赖实现）
     contract.js            实体类型 + Repository 接口契约 + 错误类型
     index.js               适配器装配（改 DATA_SOURCE 切数据源；改 cloud 切云端）
@@ -93,6 +95,8 @@ src/
   views/                   页面
   utils/                   日期 / 金额 / id 工具
   styles/                  tokens.css（设计变量）+ base.css
+cloudfunctions/
+  ledger-server-time/      云函数：返回服务端当前时间（S4-2 冲突裁决用），经 HTTP 网关暴露
 ```
 
 ## 数据层现状
@@ -113,6 +117,17 @@ src/
 - 首次打开会**接管**第一阶段留在 localStorage 的 `ledger.db.v1`，且**不删除旧库**（可回退）；只接管一次，靠 meta 标记判断。
 - 写入落在 IndexedDB（库 `ledger`，版本 2，5 个 objectStore：`ledger / category / bill / outbox / meta`）。
 - 切换数据源：改 `src/api/index.js` 的 `DATA_SOURCE`（`'mock' | 'idb'`）。
+
+### 云函数（S4-2）
+
+`cloudfunctions/ledger-server-time/` —— 返回**真正的服务端当前时间**，供冲突裁决使用。
+
+- **为什么必须用它**：本地「新者胜」靠客户端时钟裁决，时钟不准就会用旧数据盖掉新的。而 CloudBase Web SDK **没有「读服务端当前时间」的接口**（`serverDate()` 只能写不能读）。
+- **怎么调**：走 **HTTP 网关**（`https://<默认 HTTPSERVICE 域名>/ledger-server-time`），**不是** `app.callFunction()`。
+  - ⚠️ 匿名登录态下 `app.callFunction()` 会报 403 `EXCEED_AUTHORITY` —— 云函数默认规则要求「已登录且非匿名」。实测**改函数权限无效**（接口回 Success 但复读仍是原规则）。
+  - HTTP 网关的 `EnableAuth=false` 是**真实生效**的，`curl` 直接 200。
+- **降级**：未配置 `VITE_CLOUDBASE_API_BASE` 或云函数不可用时，`serverTime()` 退回「水位线下界」，返回值 `source` 字段由 `'cloud-function'` 变成 `'watermark-lower-bound'` —— **后者只能当水位线，不能做冲突裁决**。
+- **部署要点**：本地目录名必须与云端函数名完全一致；`runtime=Nodejs18.15`、`handler=index.main`。
 
 ### 同步引擎骨架（S2）
 

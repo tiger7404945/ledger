@@ -112,6 +112,34 @@
 
 这些步骤需要你本人操作（注册、扫码、实名），我没法代劳。**以下清单已逐项执行完毕，留档备查**：
 
+### P0 · 云端资源共享命名规则（**硬性约定，先于一切云端资源**）
+
+> ⚠️ **这个 CloudBase 环境后续可能被其它项目复用。** 因此**所有**云端资源的命名都必须以**项目名 `ledger`** 为前缀/标识，不允许出现"裸名"资源。
+
+| 资源类型 | 命名规则 | 本项目的实例 |
+| --- | --- | --- |
+| **数据库集合** | `ledger_<表名>` | `ledger_ledgers` / `ledger_categories` / `ledger_bills` |
+| **云函数** | `ledger-<功能名>` | `ledger-server-time` ✅ 已部署 |
+| **HTTP 网关路径** | `/<云函数名>`（与函数同名，便于对应） | `/ledger-server-time` ✅ 已建路由 |
+| **云托管服务** | `ledger-<服务名>`（服务名须以字母开头，长度 3–45） | 暂无 |
+| **静态托管** | 跟随环境默认域名，无需命名；自定义域名时须突出项目 | 暂无 |
+| **定时触发器** | `ledger-<功能名>` | 暂无 |
+| **层（Layer）** | **必须** `ledger-<用途>_<envId>` | 暂无 |
+
+**部署注意**：云函数的**本地目录名必须与云端函数名完全一致**（`cloudfunctions/ledger-server-time/`）——
+MCP 的 `createFunction` 用 `functionRootPath + '/' + 函数名` 拼本地路径，不一致会直接报「路径不存在」。
+
+**代码侧的统一来源（不要手写字符串）：**
+
+- 集合名：`src/api/adapters/cloudbaseAdapter.js` 的 `CLOUD_COLLECTION_PREFIX = 'ledger_'` + `CLOUD_COLLECTIONS` 映射。
+- 云函数名：`src/config/cloud.js` 的 `CLOUD_FUNCTIONS`（新增该文件后，业务代码一律从这里取名字）。
+
+**为什么云函数用 `ledger-server-time` 而不是 `ledger_server_time`：**
+
+集合名走了下划线，但**云函数名必须遵守它自己的限制**（字母开头、只允许字母/数字/连字符/下划线），且**控制台里的函数列表是按名字混排的**。用连字符让本项目的函数在列表里更容易和别的项目区分开；同时也和 CLI 的常见用法（`tcb fn` + 函数名）保持一致。
+
+**层（Layer）特别注意**：层是 **SCF 账号级共享命名空间**（不是环境级），不同环境创建同名层会**共享同一层的版本序列**，删除某版本会影响所有绑定该版本的环境。所以层名**必须**带 `ledger` 前缀 + `_<envId>` 后缀，创建前先 `listLayers` 查重。
+
 - [x] **P1** 注册腾讯云账号并完成实名认证（国内云服务都需要）。
 - [x] **P2** 开通**云开发 CloudBase**，创建一个环境。环境 ID 形如 `my-cloudbase-xxxxxxxxxxxx`。
       > **本仓库不记录真实环境 ID**。它写在 `.env.local`（已 gitignore）里；换环境时改这一个文件即可。
@@ -502,13 +530,95 @@ S2 完成后「我的」页可以顺带接上 `onStateChange` 显示一个只读
 | 编号 | 任务 | 说明 | 现状 |
 | --- | --- | --- | --- |
 | S4-1 | 软删除的云端表示 | 删除 = 把 `deleted` 置 1 并同步，**绝不真删**。否则另一台设备会把已删的记录又拉回来 | ✅ 已生效（`fakeCloud` 侧用例全绿，真云端沿用同一份 `core/` 逻辑） |
-| S4-2 | **时间裁决改用服务端时间** | 客户端时钟可能不准（S2 已用 `_skew` 暴露该风险）。S3 的 `serverTime()` 只是"观察到的最新 `_serverTs`"，是**下界**，只能做水位线、**不能做裁决** —— 要用**云函数**打真正的服务端时间 | ⬜ **S4 主要工作量** |
+| S4-2 | **时间裁决改用服务端时间** | 客户端时钟可能不准（S2 已用 `_skew` 暴露该风险）。S3 的 `serverTime()` 只是"观察到的最新 `_serverTs`"，是**下界**，只能做水位线、**不能做裁决** —— 要用**云函数**打真正的服务端时间 | 🟡 **云函数已部署并打通，前端已接入**（见下方 S4-2 小节）；待接进裁决逻辑 |
 | S4-3 | 拉取分页 | 单次查询有行数上限，超过要循环拉取直到拿完 | ✅ 已完成（`pull` 用 `skip + limit` 分页，`hasMore = docs.length >= limit`；S2 的分页用例 250 条 / `limit=100` 通过） |
 | S4-4 | 网络错误分类 | 区分"没网"（静默重试）/"登录态失效"（重新匿名登录）/"服务端错误"（提示稍后重试），不要让三种都跳同一个红字 | ⬜ 待做（现在统一进 `error` 态 + 指数退避） |
 | S4-5 | 边界用例脚本 | 剧本：同一账号，A 设备改金额、B 设备改备注、两边同时同步 | ⬜ 待做 |
 | S4-6 | 收紧 `push` 的竞态窗口 | S3 的两段式「①读云端 `updatedAt` → ②条件 upsert」**不原子**，两条极端靠近的写入可能都认为自己不旧。可考虑云端原子条件更新 | ⬜ 新增（S3 留下的已知窗口） |
+| **S4-7** | **`_id` 撞车导致首次绑定永久失败** | ⚠️ **本轮实测发现的高优先缺陷**：云端 `_id` 是**全局唯一（跨账号）**，但 `PRIVATE` 权限又把读操作按 `_openid` 隔离了。于是**换一个匿名身份后**：读不到旧身份的文档（隔离），又写不进同 `_id` 的文档（`E11000 duplicate key`）→ 首次绑定**必然失败且无法自愈**，outbox 永远排不空。详见下方 S4-7 小节 | ⬜ **新增，优先级最高** |
 
 **验收标准**：`scripts/conflict-test.mjs` 构造"两边都改同一条"，断言最终取服务端裁决的版本，且两边收敛到同一状态；拔网操作 5 次 → 恢复网络 → 无报错、无重复、无丢失。
+
+---
+
+### S4-2 实施记录：云函数 `ledger-server-time`
+
+**为什么非做不可**：本地「新者胜」用客户端时钟裁决。手机时钟不准时，慢的那台永远输 —— 新数据会被旧数据覆盖。而 CloudBase **Web SDK 没有「读服务端当前时间」的接口**（`serverDate()` 只能写不能读），所以必须由云函数提供。
+
+**已完成的**：
+
+| 步骤 | 结果 |
+| --- | --- |
+| 写云函数 | `cloudfunctions/ledger-server-time/index.js`，返回 `{ ok, serverTime, iso, env }` |
+| 部署 | `manageFunctions(createFunction, runtime=Nodejs18.15, handler=index.main)` → 成功 |
+| 验证 | `invokeFunction` 返回 `serverTime: 1790739043492` / `Duration: 3ms`，与真实时刻一致 |
+| 建网关路由 | `manageGateway(createRoute, upstreamResourceType='SCF', auth=false, path='/ledger-server-time')` |
+| HTTP 验证 | `curl` 该路径 → **200** + 正确时间戳 |
+| 前端接入 | `cloudbaseAdapter.serverTime()` 改为「先 HTTP 网关，失败降级到水位线下界」，返回值带 `source` 字段 |
+
+**踩到的三个坑（都很关键）**：
+
+1. **匿名登录调不了 `callFunction`** —— 报 403 `EXCEED_AUTHORITY`。
+   云函数默认安全规则是 `{ "*": { "invoke": "auth != null && auth.loginType != 'ANONYMOUS'" } }`，
+   即「必须登录**且非匿名**」。本项目**只用匿名登录**，天然被拒。
+2. **改函数权限实测无效** —— `managePermissions(updateResourcePermission, resourceType='function', securityRule='{"invoke":true}')`
+   接口回 `Success: true`，但复读权限**仍是原规则**（该环境是纯 NoSQL 后端，函数权限的写入路径可能不适用）。
+   **不要在这条路上浪费时间**。
+3. **正解是 HTTP 网关** —— `manageGateway(createRoute, upstreamResourceType='SCF', auth=false)`。
+   网关的 `EnableAuth=false` **真实生效**，`curl` 直接 200。所以前端改成走 HTTP 而非 SDK 的 `callFunction`。
+
+**另外两条环境事实（本轮实测，纠正了之前的判断）**：
+
+- **默认域名有两个，容易搞混**：
+  - `...tcloudbaseapp.com`（`DomainType: STATIC_STORE`）—— **静态托管**域名；
+  - `...ap-shanghai.app.tcloudbase.com`（`DomainType: HTTPSERVICE`，`IsDefault: true`）—— **HTTP 网关**域名。
+    它此前返回 404 **不是「托管没部署」**，而是**当时它下面一条路由都没有**。建了路由后立刻可用。
+- **云函数本地目录名必须与云端函数名完全一致** —— MCP 用 `functionRootPath + '/' + 函数名` 拼路径，
+  不一致直接报「路径不存在」。（曾用下划线目录名 `ledger_server_time`，失败。）
+
+---
+
+### S4-7 深入分析：`_id` 撞车与匿名身份轮换
+
+**现象**：清过浏览器数据后重开，`我的` 页显示「同步失败」，待同步队列 **87 条**永远清不掉。
+手动同步返回：
+
+```
+{"ok":false,"error":{"message":"multiple write errors: [{write errors: [{E11000 duplicate key
+ error collection: tnt-7r0jxwg2m.ledger_ledgers index: _id_ dup key:
+ { _id: \"ledger_default\" }}]}, {<nil>}]"},"retry":6}
+```
+
+**根因（两个设计假设互相冲突）**：
+
+1. **云端 `_id` 全局唯一，跨所有账号。** 幂等键设计成 `云端 _id = 本地 id`，
+   而 `ledger_default`、`bill_seed_001` 这些 id 是**种子数据写死的** —— 任何一台设备生成的都一样。
+2. **`PRIVATE` 权限按 `_openid` 隔离读。** 新身份**读不到**旧身份写的文档，
+   所以客户端**不知道**那个 `_id` 已被占用，只会得到一个 `E11000`。
+
+**为什么这在真实场景里一定会发生**：
+
+匿名登录是「按设备」的身份，登录态在 localStorage。用户**清缓存、换浏览器、换手机**
+就会拿到新 uid。此时：云端有旧身份的 44 条 + 自己的 87 条要推 → 主键撞车 → **永久失败**。
+而且**单设备测试测不出来**（id 不冲突时就正常），必须清数据重开才暴露。
+
+**可选修复方向**（待定，S4-7 实施时选）：
+
+- **A. `_id` 加身份前缀** —— `_id = openid + '_' + localId`。
+  彻底避免撞车，且天然把「同一逻辑文档的不同账号副本」分开。代价：读写都要拼前缀，
+  且**旧数据（无前缀）需要迁移**；`_id` 变长。
+- **B. 让 `_id` 带设备/安装维度** —— 生成一个 per-installation 的随机前缀（存 localStorage），
+  种子 id 也带上它。比 A 轻（不依赖 openid），但设备维度丢失后同样找不回。
+- **C. 冲突时换 `_id` 重试** —— 捕获 `E11000` 后给文档换一个新 id 再 `set`。
+  改动最小，但会让「同一条逻辑数据」在云端出现多份，跨设备合并语义变模糊。
+- **D. 接受「匿名身份不可迁移」并在 UI 上明确** —— 检测到主键撞车时提示用户
+  「检测到本设备有另一份云端数据，请先重置或登录」，而不是静默失败重试。
+
+**倾向**：**A**（最干净、和 S5 的「本地库按用户分区」是同一套思路），
+但需要先定「旧的无前缀数据怎么处理」。**S4-7 实施前必须先定这个方案。**
+
+**当前状态**：这是**已确认的真实缺陷**，本轮先记录 + 保留复现路径，
+不擅自改（涉及数据迁移，属于需要用户拍板的设计决策）。
 
 ---
 

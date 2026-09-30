@@ -1,35 +1,36 @@
 # 项目长期记忆 · 随手记账（D:\projects\ledger）
 
-> 本文件是**精炼后的长期约定**，只保留仍然有效、改动前必须先知道的规则。
+> 精炼后的长期约定，只保留**仍然有效、改动前必须先知道**的规则。
 > 每日细节见同目录 `YYYY-MM-DD.md`（按日追加，不覆盖）。
 
 ## 项目性质与阶段
-移动端记账 Web App（Vue 3 + Vite）的前端复刻。设计原型是仓库根目录的设计稿：8 张 `微信图片_*.jpg` + `填写备注.jpg`（备注候选条）+ `月选择器.jpg` / `年选择器.jpg`（账期弹层），均纳入版本管理。**统计页没有参考稿**，按需求补齐。
+移动端记账 Web App（Vue 3 + Vite）的前端复刻。设计原型 = 仓库根目录设计稿：8 张 `微信图片_*.jpg` + `填写备注.jpg`（备注候选条）+ `月选择器.jpg` / `年选择器.jpg`（账期弹层），均纳入版本管理。**统计页没有参考稿**，按需求补齐。
 - 第一阶段（v0.2.0）：前端 + Mock 数据，已完成。
-- 第二阶段「本地优先 + 云端同步」：**S0 / S1 / S2 / S3 均已完成**。当前 `DATA_SOURCE = 'idb'`，云端为**用户自有的腾讯云开发 CloudBase 环境**（环境 ID 只在 `.env.local`，不入库）。
-- 下一步：S4（冲突与边界，含用云函数取真服务端时间）、S5（匿名转正式账号 + 本地库按用户分区）。计划文档 `phase2-backend-plan.md`。
+- 第二阶段「本地优先 + 云端同步」：**S0 / S1 / S2 / S3 已完成；S4 进行中**（S4-2 云函数已上线并打通）。当前 `DATA_SOURCE = 'idb'`，云端为**用户自有的腾讯云开发 CloudBase 环境**（envId 与网关地址只在 `.env.local`，不入库）。
+- 计划文档 `phase2-backend-plan.md`（第 3 节是 P0–P10 待办，其后是 S0–S6 任务表）。
 
 ## 强制约定（违反会返工）
 - 视图层**不得**直接调 adapter，只用 `src/api/index.js` 导出的 repository 与 Pinia store。
 - 新增数据操作：先补 `src/api/contract.js` 契约 → 再实现到各 adapter → 再给 store 加 getter。
 - 写操作一律 local-first：先落本地，再 `outbox.enqueue`。
-- 业务规则 / 合并规则**只在 `src/api/core/` 与各 adapter 的公共处写一次**。本项目吃过「两处各写一套慢慢漂开」的亏（`PeriodSwitch` 那次），**新增适配器必须复用 core**。
+- 业务规则 / 合并规则**只在 `src/api/core/` 与各 adapter 的公共处写一次**。吃过「两处各写一套慢慢漂开」的亏（`PeriodSwitch` 那次），**新增适配器必须复用 core**。
+- **云端资源一律以项目名 `ledger` 开头**（该环境会被其它项目复用）：集合 `ledger_<表名>`、云函数 `ledger-<功能名>`、网关路径 `/<云函数名>`、云托管 `ledger-<服务名>`。统一出口是 `src/config/cloud.js`，**业务代码不手写资源名**。详见 `phase2-backend-plan.md` 第 3 节 **P0**。
 - 设计变量只写在 `src/styles/tokens.css`，组件内不硬编码品牌色。图标只用 `src/components/icons`，不引外部图标库。
 - 手机外框宽 `--frame-w`（430px）；`position: fixed` 元素依赖 `.app-frame` 的 transform 包含块。
-- 后端选型必须在架构上可替换：换厂商/换云端只动适配器层，视图与 store 零改动。**继续维持这个纪律**（已两次生效）。
+- 后端选型必须在架构上可替换：换厂商/换云端只动适配器层，视图与 store 零改动（已两次生效，继续保持）。
 
 ## 记账页与草稿
-- **草稿**：`src/composables/useRecordDraft.js`，localStorage key `ledger.recordDraft.v1`。它只是 UI 草稿，**不经 repository / outbox**，不是业务数据。新增表单字段要同步加进 `persistDraft` / `applyDraft`。
+- **草稿**：`src/composables/useRecordDraft.js`，localStorage key `ledger.recordDraft.v1`。只是 UI 草稿，**不经 repository / outbox**，不是业务数据。新增表单字段要同步加进 `persistDraft` / `applyDraft`。
 - **草稿生命周期由 `installRecordDraftGuard(router)` 一处裁决**（在 `src/router/index.js` 装配）：只在「记账页 ↔ 分类管理/分类编辑」往返时保留；返回键、切 Tab、去其它页、从别处重进记账页，都立即作废。**不要**在组件里另写一套。
 - 进入顺序：路由守卫清草稿 → `onMounted` 比对 `editingId` 套用草稿 → 编辑态读账单 → 新建则默认选中第一个一级分类。
 - **备注候选**：`billRepo.remarkHistory({ ledgerId, categoryId, limit })`，当前分类 = `subId || primaryId`，**精确匹配不含子分类**（选「交通」拿不到「交通-停车费」）。
-- **层级**：页面底色用灰 `--page`，二级分类面板（`SubCategoryPanel`）是白色浮起卡片（`--surface-raised` + `--r-md` + `--shadow-card` + 左右 24px 内缩）叠在灰底上。**不要**给页面/body 设纯白底，否则面板与背景糊在一起。
+- **层级**：页面底色用灰 `--page`，二级分类面板（`SubCategoryPanel`）是白色浮起卡片（`--surface-raised` + `--r-md` + `--shadow-card` + 左右 24px 内缩）叠在灰底上。**不要**给页面/body 设纯白底，否则糊在一起。
 - `CategoryGrid` 选中态 = `selectedId`（叶子）或 `activeId`（父级一级）；记账页两个都传，选二级时父级也点亮。
 
 ## 设计稿采样
-- 改视觉前先对参考稿做像素取样，**别肉眼估**。参考稿 1080×2400（对应 390×844 视口，比例 2.844），采样前要按比例换算并裁掉状态栏/导航栏。
+- 改视觉前先对参考稿做像素取样，**别肉眼估**。参考稿 1080×2400（对应 390×844 视口，比例 2.844），采样前按比例换算并裁掉状态栏/导航栏。
 - **量高度用「穿过元素的垂直线逐像素扫 `#RRGGBB` 看跳变」**，不要找色块包围盒——白场阈值会漏掉边缘柔化像素（实测把 31px 药丸量成 27px）。
-- **怀疑单张稿的色值是 JPEG 噪声时，扫一遍全套稿看是否反复出现**。`#DCFDF6` 在 9 张稿里都是最高频浅薄荷 → 判为设计系统色，立 `--brand-mint` token（与早期 `--brand-soft-2` #d3f4ea 并非同色）。
+- **怀疑单张稿的色值只是 JPEG 噪声时，扫一遍全套稿看是否反复出现**。`#DCFDF6` 在 9 张稿里都是最高频浅薄荷 → 判为设计系统色，立 `--brand-mint` token（与早期 `--brand-soft-2` #d3f4ea 并非同色）。
 - **账期选择器几何**（采样自 `月选择器.jpg` / `年选择器.jpg`）：4 列网格、左右内缩 20、列间距 7、行间距 20、单元格高 45 圆角 12、选中 `--brand` 实底 + 深色文字；页签下划线 2.5px、两页签间距 50；`‹ 标题 ›` 行高 66、左右内边距 16、标题 20px/600；年份一屏 12 个，当前年前留 8 年。
 
 ## 账期切换器（只有一处实现）
@@ -40,7 +41,7 @@
 ## 布局约定
 - **账单 store 有两份互相独立的数据切片，不要合并**：
   - 本月视角 `month` / `bills` / `summary` —— **只有首页**用（首页永远显示「本月」）。
-  - 账期取景 `period{mode,month,year}` / `periodBills` / `periodSummary` + `period*` getter（`periodRange`/`periodLabel`/`periodUnit`/`periodGroups`/`periodDailyMap`/`periodMonthlyMap`/`periodTrend`/`periodRankMap`）—— **账单页与统计页共用**，两页始终是同一个「当期」。这是刻意选择。
+  - 账期取景 `period{mode,month,year}` / `periodBills` / `periodSummary` + `period*` getter（`periodRange`/`periodLabel`/`periodUnit`/`periodGroups`/`periodDailyMap`/`periodMonthlyMap`/`periodTrend`/`periodRankMap`）—— **账单页与统计页共用**，两页始终是同一个「当期」。刻意选择。
   - 写操作要同时刷新两份；`periodInitialized` 为 false 时跳过 period 刷新。
 - **区间一律用 `from` / `to`（'YYYY-MM-DD'，含首尾）**，`month` 只是特例；contract 里两者可同时传，按 AND 处理。
 - **左右滑动切屏统一用 `useSwipeViews`**（`src/composables/useSwipeViews.js`）：`width = 视图数×100%`，位移 `-(下标 × 100/视图数)% + dx`，拖动关 `transition` 跟手，松手 56px 阈值吸附。账单页（流水/日历）与统计页（支出/收入）共用，**不要另写**。
@@ -102,31 +103,54 @@
 - **推送被拒必须回拉**：被拒条目带 `cloudUpdatedAt` 进 `rejected`，引擎据此把云端版本拉回本地并 `outbox.drop()` 作废该条目。否则两端静默分叉 —— **单设备永远测不出这个 bug**。
 - **`fakeCloud` 必须带身份维度**（`cloud.as('openid')`），否则两用户躺在同一 Map 里天然全通。它只能验「代码没抹掉身份」，**测不了真实权限**。
 - **串号风险在本地不在云端**：两账号共用 `ledger` 库时，A 残留的 outbox 会被推到 B 名下。方案是库名分区 `ledger_<openid>`（`openDB({ dbName })` 已支持注入），**S5 启用**。
-- **已知不修，留给 S4**：本地「新者胜」依赖客户端时钟，`fakeCloud._skew(ms)` 能暴露但 S2 刻意不断言 —— 不要为了让测试变绿打补丁。
 - **测试时间与定时器必须注入**：`createClock()`（serverTime 与 updatedAt 同源，否则水位跑到文档时间前面导致假失败）+ `createFakeTimer()`（退避延迟可断言、不用真等）。
 - `localStorage['ledger.outbox.v1']` 残留 `"[]"` 是正常的（S1 旧队列排空留下的），有 `outboxImported` 兜底，**不要去清理**。
 
-## 云端（S3 已完成，腾讯云开发 CloudBase）
+## 云端（S3 已完成 / S4 进行中，腾讯云开发 CloudBase）
 装配：`src/api/index.js` 里 `cloud = isCloudConfigured ? createCloudBaseAdapter({ env: cloudEnvId }) : null`。**换云端只需改这一处。**
 
-- **环境能力以实测为准，不靠文档推断**：当前环境是**纯 NoSQL 后端**（`RuntimeBackends.nosql = true`，官方提示 "PostgreSQL is NOT provisioned in this env … legacy NoSQL CloudBase backend"），走 `app.database()`。**不要**改成 `app.rdb()`。判断方法是查 `queryEnv(action="info")` 的 `RuntimeMode` / `RuntimeBackends`。
-- **集合名带项目前缀**：`ledger_ledgers` / `ledger_categories` / `ledger_bills`。**该 CloudBase 环境后续可能被其它项目复用**，所有云端资源都加 `ledger_` 前缀；由 `CLOUD_COLLECTION_PREFIX` + `CLOUD_COLLECTIONS` 映射产出，**业务代码不手写集合名**。
-- **权限用简单权限 `PRIVATE`（仅创建者可读写）**，三集合全设。它与 CUSTOM 规则的区别很关键：**CUSTOM 规则要求查询条件必须自带 `_openid`**，简单权限由服务端按 `_openid` 自动隔离、客户端查询**不带** `_openid`。选后者更省心。
-- **权限是「服务端校验」不是「前端过滤」**，所以适配器里**故意不过滤** `_openid`（前端代码谁都能改）。
+### 环境与权限（实测钉死，别靠文档推断）
+- 当前环境是**纯 NoSQL 后端**（`RuntimeBackends.nosql = true`，官方提示 *"PostgreSQL is NOT provisioned in this env … legacy NoSQL CloudBase backend"*），走 `app.database()`。**不要**改成 `app.rdb()`。判断方法：`queryEnv(action="info")` 看 `RuntimeMode` / `RuntimeBackends`。
+- **集合与函数均以 `ledger` 开头**：集合 `ledger_ledgers` / `ledger_categories` / `ledger_bills`；云函数 `ledger-server-time`；网关路径 `/ledger-server-time`。名字由 `src/config/cloud.js` 产出。
+- **集合权限用简单权限 `PRIVATE`（仅创建者可读写）**。它与 CUSTOM 规则的区别很关键：**CUSTOM 规则要求查询条件必须自带 `_openid`**，简单权限由服务端按 `_openid` 自动隔离、客户端查询**不带** `_openid`。选后者更省心。
+- **权限是「服务端校验」不是「前端过滤」**，适配器里**故意不过滤** `_openid`（前端代码谁都能改）。
 - **`_openid` 由 SDK 自动注入**（手写报错），拉回时由 `fromRemote()` 剥掉，不落本地库；`stripServerMeta()` 剥掉所有 `_` 前缀字段。
 - **`_serverTs` 用 `db.serverDate()` 写入** = 服务端接收时间，读回来是 **Date 对象**。**坑：拿数字比较 Date 字段一条都匹配不到**，必须 `_.gte(new Date(0))`。
-- **`push` 是两段式条件 upsert**：①按 `_id` 批量读回云端 `updatedAt` → ②逐条比较，本地不旧才 `col.doc(id).set({...payload, _serverTs: db.serverDate()})`，否则进 `rejected`。**①②之间不原子，是留给 S4 的已知窗口。**
 - **`.doc(id).set()` 就是指定 `_id` 的 upsert**；`.add()` 返回 `result._id`；`.update()` 返回 `{updated}`、`.remove()` 返回 `{deleted}`；分页 `orderBy + skip + limit`。`.set()` 的 upsert **只对自己拥有的文档成立**，`_id` 已存在但属主是别人时抛 **`E11000 duplicate key`（500 / `DATABASE_REQUEST_FAILED`）**。
-- **`serverTime()` 是「能观察到的最新 `_serverTs`」，是下界不是精确当前时间**（Web SDK 没有读服务端时间的接口，`serverDate()` 只能写入）。做水位线安全，**不能做冲突裁决** → 留给 S4 用云函数。
+- **`push` 是两段式条件 upsert**：①按 `_id` 批量读回云端 `updatedAt` → ②逐条比较，本地不旧才 `col.doc(id).set({...payload, _serverTs: db.serverDate()})`，否则进 `rejected`。**①②之间不原子，是 S4-6 要收的窗口。**
 - **匿名登录是懒触发的**：只在真正要读写数据时 `signInAnonymously()`（否则光开「我的」页就触发 88 次写入）。登录态在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `lang_<envId>` / `device_id`），**清掉就永久失联** → S5 要尽早「匿名转正」。
   - **坑**：同一 `app` 实例 `signOut()` 后重新匿名登录**仍拿到同一个 uid** → 验证隔离必须用**两个独立进程**。
 - **首次绑定 `ensureCloudFirstBind()`**：把本地三集合文档一次性 `outbox.enqueueMany` 推上云（本地优先）。匿名设备身份下云端不可能有别人的数据，故无覆盖风险；**S5 有真账号后必须改成先问用户**。
 - **SDK 走动态 import**（`loadSdk: () => import('@cloudbase/js-sdk')`），Vite 拆成独立 chunk（871 kB / gzip 220.8 kB）；不配云端时根本不加载。
-- **体验版两个限制**：`addSecurityDomain` 报「当前套餐无法执行此操作」（但 `localhost:5173` 实测本来就能过 Origin 校验，伪造域名才 403）；**免费环境要手动续期**（单次 6 个月、不支持自动续费）。
-- **平台自带的默认域名可绕过"添加安全域名"**：`<环境ID>-<随机段>.ap-shanghai.app.tcloudbase.com`（上海地域，2026-09-30 由用户拿到）。实测请求到达 CloudBase 网关（`server: tcbgw`），返回 **404 是因为静态托管尚未部署内容**，不是域名问题。正式域名待开发测试结束后申请。**该域名写进文档时可以写全，但注意它含 envId —— 若日后要严格保密，应改为只记形态。**
-- **⚠️ 匿名登录的开关时机（用户主动提出，务必在 S6 收口）**：**开发测试期保持开启**（S3 云端链路依赖它）；**正式上线前必须重新评估**。理由：①匿名登录无需凭证 → 任何人拿到环境 ID 就能创建身份并写数据；②免费额度按量计（3,000 点/月），PRIVATE 权限**只能防"看别人的数据"、防不住"新建账号写自己的数据"**；③S5 匿名转正后它应从主入口降级为游客体验。**上线时三选一**：A 直接关闭 / B 保留但匿名身份不参与云同步（按 `auth.loginType` 分流）/ C 保留并接受风险（须配额度告警）。详见 `phase2-backend-plan.md` 第 3 节 **P10** 与 S6 的 **S6-7**。
-- **环境到期时间 2027-03-30**（用户已于 2026-09-30 设好续期提醒）。
-- 探针脚本 `.preview/sdk-probe/`：`probe-docdb.mjs`（serverDate / 自定义 `_id` upsert / `_openid` 注入 / 区间+排序+分页 / 水位线边界）、`probe-isolation.mjs`（**独立进程**验证跨身份隔离）。换环境或升 SDK 大版本时重跑。
+- **体验版限制**：`addSecurityDomain` 报「当前套餐无法执行此操作」；但 `localhost:5173` 实测本来就能过 Origin 校验（伪造域名才 403），且**平台默认域名也可绕过该流程**。**免费环境要手动续期**（单次 6 个月、不支持自动续费），**到期 2027-03-30**（用户已设提醒）。
+- **两个默认域名易混**：`...tcloudbaseapp.com` 是 `STATIC_STORE`（静态托管）；`<环境ID>-<随机段>.ap-shanghai.app.tcloudbase.com` 是 `HTTPSERVICE` 且 `IsDefault: true`（**HTTP 网关的默认域名**，上海地域）。后者 `curl` 出 404 是因为**还没有路由**（不是托管没部署）。正式域名待开发测试结束后申请。
+
+### ★ S4-2：真服务端时间走「云函数 + HTTP 网关」
+- **为什么不能用 `app.callFunction()`**：匿名登录态调用抛 **403 `EXCEED_AUTHORITY`**，因云函数默认安全规则是 `{"*": {"invoke": "auth != null && auth.loginType != 'ANONYMOUS'"}}`（必须登录且非匿名）。
+- **改函数权限走不通（实测）**：`managePermissions(updateResourcePermission, resourceType='function', securityRule='{"invoke":true}')` 返回 `Success: true`，但 `queryPermissions` 复读**仍是原规则**，不生效。
+- **正解 = HTTP 网关**：`manageGateway(createRoute, upstreamResourceType='SCF', auth=false)`，路径 `/ledger-server-time`。网关 `EnableAuth=false` 真实生效，`curl` 返 200。
+  - ⚠️ 网关 `EnableAuth/auth=false` **不等于函数已允许匿名访问**（工具自身提醒），但实测走路由确实通了。
+- **函数本体**：`cloudfunctions/ledger-server-time/`，`runtime=Nodejs18.15`、`handler=index.main`、`type=Event`、`timeout=5`，返回 `{ ok, serverTime, iso, env }`，依赖 `wx-server-sdk ~2.6.3`。
+- **★ 云函数本地目录名必须与云端函数名完全一致**：MCP 用 `functionRootPath + '/' + 函数名` 拼路径。曾用下划线 `ledger_server_time` → `createFunction` 报「路径不存在」。
+- **`serverTime()` 契约是 `{ value, source }`**：`source = 'cloud-function'`（可信、可裁决）或 `'watermark-lower-bound'`（仅水位线，旧行为）。**与 `pull()` 返回里的 `serverTime`（数字水位线）同名不同源**，别搞混。
+- `serverTime` **只属于云客户端契约**（`sync/cloudClient.js`），**不属于适配器契约**（`contract.js`）—— mock/idb 不需要它。`fakeCloud` 已跟随（`ctx.serverTimeSource` + `_serverTimeSource(src)` 可切两种 source）。
+- 前端网关基址来自 `VITE_CLOUDBASE_API_BASE`（`.env.local`）→ `src/config/env.js` 的 `cloudApiBase` / `isCloudApiConfigured`；未配置时自动降级为水位线下界。实测浏览器内 `serverTime()` 返回 `{"value":1790740651928,"source":"cloud-function"}`，与本地时钟差 438ms（正常往返）。
+
+### ⚠️ S4-7：匿名身份轮换导致首次绑定**永久失败**（已确认缺陷，待拍板修复方向）
+- **现象**：`E11000 duplicate key ... _id: "ledger_default"`（500 / `DATABASE_REQUEST_FAILED`），outbox 永远排不空。
+- **根因**：云端 `_id` **全局唯一（跨所有账号）**，而 `PRIVATE` 权限按 `_openid` 隔离读 → 新身份**读不到**旧身份写的文档、**又写不进**同 `_id` → 死锁。
+- **真实场景必现**：用户清 localStorage / 换设备 / 换浏览器 → 新匿名身份 + 旧 `_id` 撞车。
+- **四个方向**（详见 `phase2-backend-plan.md` 的 S4-7 小节）：A 部署时给 `_id` 加 openid 前缀 / B 加设备前缀 / C 冲突换 id 重试 / D 明确提示用户。**倾向 A**（需数据迁移，**属需用户拍板的设计决策，不擅自改**）。
+- **当前云端残留**：`ledger_ledgers` 1 条 + `ledger_bills` 44 条，全部属旧身份 `hVfpnRlq_AbAFDKrd4sxpw`；新身份推不上去。
+
+### ⚠️ 匿名登录的开关时机（用户主动提出，务必在 S6 收口）
+**开发测试期保持开启**（S3 云端链路依赖它）；**正式上线前必须重新评估**。理由：①匿名登录无需凭证 → 任何人拿到 envId 就能创建身份并写数据；②免费额度按量计（3,000 点/月），PRIVATE 权限**只能防"看别人的数据"、防不住"新建账号写自己的数据"**；③S5 匿名转正后它应从主入口降级为游客体验。
+**上线三选一**：A 直接关闭 / B 保留但匿名身份不参与云同步（按 `auth.loginType` 分流）/ C 保留并接受风险（须配额告警）。详见 `phase2-backend-plan.md` **P10** 与 **S6-7**。
+
+### 探针与工具位置
+- 探针脚本 `.preview/sdk-probe/`：`probe-docdb.mjs`（serverDate / 自定义 `_id` upsert / `_openid` 注入 / 区间+排序+分页 / 水位线边界）、`probe-isolation.mjs`（**独立进程**验跨身份隔离）。换环境或升 SDK 大版本时重跑。
+- **CloudBase MCP 工具来源**：`~/.workbuddy/mcp.json` **不存在**；能力来自官方插件包 `~/.workbuddy/plugins/cache/workbuddy-connector-plugins-official/cloudbase/`，其 `mcp.json` 声明 `npx -y @cloudbase/cloudbase-mcp@latest`（stdio）。**skill 与 MCP 是同一插件的两个目录，不是二选一。**
+- **`writeNoSqlDatabaseStructure` 的代码级位置**：npx 缓存 `E:/Program/node-v24.16.0-win-x64/node_cache/_npx/88d9f76c32260533/node_modules/@cloudbase/cloudbase-mcp/`（v2.34.6），注册在 `dist/index.cjs` 的 `registerDatabaseTools(server)`；title/description 是 i18n key，inputSchema 用 Zod。**npm 缓存被改到 `E:\Program\node-v24.16.0-win-x64\node_cache`**（非默认 `%LOCALAPPDATA%\npm-cache`）。
 
 ## 数据层断言
 `npm run test:data` 一次跑完五个脚本，**合计 259 条**。Node 里 IndexedDB 用 `fake-indexeddb`（devDependency）。
@@ -137,9 +161,7 @@
 - **真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` + 浏览器端到端走查。
 
 ## 本地运行
-`npm install && npm run dev` → http://127.0.0.1:5173（也可用 `127.0.0.1`）。
-数据在 **IndexedDB**（库 `ledger`，版本 2）+ 云端。「我的 → 重置演示数据」会清本地与云端、重灌种子并推上云（保留两个「已导入」标记）。
-不配 `.env.local` 即退回纯本地模式，无需改代码。
+`npm install && npm run dev` → http://127.0.0.1:5173（也可用 `127.0.0.1`）。数据在 **IndexedDB**（库 `ledger`，版本 2）+ 云端。「我的 → 重置演示数据」会清本地与云端、重灌种子并推上云（保留两个「已导入」标记）。不配 `.env.local` 即退回纯本地模式，无需改代码。
 
 ### ⚠️ 在 `.preview/` 之类子目录装依赖会污染项目根
 这些目录**没有 `package.json`**，npm 会**向上冒泡**写到项目根的 `package.json`（2026-09-29 实测：一条 `npm install @cloudbase/js-sdk` 让根 `package.json` 多两条依赖、lock 多 701 行）。
@@ -149,14 +171,14 @@
 装了新包后 lockfile 变化，vite 要清 `node_modules/.vite/deps`，会被沙箱的批量删除保护拦住（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。手动 `rm -rf node_modules/.vite` 后重启即可。
 
 ## 版本管理
-- **本机没有 Git for Windows**（无 `C:\Program Files\Git`，PATH 里无 git）。本会话用 WorkBuddy 内置 PortableGit `~/.workbuddy/binaries/PortableGit/versions/1.2.0`（2.55.0，bash 可用）；另装有 GitHub Desktop 3.5.12，其精简 git 在 `%LOCALAPPDATA%\GitHubDesktop\app-3.5.12\resources\app\git\cmd\git.exe`（2.53.0，无 bash）。
-- 主分支 `main`；标签 `v0.1.0`（前端骨架）、`v0.2.0`（第一阶段完成，验收通过）。S2 / S3 完成时**均未打新标签**。
+- **本机没有 Git for Windows**（无 `C:\Program Files\Git`，PATH 里无 git）。用 WorkBuddy 内置 PortableGit `~/.workbuddy/binaries/PortableGit/versions/1.2.0`（2.55.0，bash 可用）；另装有 GitHub Desktop 3.5.12，其精简 git 在 `%LOCALAPPDATA%\GitHubDesktop\app-3.5.12\resources\app\git\cmd\git.exe`（2.53.0，无 bash）。
+- 主分支 `main`；标签 `v0.1.0`（前端骨架）、`v0.2.0`（第一阶段完成）。S2 / S3 完成时**均未打新标签**。
 - 提交用约定式前缀（`feat:` / `fix:` / `refactor:` / `docs:`），正文写清功能点与数据层改动。
 - 不提交 `node_modules/`、`dist/`、`.preview/`。**设计参考图与 `.workbuddy/memory/` 纳入版本管理**，作为设计来源与决策记录。
 
 ## 后端选型（教训）
-- **LeanCloud 已停服**（2026-01-12 起停止注册与建应用，2027-01-12 关闭全部对外服务、数据销毁）。第一阶段的 `leancloudAdapter.js` 因此作废，只留「本地为主 + outbox 推送 + 水位拉取 + 新者胜」的策略注释作参考，**不要照它实现**。
-- **Supabase 曾一度选定后放弃**：方案没问题（Postgres + RLS + 开源可自托管），但国内直连其官方域名不稳，真机测试常需自备域名与代理。
+- **LeanCloud 已停服**（2026-01-12 起停止注册与建应用，2027-01-12 关闭全部对外服务、数据销毁）。第一阶段 `leancloudAdapter.js` 因此作废，只留「本地为主 + outbox 推送 + 水位拉取 + 新者胜」策略注释作参考，**不要照它实现**。
+- **Supabase 曾选定后放弃**：方案没问题（Postgres + RLS + 开源可自托管），但国内直连其官方域名不稳，真机测试常需自备域名与代理。
 - **终选腾讯云开发 CloudBase**（用户 2026-09-29 拍定，路线 B = 自有环境 + `@cloudbase/js-sdk`）。
-- **曾经评估过的路线 A**（WorkBuddy 托管云服务 + `@tencent-ai/workbuddy-cloud-sdk` + PostgreSQL + 邮箱登录）**已放弃**，其调研结论不再追述——A 路无匿名登录、且登录只能在已注册的 HTTPS 发布域名上验证，与「本地先把云同步跑通」的节奏冲突。若日后要重新评估，结论是：**该项目走自有 CloudBase 环境**。
+- **曾评估的路线 A**（WorkBuddy 托管云服务 + PostgreSQL + 邮箱登录）**已放弃**：A 路无匿名登录、且登录只能在已注册的 HTTPS 发布域名上验证，与「本地先把云同步跑通」的节奏冲突。若日后重新评估，结论是**走自有 CloudBase 环境**。
 - `.env.local` 不入库（`.gitignore` 已覆盖，`git check-ignore` 验过）。

@@ -19,8 +19,23 @@ const env = import.meta.env || {}
 /** 腾讯云开发（CloudBase）环境 ID，形如 `my-cloudbase-xxxxxxxxxxxx` */
 export const cloudEnvId = String(env.VITE_CLOUDBASE_ENV || '').trim()
 
+/**
+ * 云函数 HTTP 网关基址（不带尾斜杠），形如
+ * `https://<envId>-<rand>.ap-shanghai.app.tcloudbase.com`。
+ *
+ * 为什么需要它：Web SDK 在匿名登录态下调 `callFunction` 会被
+ * `EXCEED_AUTHORITY` 拒绝（见 src/config/cloud.js 的说明），所以云函数走
+ * HTTP 网关访问。基址是**平台分配的域名**，不能从 envId 拼出来，必须显式配置。
+ */
+export const cloudApiBase = String(env.VITE_CLOUDBASE_API_BASE || '')
+  .trim()
+  .replace(/\/+$/, '')
+
 /** 是否配置了云端。false → 不同步，纯本地记账 */
 export const isCloudConfigured = cloudEnvId.length > 0
+
+/** 是否配了 HTTP 网关基址（S4-2 的云函数调用需要它） */
+export const isCloudApiConfigured = cloudApiBase.length > 0
 
 /** 构建模式（development / production），仅用于日志与提示 */
 export const APP_MODE = String(env.MODE || 'development')

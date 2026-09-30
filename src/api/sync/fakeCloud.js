@@ -13,6 +13,9 @@
  *   _skew(ms)       服务端时间偏移 → 只为把「客户端时钟不可信」这个问题
  *                   暴露出来，S2 不对它做断言，留给 S4 用服务端时间裁决
  *
+ *   _serverTimeSource(src)  把 serverTime() 的 source 改成
+ *                   'watermark-lower-bound'，用来验证「云函数不可用时的降级」
+ *
  * 隔离是怎么实现的：push 时给文档打上当前身份的 `_openid`，pull 时只返回
  * `_openid` 匹配的文档。**注意这只是「客户端自觉」** —— 真实的隔离靠服务端
  * 安全规则，假云端证明不了那件事（见 phase2-backend-plan.md 的 S3 验收）。
@@ -25,6 +28,8 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
     failures: 0,
     failure: null,
     skew: 0,
+    /** serverTime() 返回的 source；改成 'watermark-lower-bound' 可模拟云函数不可用 */
+    serverTimeSource: 'cloud-function',
     calls: { push: 0, pull: 0, serverTime: 0 },
     log: []
   }
@@ -149,7 +154,14 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
         ctx.calls.serverTime += 1
         await tick()
         maybeFail()
-        return serverNow()
+        // 契约（见 cloudClient.js）：返回 { value, source } 而不是裸数字。
+        // fakeCloud 的时间就是「测试时钟」，等价于真云端的云函数返回值，
+        // 所以 source 标 'cloud-function'（可信、可裁决）。
+        // 需要模拟「云函数不可用、降级到下界」时，用 opts.serverTimeSource 覆盖。
+        return {
+          value: serverNow(),
+          source: ctx.serverTimeSource || 'cloud-function'
+        }
       }
     }
   }
@@ -190,6 +202,16 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       return ctx.skew
     },
 
+    /**
+     * 把 serverTime() 的 source 改成 'watermark-lower-bound'，
+     * 模拟「云函数不可用 → 降级取水位线下界」。
+     * 不传参数则恢复 'cloud-function'。
+     */
+    _serverTimeSource(src = 'cloud-function') {
+      ctx.serverTimeSource = src
+      return ctx.serverTimeSource
+    },
+
     /** 调用计数（验证防重入 / 防抖：并发 5 次只该发 1 轮） */
     _calls() {
       return { ...ctx.calls }
@@ -209,6 +231,7 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       ctx.failures = 0
       ctx.failure = null
       ctx.skew = 0
+      ctx.serverTimeSource = 'cloud-function'
       ctx.calls = { push: 0, pull: 0, serverTime: 0 }
       ctx.log = []
       return true

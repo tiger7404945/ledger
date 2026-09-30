@@ -1,0 +1,10 @@
+{
+  "name": "ledger_server_time",
+  "version": "1.0.0",
+  "description": "返回服务端当前时间，供本地「新者胜」冲突裁决使用（S4-2）",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

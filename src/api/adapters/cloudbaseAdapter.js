@@ -33,6 +33,8 @@
 
 import { COLLECTIONS } from '../contract.js'
 import { CLOUD_PAGE_LIMIT } from '../sync/cloudClient.js'
+import { CLOUD_FUNCTIONS, CLOUD_HTTP_PATHS } from '../../config/cloud.js'
+import { cloudApiBase, isCloudApiConfigured } from '../../config/env.js'
 
 /**
  * 云端集合名前缀。
@@ -298,15 +300,53 @@ export function createCloudBaseAdapter({
   /**
    * 服务端当前时间（毫秒）。
    *
-   * ⚠️ 语义要读清楚：CloudBase Web SDK **没有**「读取服务端当前时间」的接口
-   *    （`serverDate()` 只能用于写入），所以这里取「能观察到的最新 `_serverTs`」，
-   *    它是**下界**而不是精确的当前时间。
-   *    用作水位线是安全的（只会多拉、不会漏）；但**不能**拿它做冲突裁决 ——
-   *    那属于 S4（用服务端时间裁决），届时需要一个返回 `Date.now()` 的云函数。
+   * 两级实现（S4-2 起）：
    *
-   * 引擎目前不调用它（水位线取的是 `pull` 返回的 serverTime），留着是为了契约完整。
+   * 1. **首选：HTTP 网关调 `ledger-server-time`**（真服务端时间）
+   *    云函数跑在腾讯云侧，`Date.now()` 就是服务端时钟 → 这是**精确值**，
+   *    可以用来做冲突裁决。
+   *    为什么必须走云函数：CloudBase **Web SDK 没有「读服务端当前时间」的接口**
+   *    （`serverDate()` 只能把时间写进文档，读回来的是那条文档的写入时间）。
+   *
+   *    ⚠️ **为什么不直接 `app.callFunction()`**：匿名登录态下会被
+   *    `EXCEED_AUTHORITY`（403）拒绝 —— 云函数默认安全规则要求「登录且非匿名」，
+   *    而本项目只用匿名登录。改用 `managePermissions` 放开该规则**实测无效**
+   *    （接口回 Success 但复读仍是原规则）。所以走 HTTP 网关这一层，
+   *    它的 `EnableAuth=false` 是真实生效的。详见 src/config/cloud.js。
+   *
+   * 2. **降级：取「能观察到的最新 `_serverTs`」**（下界）
+   *    云函数不可用时（未配置网关基址 / 未部署 / 网络抖动）退回这里。
+   *    它是**下界不是当前时间** —— 当水位线安全（只会多拉不会漏），
+   *    **但不能做冲突裁决**（会误判）。降级时置 `source: 'watermark-lower-bound'`，
+   *    调用方据此决定敢不敢拿它裁决。
+   *
+   * 返回值带 `source` 字段：`'cloud-function'` = 可信，`'watermark-lower-bound'` = 仅水位线。
    */
   async function serverTime() {
+    // —— 首选：HTTP 网关 ——
+    if (isCloudApiConfigured) {
+      try {
+        const res = await fetch(cloudApiBase + CLOUD_HTTP_PATHS.SERVER_TIME, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        })
+        if (res.ok) {
+          const body = await res.json()
+          const ms = Number(body?.serverTime)
+          if (Number.isFinite(ms) && ms > 0) {
+            return { value: ms, source: 'cloud-function' }
+          }
+          lastError = new Error(`云函数 ${CLOUD_FUNCTIONS.SERVER_TIME} 返回结构异常`)
+        } else {
+          lastError = new Error(`云函数 HTTP ${res.status}`)
+        }
+      } catch (err) {
+        lastError = err
+      }
+    }
+
+    // —— 降级：水位线下界 ——
     await ensureSignedIn()
     const db = await getDb()
     const cmd = db.command
@@ -317,7 +357,7 @@ export function createCloudBaseAdapter({
       .limit(1)
       .get()
     const doc = (res.data || [])[0]
-    return doc ? toMillis(doc._serverTs) : 0
+    return { value: doc ? toMillis(doc._serverTs) : 0, source: 'watermark-lower-bound' }
   }
 
   /**
