@@ -15,7 +15,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎），共 301 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id），共 414 条
 ```
 
 ### 配置云端（可选）
@@ -231,7 +231,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项                                 | 结果                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------- |
 | `npm run build`                     | 通过（104 modules，JS 229.30 kB / gzip 81.40 kB）                        |
-| 数据层断言合计                             | **301 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125 + 云端 id 42）                 |
+| 数据层断言合计                             | **414 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 127 + 并发边界 122 + 云端 id 42）   |
 | 服务端单调水位线                            | 通过（同毫秒连续写入不漏、`(since, snapshotAt]` 左开右闭）                            |
 | 双设备同改一条 → 收敛                        | 通过（不裂成两条，且不无限重推）                                                    |
 | 陈旧推送被拒 → 回拉                         | 通过（云端版本拉回本地，被拒条目就地作废）                                               |
@@ -252,7 +252,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项             | 结果                                                                                     |
 | --------------- | -------------------------------------------------------------------------------------- |
 | `npm run build` | 通过（122 modules；主包 236.67 kB / gzip 84.31 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
-| 数据层断言合计         | **301 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125 + 云端 id 42），`syncEngine` 未改动故零回归               |
+| 数据层断言合计         | **414 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 127 + 并发边界 122 + 云端 id 42），`syncEngine` 未改动故零回归 |
 
 
 | 云端资源 | 三集合 `ledger_ledgers` / `ledger_categories` / `ledger_bills`，权限均为 **PRIVATE**，索引 `_openid + _serverTs` |  
@@ -276,7 +276,8 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 - **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
-  - `sync-test.mjs` —— 同步引擎 18 组场景（125 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
+  - `sync-test.mjs` —— 同步引擎 18 组场景（127 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
+  - `conflict-test.mjs` —— 并发与边界 13 组场景（122 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
