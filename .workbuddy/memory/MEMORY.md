@@ -6,7 +6,7 @@
 ## 阶段
 Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。v0.2.0 前端完成；
 **S0–S5 主体完成**（S5-4/S5-7 待办），云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
-标签 v0.1~v0.4 已打；**S5 未打**（打时对齐 package.json version）。
+标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
 - 视图不直接调 adapter，只用 `src/api/index.js` 代理出的 repo 与 Pinia store。
@@ -63,7 +63,7 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - **真机实测（2026-10-01，推翻 fake SDK 前提）**：真 SDK 转正**会换 uid**（4QEhrnqB→21053329…），
   但服务端同一账号记录、云端数据可读；数据层按新 uid 重建分区→`empty-source` 播种→水位 0
   全量**回拉**盖过种子→数据完好（outbox 0、旧分区留盘=备份）。转正必在线，故在线场景
-  「绑定后数据原地保留」成立。`.preview/probe-adapter-auth.mjs` 4e 的「uid 不变」是 fake 前提，待改。
+  「绑定后数据原地保留」成立。探针已按真机行为建模（4e uid 会换、4i prefix 跟随），21 条全绿。
 - `getAuth()` 必须缓存（authPromise）；`getIdentity()` 不触发登录；两类返回形状用 `unwrap()`/`userOf()` 统一。
 - toast 停留 1800ms（useToast），自动化验证抓不到——先装 MutationObserver 记 body 文本再触发。
 
