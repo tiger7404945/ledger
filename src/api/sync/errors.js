@@ -61,7 +61,10 @@ export const ERROR_POLICY = {
     label: '未配置云端，当前为纯本地模式'
   },
   [SYNC_ERROR_KIND.OFFLINE]: {
-    retryable: true,
+    // 不排退避重试：恢复路径是浏览器的 `online` 事件（引擎已监听），
+    // 事件一到立刻同步一轮，比等退避更快更准。
+    // 排退避反而会给队列加 retry 计数，把「本来就离线」显示成「网差在重试」。
+    retryable: false,
     needsReauth: false,
     silent: true,
     label: '当前离线，恢复网络后会自动同步'

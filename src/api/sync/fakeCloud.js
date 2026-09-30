@@ -135,7 +135,21 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
              * 它在 T7 被写入、标记为 T7，A 下一次就拉到了。
              */
             _serverTs: serverNow(),
-            updatedAt: localTs // 保留客户端时间戳：它是**冲突裁决**的依据，不是水位依据
+            /**
+             * ⚠️ 存的必须是**客户端原始** `updatedAt`，不是校正后的 `localTs`。
+             *
+             * `clockOffset` 只在「比较的那一刻」用一次，**绝不能落盘**。
+             * 存校正值等于把当前的偏移量固化进数据：
+             *   - 偏移会随网络往返抖动，每次同步算出来都不完全一样；
+             *   - 固化后会把「慢时钟设备」的偏移叠加到云端值上，
+             *     下一轮再算偏移又是一次叠加，误差**逐轮累积**；
+             *   - 真云端 `cloudbaseAdapter.push` 写的就是原始 `doc`（只剥元数据、
+             *     不动 `updatedAt`），假云端必须一致，否则测试会验出一个
+             *     现实中不存在的行为。
+             *
+             * 客户端时间戳是**冲突裁决的依据**，保持原样由合并层按需校正。
+             */
+            updatedAt: clean.updatedAt
           })
           upserted.push(id)
         }
