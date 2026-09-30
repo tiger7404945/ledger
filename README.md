@@ -64,6 +64,12 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
 - **一级分类**：新建、宫格展示（含「有二级分类」角标）、编辑、删除（级联）。
 - **二级分类**：新建（归属一级分类）、在记账页展开选择、在管理页列表展示、编辑、删除。
 - **分类图标选择器**：左侧分类分组 ↔ 右侧图标区双向联动滚动，内置 10 组约 100 个线性图标（纯本地 SVG，无外部依赖）。
+- **账号体系（S5）**：
+  - 三种登录态：「我的」页顶部账号卡区分**匿名 / 正式 / 未登录**。
+  - **匿名**：云端分配的设备身份，数据能上云，但**清掉浏览器或换设备就找不回**（页面有明确提示）。
+  - **绑定手机号（转正）**：短信验证码验证后绑定到**当前账号**上，`uid` 不变、本地与云端数据原地保留，换设备用手机号即可找回。
+  - **登录 / 退出登录**：退出只清登录态、**不删数据**（产品规则见 S5-4，待定）。登录另一个账号会切到对方的数据分区。
+  - **本地库按账号分区（S5-5）**：库名 `ledger_<账号前缀>`，两个账号的数据与**待同步队列**互不可见——串号风险在本地队列，不在云端。旧库 `ledger` 会被**第一个**登录的账号继承一次（之后登录的账号不会拿到同一份数据）。
 
 ## 目录结构
 
@@ -82,7 +88,7 @@ src/
     core/cloudId.js        云端 id 别名映射（<账号前缀>_<本地 id>）—— 破解 _id 跨账号唯一
     adapters/mockAdapter.js        内存 + localStorage（对照基准，保留）
     adapters/idbAdapter.js         当前启用：IndexedDB 离线缓存
-    adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 匿名登录），SDK 动态 import
+    adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 匿名/手机号登录），SDK 动态 import
     adapters/leancloudAdapter.js   已废弃（LeanCloud 停服），仅保留同步策略注释作参考
     sync/outbox.js         增量同步队列（本地写入即入队，变更通知订阅者）
     sync/outboxStore.js    队列的存储后端（IndexedDB 表 / 内存）+ 旧 localStorage 队列一次性搬迁
@@ -90,7 +96,7 @@ src/
     sync/fakeCloud.js      内存假云端（与真云端同接口，用于测试与本地调试）
     sync/syncEngine.js     同步调度：四态状态机 + pull/push + 退避重试 + 水位线
     mock/seed.js           种子数据
-  stores/                  Pinia：ledger / category / bill
+  stores/                  Pinia：ledger / category / bill / account
   composables/             可复用交互：useRecordDraft（记账草稿）、useSwipeViews（左右滑动切屏）
   components/              通用组件（含 icons 图标库、PeriodSwitch + PeriodPicker 账期切换器与弹层、TrendChart 趋势折线、RankList 分类排行）
   views/                   页面
@@ -108,11 +114,19 @@ cloudfunctions/
 | 适配器                   | 状态                                                  |
 | --------------------- | --------------------------------------------------- |
 | `mockAdapter.js`      | 第一阶段实现（内存 + localStorage）。保留作契约对照基准                 |
-| `idbAdapter.js`       | **当前启用**：IndexedDB，库名 `ledger`、版本 2、5 个 objectStore |
-| `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 匿名登录 + 文档型数据库） |
+| `idbAdapter.js`       | **当前启用**：IndexedDB，按账号分区（`ledger_<账号前缀>`）、版本 2、5 个 objectStore |
+| `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 匿名/手机号登录 + 文档型数据库） |
 | `leancloudAdapter.js` | 已废弃（LeanCloud 停服），仅留同步策略注释作参考                       |
 
 业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。**合并规则也只写一份**（`core/merge.js`），mock 与真云端共用。
+
+### 装配：为什么 repository 是 Proxy（S5-5）
+
+`api/index.js` 导出的 `db` / `ledgerRepo` / `categoryRepo` / `billRepo` / `syncEngine` 都是**指向「当前那一套实例」的稳定代理**。
+
+原因是 ESM 的 `import` 是静态的：store 里写死的 `import { billRepo } from '@/api'` 在模块求值时就已绑定，没法等异步身份确定后再换成真对象。用代理之后，`rebuildForAccount(uid)` 只替换内部指针，**代理本身永不改变**，视图与 store 零改动，三条纪律（视图不碰 adapter / 后端可替换 / 写操作 local-first）继续成立。
+
+⚠️ **启动顺序固定**：`initDataLayer()` → `ensureCloudFirstBind()` → `mount()` → `syncEngine.start()`。挂载必须在数据层就绪之后——视图的 `onMounted` 会立刻读 repository，代理还没目标时会抛 `xxx is not a function`，且 store 的 `initialized` 已被置真、不会重试。
 
 ### 已切到 IndexedDB（S1）
 
@@ -294,18 +308,36 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 > **一个工具经验**：用无头浏览器验证时，其 `click` 命令**不一定会触发 Vue 的 `@click` 处理器**；遇到"点了没反应但逻辑明明是对的"时，用 `element.click()` 原生触发同一元素做对照，就能区分是工具问题还是真实 bug（本次即如此）。  
 > **待办**：`serverTime()` 只是水位线下界，冲突裁决仍需 S4 用云函数打真服务端时间；S5 需把匿名身份转成正式账号，否则清掉浏览器数据即永久失联。
 
+## 第二阶段 S5 验收结论（账号与库分区）
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm run build` | 通过（126 modules；主包 256.31 kB / gzip 91.42 kB + SDK 独立 chunk 871.46 kB） |
+| 数据层断言合计 | **479 条全绿**（在上述 428 条之外新增 `partition-test.mjs` **51 条**） |
+| 手机号发码（真实云端） | 通过（「我的」页点「获取验证码」后按钮变为「重新发送」并进入 60s 倒计时，说明 `auth.getVerification({ phone_number })` 调用成功） |
+| 匿名识别与提示 | 通过（账号卡显示 `匿名 · 4QEhrnqB`、`未绑定`、风险提示文案） |
+| 库分区（真实浏览器） | 通过（`indexedDB.databases()` 观察到裸库 `ledger` 与分区库 `ledger_4qehrnqb` 并存；「我的」页显示 `IndexedDB（ledger_4qehrnqb）`） |
+| 分区切换 | 通过（`rebuildForAccount()` 依次切到 `ledger_kqjv1dcp` → `ledger_hvfpnrlq`，各自读到自己的数据，`changed: true`） |
+| **跨账号不串号（关键修复）** | 通过（设备上第二个账号进新分区时 `bills = 0`：裸库已被第一个账号认领，不继承也不播种；`partitionClaimedBy` 记录认领者） |
+| 首次绑定入队 | 通过（首启 `待同步队列 87 条` → 同步完成后 `0 条`、状态 `已同步`） |
+| 首启播种（真机首启 bug） | 修复后通过（首页 `本月支出 ¥8720.72 / 本月收入 ¥13768.50`，与种子定义精确吻合） |
+| 浏览器运行时未捕获异常 | 无（修复 `main.js` 的挂载竞态后） |
+
+> **S5-5 是这一轮的主要加固点**。串号有两个入口：**本地 outbox**（A 的残留条目被推到 B 名下）与**裸库继承**（每个新账号都继承同一份旧库）。前者靠库名分区堵死，后者靠 `partitionClaimedBy` 堵死——两个都要有。
+
 ## 说明
 
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
-- 数据当前持久化在 **IndexedDB**（库名 `ledger`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」会清本地与云端、再重新灌种子并推上云。
+- 数据当前持久化在 **IndexedDB**（按账号分区，库名 `ledger_<账号前缀>`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」会清本地与云端、再重新灌种子并推上云。
 - 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
 - **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
-  - `sync-test.mjs` —— 同步引擎 18 组场景（127 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
-  - `conflict-test.mjs` —— 并发与边界 13 组场景（122 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
+  - `sync-test.mjs` —— 同步引擎 18 组场景（128 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
+  - `conflict-test.mjs` —— 并发与边界 13 组场景（135 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
-  - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` 的探针脚本 + 浏览器端到端走查。
+  - `partition-test.mjs` —— 库分区与旧库继承（51 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种
+  - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
   1. **免费环境要手动续期**：单次 6 个月、不支持自动续费 —— **续期提醒已设，环境到期 2027-03-30**。

@@ -924,15 +924,66 @@ id    = <本地 id>（业务字段，权威来源）  例：ledger_default
 
 | 编号 | 任务 | 说明 | 现状 |
 | --- | --- | --- | --- |
-| S5-1 | 匿名 → 正式账号 | 先用**手机号验证码**或**邮箱**登录（云开发内置）；匿名转正可在原账号上绑定，数据不丢 | ⬜ |
-| S5-2 | 登录态持久化 | SDK 会存 session，确认刷新页面后仍登录 | ⬜ |
-| S5-3 | 未登录也能用 | 保持"本地匿名记账"，登录后再把本地数据合并上去 | ⬜ |
-| S5-4 | 退出登录的数据处置 | **先定产品规则再写代码**：保留本地 / 清空 / 标记待确认？（建议保留并提示） | ⬜ |
-| S5-5 | **本地库按用户分区** | 库名做成可注入的（`openDB({ dbName })`），这里启用 `ledger_<openid>`。**串号风险在本地不在云端**：两账号共用一个 `ledger` 库时，A 残留的 outbox 条目会被推到 B 名下 | ⬜ |
-| S5-6 | 「我的」页改造 | 显示：当前账号 / 上次同步时间 / 待同步条数 / 手动同步 / 退出登录 | 🟡 部分完成（S3 已做账号、状态、手动同步；缺"上次同步时间"与"退出登录"） |
+| S5-1 | 匿名 → 正式账号 | 用**手机号验证码**登录（云开发内置，`getVerification` + `signUp({ anonymous_token })` 原地转正）；**未开邮箱** provider | ✅ 已完成 |
+| S5-2 | 登录态持久化 | SDK 会存 session；实测刷新页面后 `getIdentity()` 仍能拿回 uid 与手机号 | ✅ 已完成（实测通过） |
+| S5-3 | 未登录也能用 | 启动时**不再自动建匿名账号**（`initDataLayer` 只读身份）；真需要数据方法时适配器才 `ensureSignedIn` 兜底。没配云端时落在 `ledger_anon` 分区，本地记账照常 | ✅ 已完成 |
+| S5-4 | 退出登录的数据处置 | **先定产品规则再写代码**：保留本地 / 清空 / 标记待确认？（建议保留并提示） | ⬜ 待定 |
+| S5-5 | **本地库按用户分区** | 库名 `ledger_<账号前缀>`（`partitionedDbName` + `accountPrefixOf` 同源）；装配层用**稳定 Proxy** 暴露 repository，`rebuildForAccount(uid)` 只换内部指针，视图与 store 零改动。**串号风险在本地不在云端**：两账号共用一个 `ledger` 库时，A 残留的 outbox 条目会被推到 B 名下 | ✅ 已完成 |
+| S5-6 | 「我的」页改造 | 显示：当前账号 / 上次同步时间 / 待同步条数 / 手动同步 / 退出登录。**已做**：账号卡片（匿名/正式/未登录三态）、分区库名、待同步条数、退出登录、登录/绑定弹层 | ✅ 已完成（缺"上次同步时间"，归 S6-1） |
 | S5-7 | 首次绑定改为询问用户 | S3 的 `ensureCloudFirstBind()` 是**本地优先**（因为匿名身份下云端不可能有别人的数据）。有了真账号后云端**可能已有数据**，必须让用户选"本地推上去"还是"云端拉下来" | ⬜ 新增（S3 的临时代价） |
 
 **验收标准**：两个浏览器（或电脑 + 手机）登录同一账号，A 记一笔 → 5 秒内 B 能刷到。
+
+#### S5-1 + S5-5 实施记录（**这三条是踩出来的，改代码前先读**）
+
+**① 手机号登录的两套 API，返回形状不一样**
+
+| 用途 | 调用 | 关键点 |
+| --- | --- | --- |
+| 发验证码 | `auth.getVerification({ phone_number })` | 字段名是 **`phone_number`**（不是 `phone`）；返回 **`{ verification_id, is_user }`**（不是 `verificationInfo`）——**这个对象本身就是**下一步要的 `verificationInfo` |
+| 登录 | `auth.signInWithSms({ verificationInfo, verificationCode, phoneNum })` | 返回 **`LoginState`**（不是 `{data,error}`），失败靠 throw；**自己不发验证码** |
+| 匿名转正 | `auth.signUp({ phone, anonymous_token })` → `data.verifyOtp({ token })` | ⚠️ **必须传 `phone` 而不是 `phone_number`** |
+
+**② 转正最隐蔽的坑：传错字段名会「变成注册新账号」**
+
+`signUp` 内部的分支是 `if (phone_number || verification_code || verification_token || provider_token)` → 走底层注册、**直接返回 `LoginState`**；否则 → 调 `getVerification` 并返回 `{ data: { verifyOtp } }`。
+
+所以只要传了 `phone_number`，`anonymous_token` 会被忽略，**实际上是注册了一个全新账号**，用户会觉得「账全没了」。必须传 `phone`，才会走「给匿名账号补手机号」的绑定分支，`anonymous_token` 被 spread 进去。⚠️ 但 2026-10-01 真机实测（见下方 **⑤**）：即便字段传对，**真 SDK 也会换 uid** ——「数据不丢」靠的是云端回拉，不是 uid 不变。
+
+`verifyOtp` 是 `signUp` 返回结果上的**回调**，只收 `{ token }`；独立调 `auth.verifyOtp` 会报 `messageId is required`。
+
+**③ 库分区必须配「裸库只能被认领一次」，否则换个账号就串号**
+
+裸库 `ledger` 因为「不删源」会永远留在设备上。如果只在目标库上记「我继承过了」，那么设备上登录的**每一个新账号**都会把同一份裸库数据搬进自己的分区，紧接着首次绑定把它推上云端 —— 一个账号的账进了另一个账号名下。
+
+所以裸库里还要记 `partitionClaimedBy`（第一个分区的账号前缀）。三种结局：
+
+| 情形 | `reason` | 要不要播种 |
+| --- | --- | --- |
+| 真的搬到了数据 | `migrated` | ❌ 不播种（会与旧数据叠成两套） |
+| 旧库是空的（全新设备） | `empty-source` | ✅ **要播种** |
+| 裸库已被**别的**账号认领 | `claimed-by-other` | ❌ 不播种（否则等于凭空多出别人的账） |
+| 目标库已有数据 / 已定过案 | `target-not-empty` / `already-migrated` | ❌ 不播种 |
+| 旧库被占着打不开 | `source-unavailable` | ❌ 不播种（下次启动要重试） |
+
+⚠️ 曾经把「旧库为空」也返回成 `migrated`，结果**全新设备第一次启动就跳过播种、首页全是 0.00** —— 这个 bug 只有真机首启才暴露，单测里因为种子已存在而看不到。
+
+**④ 必须先 `initDataLayer()` 再 `mount()`**
+
+视图的 `onMounted` 会立刻读 repository，而 repository 是**指向当前分区的代理**。如果 `mount()` 跑在 `initDataLayer()` 前面，代理还没有目标，读出来直接抛 `ledgerRepo.list is not a function`，首页停在 0.00 且**不再重试**（store 的 `initialized` 已被置真）。
+
+顺序固定为：`initDataLayer()` → `ensureCloudFirstBind()` → `mount()` → `syncEngine.start()`。整套包在一个 async IIFE 里，每步单独 catch（身份探测或首次绑定失败不该挡住本地记账）。
+
+**⑤ 真机实测（2026-10-01，180****2706）：转正会换 uid，数据靠云端回拉保住**
+
+fake SDK 探针的「转正 uid 不变」前提被真机推翻：
+
+- `signUp({ phone, anonymous_token })` + `verifyOtp` 成功后，SDK 会话的 uid 变成**新字符串**（`4QEhrnqB…` → `21053329…`），账号卡变「手机号 +86\*\*\*\*2706 已绑定」。
+- 但**服务端仍是同一账号记录**：新身份的同步引擎从水位 0 全量回拉，44 账单 + 42 分类原样回来。决定性证据是新分区 `syncWatermark` 从 0 推进到真实服务端时间戳（`1790785482976`）；云端文档归属没有分叉、无孤儿数据。
+- 本地过程：`rebuildForAccount(新 uid)` → 新分区 `ledger_21053329` → 裸库为空（`empty-source`）→ 播种 → pull 盖过种子。旧分区 `ledger_4qehrnqb` 留盘 = 天然备份。
+- 结论：「绑定后数据原地保留」**在线场景成立**（转正本身必须联网）；刚转正就断网会暂时只见种子，等下次同步恢复。这条链路能走通，靠的正是 S4-7「本地 id 与账号解耦」+ 稳定代理 + `rebuildForAccount`。
+- 另一个真机发现：`confirmUpgrade` 对 `verifyOtp` 是**一次性消费**（调用前置空），验证码过期/输错后同一条短信无法重试，必须重新发码；toast 只停 1800ms，自动化验证要先装 MutationObserver 记 body 文本再触发，否则抓不到错误。
+- 待办：`.preview/probe-adapter-auth.mjs` 4e 的「uid 不变」断言是 fake 前提，应改为建模 uid 变化（探针层面验「身份切换后不崩、数据靠回拉恢复」）。
 
 ---
 
@@ -945,7 +996,7 @@ id    = <本地 id>（业务字段，权威来源）  例：ledger_default
 | S6-3 | 真机测试 | 手机浏览器实测：布局、手势、同步 | ⬜ |
 | S6-4 | 部署 | 前端静态托管放进同一个云开发环境（**临时域名已在手**：`my-cloudbase-…-<随机段>.ap-shanghai.app.tcloudbase.com`）。当前该域名返回 404，说明**托管内容尚未部署**，这是 S6-4 要做的事 | ⬜ **临时域名已就绪，正式域名待申请** |
 | S6-5 | 续期提醒 | 给免费环境设日历提醒（第 5、6 个月各一次） | ✅ **已完成（用户 2026-09-30 设置）；环境到期 2027-03-30** |
-| S6-6 | 文档更新 | `README` 补"如何配置云端"；`contract.js` 注释补云端实现说明 | 🟡 README 已补 S3 章节；`contract.js` 注释待补 |
+| S6-6 | 文档更新 | `README` 补"如何配置云端" + 账号与库分区说明；`contract.js` 注释补云端实现说明 | 🟡 README 已补 S3/S5 章节；`contract.js` 注释待补 |
 | **S6-7** | **匿名登录开关的最终裁决** | 见第 3 节 **P10**：开发测试期保持开启，**上线前必须重新评估**（三选一：关闭 / 限制为仅本地 / 保留并加额度告警） | ⬜ **新增（用户 2026-09-30 提出，需在 S6 收口）** |
 
 **验收标准**：导出的 JSON 能被重新导入且数据一致；手机能记账并同步；续期提醒已设。

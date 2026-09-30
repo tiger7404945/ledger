@@ -12,6 +12,7 @@ import {
   STORES,
   clearStore as idbClearStore,
   createIdbKeyValue,
+  migratePartitionData,
   openDB,
   putMany as idbPutMany,
   readAll as idbReadAll,
@@ -78,7 +79,27 @@ const LEGACY_KEY = LEGACY_DB_KEY
  * @returns 与 mockAdapter 同契约的适配器实例
  */
 export function createIdbAdapter(options = {}) {
-  const { dbName = DB_NAME, version = DB_VERSION, seed = true } = options
+  const {
+    dbName = DB_NAME,
+    version = DB_VERSION,
+    seed = true,
+    /**
+     * S5-5：从「未分区的旧库」继承数据（只在分区库里用）。
+     *   - `false`（默认）—— 不继承。裸库与测试走这条路。
+     *   - `true` —— 用默认源库名（`ledger`）。
+     *   - 字符串 —— 指定源库名。
+     * 语义与幂等保证见 `core/idb.js` 的 `migratePartitionData`。
+     */
+    migrateFrom = false,
+    /**
+     * S5-5：本分区的认领标识（通常是账号前缀）。
+     *
+     * 裸库「不删源」，会长期留着。有了它，裸库只能被**第一个**分区认领，
+     * 之后登录的别的账号不会再把同一份数据搬进自己名下（防跨账号串号）。
+     * 传空 = 不做认领检查（测试 / 未分区场景）。
+     */
+    claimant = ''
+  } = options
 
   let dbPromise = null
   let initPromise = null
@@ -136,6 +157,36 @@ export function createIdbAdapter(options = {}) {
 
   async function init() {
     await getDB()
+
+    /**
+     * S5-5：先继承旧（未分区）库，再走后面的接管/播种判断。
+     *
+     * 顺序很关键 —— 继承进来的数据要能**挡住播种**：如果先播种再继承，
+     * 用户会看到「种子数据 + 自己原来的账」混在一起，旧数据反而像被污染了。
+     */
+    /**
+     * 「继承已定案，别再播种」。按继承结局分三种：
+     *
+     *   - `migrated` —— 真搬来了旧数据，库里已有权威内容 ⇒ **不播种**。
+     *   - `target-not-empty` / `already-migrated` —— 本分区内容已定案 ⇒ 不播种。
+     *   - `claimed-by-other` —— 裸库属于**别的账号**，本分区空手进 ⇒ **不播种**。
+     *     若还播种，新账号一进去就看到一份演示数据，首次绑定把它整批推到
+     *     自己名下 —— 等于凭空多了别人的账（跨账号串号的另一条路）。
+     *   - `empty-source` —— 旧库是空的（全新设备）⇒ **要播种**，否则新用户
+     *     第一次打开看到的是空 App。这个 case 曾经被误判成 `migrated`。
+     *   - `source-unavailable` —— 旧库被占着打不开，只是暂时读不到，
+     *     下次启动要重试 ⇒ **不播种**（顺手种下去会让重试失去意义）。
+     */
+    let inheritSettled = false
+    if (migrateFrom) {
+      const res = await migratePartitionData(getDB(), {
+        sourceDbName: typeof migrateFrom === 'string' ? migrateFrom : DB_NAME,
+        claimant
+      })
+      // 只有「旧库确实空着」才把播种让给种子逻辑；其余结局都算定案
+      inheritSettled = res.reason !== 'empty-source'
+    }
+
     const meta = await readMeta()
 
     if (meta[META_KEYS.SCHEMA] !== SCHEMA_VERSION) {
@@ -148,7 +199,10 @@ export function createIdbAdapter(options = {}) {
         await putMany(STORES.CATEGORY, legacy.categories)
         await putMany(STORES.BILL, legacy.bills)
         await writeMeta({ [META_KEYS.SEED]: legacy.meta, [META_KEYS.IMPORTED]: now() })
-      } else if (seed) {
+      } else if (seed && !inheritSettled) {
+        // ⚠️ `inheritSettled` 时**不播种**：分区库的内容已由继承判定决定。
+        //    再播一份种子会与继承来的数据叠成两套，而且种子 id 固定，
+        //    会直接把用户的同名账目覆盖掉。
         const seedData = buildSeed()
         await putMany(STORES.LEDGER, seedData.ledgers)
         await putMany(STORES.CATEGORY, seedData.categories)
@@ -164,7 +218,7 @@ export function createIdbAdapter(options = {}) {
 
     // 演示数据迁移：seed=false（测试用的空库）时必须跳过，
     // 否则 migrateSeedData 会把演示账单当成「缺失的补充数据」补进来
-    if (seed) await runSeedMigration()
+    if (seed && !inheritSettled) await runSeedMigration()
     return true
   }
 
@@ -599,6 +653,8 @@ export function createIdbAdapter(options = {}) {
 
   return {
     name: 'idb',
+    /** 实际使用的库名（S5-5：可能是分区库 `ledger_<前缀>`）。UI 与排查用它 */
+    dbName,
     ledger: ledgerApi,
     category: categoryApi,
     bill: billApi,

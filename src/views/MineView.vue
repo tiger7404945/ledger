@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCategoryStore } from '@/stores/category.js'
 import { useBillStore } from '@/stores/bill.js'
+import { useAccountStore, ACCOUNT_PHASE } from '@/stores/account.js'
 import { db, DATA_SOURCE, cloud, syncEngine, ensureCloudFirstBind } from '@/api'
 import { useToast } from '@/composables/useToast.js'
 import { clearRecordDraft } from '@/composables/useRecordDraft.js'
@@ -13,11 +14,11 @@ import TabBar from '@/components/TabBar.vue'
 const router = useRouter()
 const categoryStore = useCategoryStore()
 const billStore = useBillStore()
+const account = useAccountStore()
 const toast = useToast()
 
 const pending = ref(0)
 const syncState = ref(syncEngine.state)
-const cloudUid = ref(null)
 let offSync = null
 let offAuth = null
 
@@ -26,11 +27,14 @@ const entries = [
   { icon: 'piggy', label: '账本管理', desc: '多账本与共享（后续版本）' },
   { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已启用）' },
   { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（已接入）' },
-  { icon: 'star', label: '关于', desc: '随手记账 · 前端演示版 v0.2' }
+  { icon: 'star', label: '关于', desc: '随手记账 · 本地优先记账 v0.5' }
 ]
 
-/** 本地存储的呈现随数据源变化，避免界面写着 A、实际跑着 B */
-const storageLabel = DATA_SOURCE === 'idb' ? 'IndexedDB（ledger 库）' : '内存 + localStorage'
+/** 本地存储的呈现随数据源与分区变化，避免界面写着 A、实际跑着 B */
+const storageLabel = computed(() => {
+  if (DATA_SOURCE !== 'idb') return '内存 + localStorage'
+  return account.dbName ? `IndexedDB（${account.dbName}）` : 'IndexedDB'
+})
 const cacheLabel = DATA_SOURCE === 'idb' ? '已启用' : '未启用（仍是内存）'
 
 /** 云端那一行：没接入就说清楚，接入了就说当前状态 */
@@ -42,21 +46,143 @@ const cloudLabel = computed(() => {
   return pending.value ? `待推 ${pending.value} 条` : '已同步'
 })
 
-/** 云端账号：匿名账号就是当前这台设备的身份，露一下 uid 便于确认「没串号」 */
-const accountLabel = computed(() => {
-  if (!cloud) return '未接入'
-  if (!cloudUid.value) return '登录中…'
-  return `匿名 · ${String(cloudUid.value).slice(0, 8)}`
-})
-
-/** 个人卡片那行说明。接了云之后还写「数据仅保存在本机」就是骗人了 */
+/**
+ * 个人卡片那行说明。
+ * ⚠️ 匿名身份必须**明确写出风险**（清掉浏览器就找不回）——
+ *    这是 S5 做「转正」的全部理由，藏在代码注释里没用，得让用户看见。
+ */
 const profileSub = computed(() => {
   if (!cloud) return '数据仅保存在本机 · 未配置云端'
-  if (!cloudUid.value) return '本地优先 · 云端登录中…'
-  return '本地优先 · 已同步到腾讯云开发'
+  if (!account.ready) return '本地优先 · 正在确认账号…'
+  if (account.phase === ACCOUNT_PHASE.ANONYMOUS) return '本地优先 · 匿名身份，清浏览器即失效'
+  if (account.phase === ACCOUNT_PHASE.FORMAL) return '本地优先 · 已绑定手机号，换设备可找回'
+  return '本地优先 · 未登录，数据只在本机'
 })
 
+const avatarText = computed(() => (account.phase === ACCOUNT_PHASE.FORMAL ? '我' : '默'))
+
+/* ---------------- 登录弹层 ---------------- */
+
+const sheetOpen = ref(false)
+/** 弹层模式：login（换账号登录）| upgrade（匿名转正） */
+const sheetMode = ref('login')
+const formPhone = ref('')
+const formCode = ref('')
+const codeSent = ref(false)
+const countdown = ref(0)
+/**
+ * 发码返回的 `{ verification_id, is_user }`。
+ * ⚠️ 登录时必须带回去 —— 它是服务端用来配对「这条验证码属于哪次请求」的凭据，
+ *    丢了 `signInWithSms` 内部的 verify() 会因 verification_id 为空而失败。
+ */
+const verificationInfo = ref(null)
+let countdownTimer = null
+
+const sheetTitle = computed(() =>
+  sheetMode.value === 'upgrade' ? '绑定手机号' : '手机号登录'
+)
+
+const sheetHint = computed(() =>
+  sheetMode.value === 'upgrade'
+    ? '绑定后当前账号与数据原地保留，换设备用手机号即可找回。'
+    : '登录会切换到该手机号名下的数据；本机当前未登录的数据仍留在原分区。'
+)
+
+const canSubmit = computed(
+  () => /^1[3-9]\d{9}$/.test(formPhone.value) && formCode.value.length >= 4 && !account.busy
+)
+
+function openSheet(mode) {
+  if (!cloud) {
+    toast.show('未配置云端（见 .env.local），无法登录')
+    return
+  }
+  sheetMode.value = mode
+  formPhone.value = mode === 'upgrade' ? account.phone || '' : ''
+  formCode.value = ''
+  codeSent.value = false
+  sheetOpen.value = true
+}
+
+function closeSheet() {
+  sheetOpen.value = false
+  stopCountdown()
+  account.error = null
+}
+
+function stopCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+  countdown.value = 0
+}
+
+/**
+ * 发验证码。两种模式走的是**两条完全不同的路**（混用必失败，踩过）：
+ * - 登录模式：getVerification 发码 → verificationInfo 留给 signInWithSms 配对。
+ * - 转正模式：短信由 signUp 自己发（verifyOtp 与它配对），所以这里调的是
+ *   `account.prepareUpgrade`。**不要**在这里再调一次 sendSmsCode ——
+ *   同号一分钟连发两条会撞频控，而且用户输入的第一条码与 verifyOtp 对不上。
+ */
+async function sendCode() {
+  if (!/^1[3-9]\d{9}$/.test(formPhone.value)) {
+    toast.show('请输入正确的手机号')
+    return
+  }
+  try {
+    if (sheetMode.value === 'upgrade') {
+      await account.prepareUpgrade(formPhone.value)
+    } else {
+      const res = await account.sendCode(formPhone.value)
+      verificationInfo.value = res?.verificationInfo || null
+    }
+    codeSent.value = true
+    countdown.value = 60
+    stopCountdown()
+    countdownTimer = setInterval(() => {
+      countdown.value -= 1
+      if (countdown.value <= 0) stopCountdown()
+    }, 1000)
+    toast.success('验证码已发送')
+  } catch (e) {
+    toast.show(`发送失败：${e?.message || e}`)
+  }
+}
+
+async function submit() {
+  if (!canSubmit.value) return
+  try {
+    if (sheetMode.value === 'upgrade') {
+      await account.upgradeWithPhone({ phone: formPhone.value, code: formCode.value })
+      toast.success('已绑定手机号，数据完好')
+    } else {
+      await account.signInWithPhone({
+        phone: formPhone.value,
+        code: formCode.value,
+        verificationInfo: verificationInfo.value
+      })
+      toast.success('登录成功')
+    }
+    closeSheet()
+    pending.value = await db.sync.pendingCount()
+  } catch (e) {
+    toast.show(`${sheetMode.value === 'upgrade' ? '绑定' : '登录'}失败：${e?.message || e}`)
+  }
+}
+
+async function handleSignOut() {
+  try {
+    await account.signOut()
+    pending.value = await db.sync.pendingCount()
+    toast.success('已退出登录')
+  } catch (e) {
+    toast.show(`退出失败：${e?.message || e}`)
+  }
+}
+
 onMounted(async () => {
+  await account.bootstrap()
   await db.ready?.()
   await Promise.all([categoryStore.ensureLoaded(), billStore.ensureLoaded()])
   // 队列方法已改为异步，而且「全貌」（状态 / 待推数 / 上次同步时间）只有引擎知道，
@@ -65,13 +191,13 @@ onMounted(async () => {
     syncState.value = s.state
     pending.value = s.pendingCount
   })
-  // 登录态要显式触发一次才会去登（匿名登录是懒加载的，不在启动路径上）
-  if (cloud?.ensureSignedIn) {
-    offAuth = cloud.onAuthChange((a) => {
-      cloudUid.value = a.uid
+  // 登录态变化时同步刷新 store（账号可能在别处被改，比如引擎自己重新登录）
+  if (cloud?.onAuthChange) {
+    offAuth = cloud.onAuthChange(() => {
+      account.refreshIdentity()
     })
-    cloud.ensureSignedIn().catch(() => {})
   }
+  pending.value = await db.sync.pendingCount().catch(() => 0)
 })
 
 onUnmounted(() => {
@@ -79,6 +205,7 @@ onUnmounted(() => {
   offSync = null
   offAuth?.()
   offAuth = null
+  stopCountdown()
 })
 
 async function handleEntry(entry) {
@@ -87,7 +214,7 @@ async function handleEntry(entry) {
     return
   }
   if (entry.label === '离线缓存') {
-    toast.show(`当前数据源：${DATA_SOURCE}，账单存在 ${storageLabel}`)
+    toast.show(`当前数据源：${DATA_SOURCE}，账单存在 ${storageLabel.value}`)
     return
   }
   if (entry.label === '云端同步') {
@@ -148,10 +275,57 @@ async function resetDemo() {
 
     <div class="page-body">
       <section class="card profile">
-        <span class="avatar">默</span>
+        <span class="avatar">{{ avatarText }}</span>
         <div class="profile-info">
           <span class="name">本地用户</span>
           <span class="sub">{{ profileSub }}</span>
+        </div>
+      </section>
+
+      <!-- 账号卡片：只在配了云端时出现（没云端就没有账号概念） -->
+      <section v-if="cloud" class="card account">
+        <header class="account-head">
+          <span class="account-label">{{ account.label }}</span>
+          <span v-if="account.phase === 'anonymous'" class="pill warn">未绑定</span>
+          <span v-else-if="account.phase === 'formal'" class="pill ok">已绑定</span>
+        </header>
+        <p class="account-hint">
+          <template v-if="account.phase === 'anonymous'">
+            匿名身份只存在于这台浏览器，清除数据或换设备后将无法找回这些账目。
+          </template>
+          <template v-else-if="account.phase === 'formal'">
+            数据与手机号绑定，换设备登录即可继续记账。
+          </template>
+          <template v-else>登录后可在多台设备之间同步账目。</template>
+        </p>
+        <div class="actions">
+          <button
+            v-if="account.canUpgrade"
+            class="primary"
+            type="button"
+            :disabled="account.busy"
+            @click="openSheet('upgrade')"
+          >
+            绑定手机号
+          </button>
+          <button
+            v-else-if="account.phase !== 'formal'"
+            class="primary"
+            type="button"
+            :disabled="account.busy"
+            @click="openSheet('login')"
+          >
+            登录 / 注册
+          </button>
+          <button
+            v-if="account.phase === 'formal'"
+            class="ghost"
+            type="button"
+            :disabled="account.busy"
+            @click="handleSignOut"
+          >
+            退出登录
+          </button>
         </div>
       </section>
 
@@ -182,7 +356,7 @@ async function resetDemo() {
           <li><em>待同步队列</em><span>{{ pending }} 条</span></li>
           <li><em>离线缓存</em><span>{{ cacheLabel }}</span></li>
           <li><em>云端</em><span>{{ cloudLabel }}</span></li>
-          <li><em>云端账号</em><span>{{ accountLabel }}</span></li>
+          <li><em>云端账号</em><span>{{ account.label }}</span></li>
         </ul>
         <div class="actions">
           <button class="ghost" type="button" @click="syncNow">立即同步</button>
@@ -192,6 +366,61 @@ async function resetDemo() {
     </div>
 
     <TabBar />
+
+    <!-- 手机号登录 / 绑定弹层 -->
+    <Teleport to="body">
+      <div v-if="sheetOpen" class="sheet-mask" @click.self="closeSheet">
+        <div class="sheet">
+          <header class="sheet-head">
+            <span class="sheet-title">{{ sheetTitle }}</span>
+            <button class="sheet-close" type="button" @click="closeSheet">
+              <IconBase name="close" :size="17" />
+            </button>
+          </header>
+          <p class="sheet-desc">{{ sheetHint }}</p>
+
+          <label class="field">
+            <span class="field-label">手机号</span>
+            <input
+              v-model.trim="formPhone"
+              class="field-input"
+              type="tel"
+              inputmode="numeric"
+              maxlength="11"
+              placeholder="请输入 11 位手机号"
+            />
+          </label>
+
+          <label class="field">
+            <span class="field-label">验证码</span>
+            <span class="field-code">
+              <input
+                v-model.trim="formCode"
+                class="field-input"
+                type="text"
+                inputmode="numeric"
+                maxlength="6"
+                placeholder="6 位验证码"
+              />
+              <button
+                class="code-btn"
+                type="button"
+                :disabled="countdown > 0 || !/^1[3-9]\d{9}$/.test(formPhone)"
+                @click="sendCode"
+              >
+                {{ countdown > 0 ? `${countdown}s` : codeSent ? '重新发送' : '获取验证码' }}
+              </button>
+            </span>
+          </label>
+
+          <p v-if="account.error" class="sheet-error">{{ account.error }}</p>
+
+          <button class="submit" type="button" :disabled="!canSubmit" @click="submit">
+            {{ account.busy ? '处理中…' : sheetMode === 'upgrade' ? '确认绑定' : '登录' }}
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -235,6 +464,63 @@ async function resetDemo() {
 .sub {
   font-size: 12.5px;
   color: var(--ink-3);
+}
+
+/* ---- 账号卡片 ---- */
+.account {
+  margin-top: 12px;
+  padding: 16px;
+}
+
+.account-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-label {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.pill {
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+}
+
+.pill.warn {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+.pill.ok {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+.account-hint {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.primary {
+  flex: 1;
+  height: 40px;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.primary:disabled,
+.submit:disabled,
+.code-btn:disabled {
+  opacity: 0.45;
 }
 
 .list {
@@ -311,6 +597,7 @@ async function resetDemo() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 8px 0;
   font-size: 13px;
   border-bottom: 1px dashed var(--hairline);
@@ -321,8 +608,14 @@ async function resetDemo() {
 }
 
 .status-list em {
+  flex: none;
   font-style: normal;
   color: var(--ink-3);
+}
+
+.status-list span {
+  text-align: right;
+  word-break: break-all;
 }
 
 .actions {
@@ -338,5 +631,109 @@ async function resetDemo() {
   background: var(--surface-3);
   color: var(--ink-2);
   font-size: 14px;
+}
+
+/* ---- 登录 / 绑定弹层 ---- */
+.sheet-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.sheet {
+  width: min(var(--frame-w), 100%);
+  padding: 18px 20px calc(20px + var(--safe-b));
+  border-radius: 18px 18px 0 0;
+  background: var(--surface-raised, #fff);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sheet-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sheet-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--ink-3);
+}
+
+.sheet-desc {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.field {
+  display: block;
+  margin-top: 14px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.field-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.field-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-code .field-input {
+  flex: 1;
+}
+
+.code-btn {
+  flex: none;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: var(--r-md);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 13px;
+}
+
+.sheet-error {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: #d94a3d;
+}
+
+.submit {
+  width: 100%;
+  height: 46px;
+  margin-top: 18px;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 500;
 }
 </style>
