@@ -19,8 +19,14 @@
  *   权限     三个集合都是 PRIVATE（仅创建者可读写），**服务端**按 `_openid` 过滤
  *
  * 数据约定（与 sync/cloudClient.js 的契约对齐）：
- *   - 幂等键：云端 `_id` = 本地 `id`，写入用 `doc(id).set(...)`，它天然是 upsert，
+ *   - **幂等键**：云端 `_id` 是「带账号维度的别名」= `<账号前缀>_<本地 id>`
+ *     （见 `core/cloudId.js`），写入用 `doc(别名).set(...)`，它天然是 upsert，
  *     所以重复推送不会产生重复文档。
+ *     ⚠️ 别名**不是**本地 id —— 本地 id 同时写在业务字段 `id` 里，
+ *     拉回来时由 `fromRemote()` 从那个字段恢复。**别直接拿 `_id` 当本地 id。**
+ *     为什么不直接用本地 id 当 `_id`：CloudBase 的 `_id` 在**集合内全局唯一、
+ *     跨账号**，而 PRIVATE 权限按 `_openid` **隔离读**；两者错位会让换了身份的
+ *     客户端「看不见却撞得上」，抛 `E11000`（S4-7 的真实缺陷）。
  *   - `_openid` 由 SDK **自动注入**，本地绝不能自己写（手写会直接报错）；
  *     拉回来时由 `core/merge.js` 的 `fromRemote()` 剥掉，不落本地库。
  *   - `_serverTs` 用 `db.serverDate()` 写入 = **服务端接收时间**，水位线只认它。
@@ -33,6 +39,7 @@
 
 import { COLLECTIONS } from '../contract.js'
 import { CLOUD_PAGE_LIMIT } from '../sync/cloudClient.js'
+import { accountPrefixOf, toCloudId, toLocalId } from '../core/cloudId.js'
 import { CLOUD_FUNCTIONS, CLOUD_HTTP_PATHS } from '../../config/cloud.js'
 import { cloudApiBase, isCloudApiConfigured } from '../../config/env.js'
 
@@ -85,8 +92,21 @@ export function createCloudBaseAdapter({
   let dbPromise = null
   let signInPromise = null
   let currentUid = null
+  /**
+   * 当前账号的云端 id 前缀（S4-7 方案 A）。
+   * 别名 = `<前缀>_<本地 id>`，用来把 `_id` 的唯一性范围收进账号内。
+   * 每次拿到 uid 时同步刷新，见 `setUid()`。
+   */
+  let currentPrefix = null
   let lastError = null
   const authListeners = new Set()
+
+  /** 唯一设置 uid 的入口 —— 保证 `currentPrefix` 永远跟 uid 同步，不会各更各的 */
+  function setUid(uid) {
+    currentUid = uid || null
+    currentPrefix = uid ? accountPrefixOf(uid) : null
+    return currentUid
+  }
 
   const emitAuth = () => {
     const payload = { uid: currentUid, env, error: lastError }
@@ -162,14 +182,14 @@ export function createCloudBaseAdapter({
         // 先看有没有已持久化的登录态：刷新页面不该换一个新身份
         const existing = await resumeUser(auth)
         if (existing?.uid) {
-          currentUid = existing.uid
+          setUid(existing.uid)
           lastError = null
           emitAuth()
           return currentUid
         }
 
         const res = await auth.signInAnonymously()
-        currentUid = res?.user?.uid || auth.currentUser?.uid || null
+        setUid(res?.user?.uid || auth.currentUser?.uid || null)
         lastError = null
         emitAuth()
         if (!currentUid) throw new Error('[ledger] 匿名登录成功但拿不到 uid')
@@ -201,9 +221,15 @@ export function createCloudBaseAdapter({
    *   2. 左闭会重复拉到「恰好等于水位」的那一两条，这是**刻意的**：宁可多拉一次，
    *      也不能漏。重复拉取无副作用 —— `syncStore.applyRemote` 走 LWW 幂等合并。
    *   3. 用数字 `0` 去比 Date 字段会一条都匹配不到（实测），所以必须 `new Date(...)`。
+   *
+   * ⚠️ **id 在这一层是双向映射的**（S4-7 方案 A）：
+   * 调用方（引擎）只知道**本地 id**，云端只知道**别名**，两边在适配器内部换算。
+   *   - 进来：`ids` 是本地 id → 换成别名去查（`_id: _.in([...别名])`）
+   *   - 出去：返回的文档**不改形状**（`_id` 仍是别名），本地 id 由 `id` 业务字段承载，
+   *     引擎后续走 `fromRemote()` 恢复。这里不提前替换，免得 `_id` 语义在传输层被悄悄改掉。
    */
   async function pull(collection, { since = 0, cursor = null, limit = pageLimit, ids = null } = {}) {
-    await ensureSignedIn()
+    const uid = await ensureSignedIn()
     const db = await getDb()
     const cmd = db.command
     const col = db.collection(collectionName(collection))
@@ -212,7 +238,9 @@ export function createCloudBaseAdapter({
     // ⚠️ 这条路径**不能推进水位线**：它不是按区间扫描的，拿它的时间戳当水位
     //    会把中间还没拉过的文档永久跳过。所以 serverTime 固定返回 0。
     if (Array.isArray(ids) && ids.length) {
-      const res = await col.where({ _id: cmd.in(ids) }).limit(Math.max(ids.length, 1)).get()
+      // 传进来的是本地 id，先换算成云端别名
+      const aliases = ids.map((id) => toCloudId(id, accountPrefixOf(uid)))
+      const res = await col.where({ _id: cmd.in(aliases) }).limit(Math.max(aliases.length, 1)).get()
       return { docs: res.data || [], serverTime: 0, hasMore: false, cursor: null }
     }
 
@@ -244,28 +272,38 @@ export function createCloudBaseAdapter({
    * 条件 upsert。
    *
    * 云端 Web SDK 没有「带条件的写」，所以条件判断只能分两步：
-   *   ① 先按 `_id` 批量读回云端现有版本，拿到它们的 `updatedAt`；
+   *   ① 先按 `_id`（别名）批量读回云端现有版本，拿到它们的 `updatedAt`；
    *   ② 本地这份更旧 → 进 `rejected`（**必须回给引擎**，否则本地以为推成功、
    *      两端静默分叉 —— 这个 bug 单设备永远测不出来）；否则整份覆盖。
    *
-   * 已知窗口（留给 S4）：①② 之间不是原子的，两台设备同时推同一条时理论上都
+   * 返回的 `upserted` / `rejected[].id` 都是**本地 id**（不是别名）——
+   * 引擎拿它们去 `outbox.markSynced`，而队列里存的是本地 id。
+   * 别名只在进服务端的那一刻出现，出了函数就换算回来。
+   *
+   * 已知窗口（留给 S4-6）：①② 之间不是原子的，两台设备同时推同一条时理论上都
    * 可能通过检查。最终仍是 LWW，只是「谁是最后写入」由到达顺序而非 `updatedAt` 决定。
-   * 要彻底消掉得靠云函数或事务，属于 S4 的范围。
+   * 要彻底消掉得靠云函数或事务。
    */
   async function push(collection, docs) {
-    await ensureSignedIn()
+    const uid = await ensureSignedIn()
     const db = await getDb()
     const cmd = db.command
     const col = db.collection(collectionName(collection))
+    const prefix = accountPrefixOf(uid)
 
-    const list = (docs || []).filter((d) => d && (d._id || d.id))
+    // 本地 id 是权威来源；`_id` 只作为兜底（mock/fake 云端可能只给 `_id`）
+    const list = (docs || [])
+      .map((d) => (d ? { doc: d, localId: toLocalId(d) } : null))
+      .filter((x) => x && x.localId)
     if (!list.length) return { upserted: [], rejected: [] }
 
     // ① 读回云端现有版本（PRIVATE 权限下只会读到自己那份）
-    const ids = list.map((d) => d._id || d.id)
+    //    查询用别名 —— 这里正是 S4-7 的修法：同名本地 id 在不同账号下
+    //    映射到不同别名，所以新身份不会再撞上旧身份占的坑。
+    const aliases = list.map((x) => toCloudId(x.localId, prefix))
     const cloudUpdatedAt = new Map()
-    for (let i = 0; i < ids.length; i += pageLimit) {
-      const chunk = ids.slice(i, i + pageLimit)
+    for (let i = 0; i < aliases.length; i += pageLimit) {
+      const chunk = aliases.slice(i, i + pageLimit)
       const res = await col.where({ _id: cmd.in(chunk) }).get()
       for (const doc of res.data || []) {
         cloudUpdatedAt.set(doc._id, doc.updatedAt || 0)
@@ -275,23 +313,25 @@ export function createCloudBaseAdapter({
     // ② 逐条裁决并写入。顺序执行：试用环境 QPS 有限，稳妥优先（首次同步最多几十条）
     const upserted = []
     const rejected = []
-    for (const doc of list) {
-      const id = doc._id || doc.id
+    for (const { doc, localId } of list) {
+      const alias = toCloudId(localId, prefix)
       const localTs = doc.updatedAt || 0
-      const remoteTs = cloudUpdatedAt.has(id) ? cloudUpdatedAt.get(id) : null
+      const remoteTs = cloudUpdatedAt.has(alias) ? cloudUpdatedAt.get(alias) : null
 
       if (remoteTs !== null && localTs < remoteTs) {
-        rejected.push({ id, cloudUpdatedAt: remoteTs })
+        rejected.push({ id: localId, cloudUpdatedAt: remoteTs })
         continue
       }
 
       const payload = stripServerMeta(doc)
-      payload.id = id
+      // 业务字段 `id` = 本地 id：本地库靠它还原主键（见 core/cloudId.js）。
+      // 它会被 fromRemote() 读回来，所以**必须**写。
+      payload.id = localId
       // 服务端接收时间：水位线的唯一依据（客户端时钟不可信）
       payload._serverTs = db.serverDate()
       // set() = 指定 _id 的 upsert，文档已存在则整份覆盖 ⇒ 天然幂等
-      await col.doc(id).set(payload)
-      upserted.push(id)
+      await col.doc(alias).set(payload)
+      upserted.push(localId)
     }
 
     return { upserted, rejected }
@@ -367,6 +407,12 @@ export function createCloudBaseAdapter({
    * 旧数据原样拉回来，看起来像「重置按钮没生效」。
    * 只删自己的（PRIVATE 权限在服务端兜底），也只会碰 `ledger_` 前缀的集合，
    * 不会影响同环境里其它项目的数据。
+   *
+   * ⚠️ **为什么删两遍**（S4-7 方案 A 的遗留问题）：
+   * 改方案 A 之前，云端 `_id` 就是本地 id（裸 id）；现在换成了
+   * `<账号前缀>_<本地 id>` 的别名。**同一个账号**如果改版前推过一次，
+   * 那些裸 id 的旧文档会留在云端 —— 只按别名删是清不掉的。
+   * 所以第二遍按「有 `_serverTs` 的所有文档」全清一遍，把两种格式都覆盖到。
    */
   async function wipe() {
     await ensureSignedIn()

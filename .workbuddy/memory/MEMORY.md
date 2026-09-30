@@ -136,12 +136,21 @@
 - `serverTime` **只属于云客户端契约**（`sync/cloudClient.js`），**不属于适配器契约**（`contract.js`）—— mock/idb 不需要它。`fakeCloud` 已跟随（`ctx.serverTimeSource` + `_serverTimeSource(src)` 可切两种 source）。
 - 前端网关基址来自 `VITE_CLOUDBASE_API_BASE`（`.env.local`）→ `src/config/env.js` 的 `cloudApiBase` / `isCloudApiConfigured`；未配置时自动降级为水位线下界。实测浏览器内 `serverTime()` 返回 `{"value":1790740651928,"source":"cloud-function"}`，与本地时钟差 438ms（正常往返）。
 
-### ⚠️ S4-7：匿名身份轮换导致首次绑定**永久失败**（已确认缺陷，待拍板修复方向）
-- **现象**：`E11000 duplicate key ... _id: "ledger_default"`（500 / `DATABASE_REQUEST_FAILED`），outbox 永远排不空。
-- **根因**：云端 `_id` **全局唯一（跨所有账号）**，而 `PRIVATE` 权限按 `_openid` 隔离读 → 新身份**读不到**旧身份写的文档、**又写不进**同 `_id` → 死锁。
-- **真实场景必现**：用户清 localStorage / 换设备 / 换浏览器 → 新匿名身份 + 旧 `_id` 撞车。
-- **四个方向**（详见 `phase2-backend-plan.md` 的 S4-7 小节）：A 部署时给 `_id` 加 openid 前缀 / B 加设备前缀 / C 冲突换 id 重试 / D 明确提示用户。**倾向 A**（需数据迁移，**属需用户拍板的设计决策，不擅自改**）。
-- **当前云端残留**：`ledger_ledgers` 1 条 + `ledger_bills` 44 条，全部属旧身份 `hVfpnRlq_AbAFDKrd4sxpw`；新身份推不上去。
+### ★ S4-7（已修复，方案 A）：云端 `_id` 换成账号别名
+- **缺陷**：云端 `_id` **集合内全局唯一（跨账号）**，而 `PRIVATE` 按 `_openid` **隔离读** → 新匿名身份**读不到**旧文档、**又写不进**同 `_id` → `E11000 duplicate key`（500 / `DATABASE_REQUEST_FAILED`）→ 首次绑定**永久失败**，outbox 永远排不空。种子 id（`ledger_default` / `bill_seed_*`）是写死的，所以真实场景（清 localStorage / 换设备 / 换浏览器）**必现**。
+- **一句话根因**：**看不见，却撞得上。**
+- **修法（用户 2026-09-30 拍板）**：云端 `_id` = **`<账号前缀>_<本地 id>`**，本地 id 移进业务字段 `id`。
+  - **账号前缀** = uid 去掉非字母数字、截 8 位、小写（`accountPrefixOf`）。碰撞后果只是回到这个 bug，不是数据泄露（`_openid` 读取隔离始终有效）。
+  - **本地 id 保持设备无关**（`ledger_default` 到哪都是它）→ 跨设备合并 / 种子 / 导出照旧；视图 / store / 契约**零改动**。
+  - **`fromRemote()` 从业务字段 `id` 还原本地主键**，**绝不反解析别名**（格式一改就错，且本地 id 自带下划线）。
+  - **契约层面一律用本地 id**：`pull({ ids })` 传本地 id；`push()` 返回的 `upserted` / `rejected[].id` 也是本地 id（引擎靠它清队列）。别名只在云适配器内部出现。
+  - `fakeCloud` **不需要**这层（按 `_openid` 分桶，本来就撞不了）。
+  - **代码落点**：`src/api/core/cloudId.js`（映射）、`cloudbaseAdapter.js` 的 `push`/`pull`（双向换算，用 `setUid()` 统一维护 `currentPrefix`）、`core/merge.js`（`fromRemote`）。
+- **为什么选 A**：B 用设备维度（比账号更短命）只是缩小问题；C 冲突换 id 会**静默产生重复账本**；D 只提示不解决。A 让「唯一性范围」和「可见性范围」都是账号级，构造上不可能撞；且 S5 转正时**只需重写前缀**。
+- **「需数据迁移」的实义**：是**开发者的一次性云端清洗**，不是给用户开发迁移功能。当时云端 87 条全是旧身份 `hVfpnRlq` 的演示种子 → **直接删掉重建**（按 `_openid` 删三轮，44/42/1 清空，客户端重绑重推）。**越早改越便宜**，有真实数据了才需要原地改写。
+- **`wipe()` 现在按「有 `_serverTs` 的全部文档」删**，新旧两种 id 格式都能清 —— 无需单独的迁移脚本。
+- **验证**：真机探针 `probe-alias.mjs`（6/6：别名可写 / `where({id})` 可查 / `_openid` 仍注入 / 按别名精确读）；`cloudid-test.mjs` 42 条；浏览器端到端清云+清本地+重绑 → **`pushed:87, rejected:[]`**（修复前必抛 E11000）。
+- **当前云端态**：44 账单 / 42 分类 / 1 账本，全属新身份 `4ClGSbGzxV4_MizoWezxTQ`，`_id` 形如 `4clgsbgz_bill_seed_001`。
 
 ### ⚠️ 匿名登录的开关时机（用户主动提出，务必在 S6 收口）
 **开发测试期保持开启**（S3 云端链路依赖它）；**正式上线前必须重新评估**。理由：①匿名登录无需凭证 → 任何人拿到 envId 就能创建身份并写数据；②免费额度按量计（3,000 点/月），PRIVATE 权限**只能防"看别人的数据"、防不住"新建账号写自己的数据"**；③S5 匿名转正后它应从主入口降级为游客体验。
@@ -153,9 +162,10 @@
 - **`writeNoSqlDatabaseStructure` 的代码级位置**：npx 缓存 `E:/Program/node-v24.16.0-win-x64/node_cache/_npx/88d9f76c32260533/node_modules/@cloudbase/cloudbase-mcp/`（v2.34.6），注册在 `dist/index.cjs` 的 `registerDatabaseTools(server)`；title/description 是 i18n key，inputSchema 用 Zod。**npm 缓存被改到 `E:\Program\node-v24.16.0-win-x64\node_cache`**（非默认 `%LOCALAPPDATA%\npm-cache`）。
 
 ## 数据层断言
-`npm run test:data` 一次跑完五个脚本，**合计 259 条**。Node 里 IndexedDB 用 `fake-indexeddb`（devDependency）。
+`npm run test:data` 一次跑完六个脚本，**合计 301 条**。Node 里 IndexedDB 用 `fake-indexeddb`（devDependency）。
 - `contract-test.mjs`（87）：同一套断言跑 mock 与 idb，并断言 `outbox` / `syncStore` 方法齐全。注意 `outbox` 是**对象**，要先断言 `!!adapter.outbox` 再查方法（写成 `has(adapter, ['outbox'])` 恒假）。
-- `period-test.mjs`（22）/ `seed-test.mjs`（14）/ `migrate-test.mjs`（11，输出格式是 `PASS xxx` 而非「N 通过」）/ `sync-test.mjs`（125 / 18 组）。
+- `period-test.mjs`（22）/ `seed-test.mjs`（14）/ `migrate-test.mjs`（11，输出格式是 `PASS xxx` 而非「N 通过」）/ `sync-test.mjs`（125 / 18 组）/ `cloudid-test.mjs`（42，云端 id 别名：换身份同名本地 id 不撞车、跨设备仍按本地 id 合并）。
+- **测试里的 store 契约**：`store.get(collection, idOrIds)` 是**双形态** —— 单 id 返对象、数组返数组。`pushPending` 与 `resolveRejected` 都依赖它，写测试替身时别只实现一种。
 - **真正会咬人的是防重入、否决回拉、双实例收敛、身份隔离、分页、队列搬迁幂等** —— 都只能在多实例/并发下暴露，单设备手点测不出来。
 - 脚本用 `new URL('../src/', import.meta.url)` 解析路径，**不要写死绝对路径**。store getter 依赖 `@/` 别名，Node 直接 import 不了，那部分靠浏览器读 DOM 断言。
 - **真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` + 浏览器端到端走查。

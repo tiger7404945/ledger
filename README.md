@@ -15,7 +15,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎），共 259 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎），共 301 条
 ```
 
 ### 配置云端（可选）
@@ -79,6 +79,7 @@ src/
     core/migrate.js        演示数据的幂等迁移 —— 各适配器共用
     core/idb.js            IndexedDB 库名/版本/objectStore 原语（破解 adapter ↔ outbox 循环依赖）
     core/merge.js          远端文档合并规则（剥元数据 / 新者胜 / 分流 take|keep）—— 各云端共用
+    core/cloudId.js        云端 id 别名映射（<账号前缀>_<本地 id>）—— 破解 _id 跨账号唯一
     adapters/mockAdapter.js        内存 + localStorage（对照基准，保留）
     adapters/idbAdapter.js         当前启用：IndexedDB 离线缓存
     adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 匿名登录），SDK 动态 import
@@ -128,6 +129,21 @@ cloudfunctions/
   - HTTP 网关的 `EnableAuth=false` 是**真实生效**的，`curl` 直接 200。
 - **降级**：未配置 `VITE_CLOUDBASE_API_BASE` 或云函数不可用时，`serverTime()` 退回「水位线下界」，返回值 `source` 字段由 `'cloud-function'` 变成 `'watermark-lower-bound'` —— **后者只能当水位线，不能做冲突裁决**。
 - **部署要点**：本地目录名必须与云端函数名完全一致；`runtime=Nodejs18.15`、`handler=index.main`。
+
+### 云端文档 id 约定（S4-7）
+
+**云端 `_id` 不是本地 id**，而是 `<账号前缀>_<本地 id>` 的别名：
+
+```
+_id  = 4clgsbgz_ledger_default      ← 账号前缀 + 本地 id
+id   = ledger_default                ← 本地 id（业务字段，权威来源）
+```
+
+- **为什么**：CloudBase 的 `_id` 在集合内**跨账号全局唯一**，而 `PRIVATE` 权限按 `_openid` **隔离读**。两者错位会让换了身份的客户端「**看不见却撞得上**」—— 新匿名身份读不到旧文档，却写不进同名 `_id`，抛 `E11000`，首次绑定永久失败。别名把 `_id` 的唯一性范围收进账号内，从构造上消除撞车。
+- **本地 id 始终设备无关**：换设备后 `ledger_default` 还是 `ledger_default`，跨设备合并、种子数据、导出一概照旧。账号前缀只是**云端边界的一层映射**（`src/api/core/cloudId.js`），视图 / store / 契约零改动。
+- **还原方式**：`core/merge.js` 的 `fromRemote()` 从业务字段 `id` 取值恢复本地主键。**不要做别名反解析** —— 格式一改就会错。
+- **契约层面一律用本地 id**：`pull({ ids })` 传本地 id、`push()` 返回的 `upserted` / `rejected[].id` 也是本地 id。别名只在云适配器内部出现。
+- **S5 便利**：将来「匿名转正」只要重写账号前缀，本地 id 不动。
 
 ### 同步引擎骨架（S2）
 
@@ -215,7 +231,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项                                 | 结果                                                                  |
 | ----------------------------------- | ------------------------------------------------------------------- |
 | `npm run build`                     | 通过（104 modules，JS 229.30 kB / gzip 81.40 kB）                        |
-| 数据层断言合计                             | **259 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125）                 |
+| 数据层断言合计                             | **301 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125 + 云端 id 42）                 |
 | 服务端单调水位线                            | 通过（同毫秒连续写入不漏、`(since, snapshotAt]` 左开右闭）                            |
 | 双设备同改一条 → 收敛                        | 通过（不裂成两条，且不无限重推）                                                    |
 | 陈旧推送被拒 → 回拉                         | 通过（云端版本拉回本地，被拒条目就地作废）                                               |
@@ -236,7 +252,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项             | 结果                                                                                     |
 | --------------- | -------------------------------------------------------------------------------------- |
 | `npm run build` | 通过（122 modules；主包 236.67 kB / gzip 84.31 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
-| 数据层断言合计         | **259 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125），`syncEngine` 未改动故零回归               |
+| 数据层断言合计         | **301 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 125 + 云端 id 42），`syncEngine` 未改动故零回归               |
 
 
 | 云端资源 | 三集合 `ledger_ledgers` / `ledger_categories` / `ledger_bills`，权限均为 **PRIVATE**，索引 `_openid + _serverTs` |  
@@ -261,6 +277,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
   - `sync-test.mjs` —— 同步引擎 18 组场景（125 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
+  - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/sdk-probe/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
