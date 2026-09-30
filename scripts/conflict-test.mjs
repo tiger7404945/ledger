@@ -150,6 +150,18 @@ async function makeDevice({ cloud, user = null, timer, isOnline, now, name = 'de
       const { take, keep } = partitionRemote(locals, docs, clockOffset)
       take.forEach((d) => table(collection).set(d.id, d))
       return { applied: take.length, kept: keep.length }
+    },
+    /** 服务端刻度写回本地副本（S4-6）。与各适配器同语义：只改刻度、不入 outbox */
+    async applyStamps(collection, stamps) {
+      let n = 0
+      for (const id of Object.keys(stamps || {})) {
+        const doc = table(collection).get(id)
+        const stamp = Number(stamps[id])
+        if (!doc || !Number.isFinite(stamp) || stamp <= 0) continue
+        table(collection).set(id, { ...doc, serverUpdatedAt: stamp })
+        n += 1
+      }
+      return n
     }
   }
 
@@ -290,10 +302,11 @@ group('2. 同毫秒并发：updatedAt 完全相同时也不能裂成两条')
 }
 
 /* ========================================================== */
-/* 3. 时钟偏差：慢时钟设备的修改不该被静默丢弃                   */
+/* 3. 时钟偏差：慢时钟设备的修改不该被静默丢弃 + 跨设备必须收敛      */
+/*    （S4-2 修前者；S4-6 修后者，两组断言互相印证）               */
 /* ========================================================== */
 
-group('3. 时钟偏差：慢时钟设备的真实新改动必须能推上去')
+group('3. 时钟偏差：慢时钟设备的真实新改动必须能推上去，且两端必须收敛')
 {
   const clock = createClock()
   const cloud = createFakeCloud({ clock: clock.now })
@@ -348,35 +361,46 @@ group('3. 时钟偏差：慢时钟设备的真实新改动必须能推上去')
   // 否则偏移会固化进数据、逐轮累积误差（真云端存的就是原始 doc）。
   eq('3e2 云端存的是客户端原始 updatedAt（偏移未被固化）', cloud._dump('bill')[0].updatedAt, localTs)
 
-  // ⚠️ 这里**不能**断言「A 一定看到 99」，而且第三方断言暴露了一个**已知缺陷**。
+  // ⚠️ 这一对断言（3f/3g）**在 S4-6 前后是完全相反的** —— 它们是整套用例里
+  //    唯一「随实现演进而反转」的地方，改动时务必先读这段。
   //
-  //    `clockOffset` 是**每台设备各自算的**，且 `shouldTakeRemote` 只给
-  //    「本地那份」加偏移 —— 这等于假设**远端那份的时间戳已经在正确的时间轴上**。
-  //    可远端也是某台客户端写的，它同样可能带偏移，而我们不知道它偏多少。
-  //    于是两台设备各自「只校正自己」时，会掉进**双方都觉得自己更新**的死局：
+  //    S4-2 时的已知缺陷：
+  //      `clockOffset` 是**每台设备各自算的**，且 `shouldTakeRemote` 只给
+  //      「本地那份」加偏移 —— 这等于假设**远端那份的时间戳已经在正确的时间轴上**。
+  //      可远端也是某台客户端写的，它同样可能带偏移，而我们不知道它偏多少。
+  //      于是两台设备各自「只校正自己」时会掉进**双方都觉得自己更新**的死局：
   //
-  //      A 时钟准（offset 0）  ：A 的 10(…001000) + 0     = …001000
-  //      B 时钟慢 5s(offset+5000)：B 的 99(…9999000) + 5000 = …0004000
-  //      A 比 → 自己的 …001000 更大 → 保留 10
-  //      B 比 → 自己的 …0004000 更大 → 保留 99
-  //      ⇒ 两端各自坚持自己那版，**反复同步也不收敛**
+  //        A 时钟准（offset 0）      ：A 的 10(…001000) + 0      = …001000
+  //        B 时钟慢 5s(offset +5000) ：B 的 99(…9999000) + 5000 = …0004000
+  //        A 比 → 自己的 …001000 更大 → 保留 10
+  //        B 比 → 自己的 …0004000 更大 → 保留 99
+  //        ⇒ 两端各自坚持自己那版，**反复同步也不收敛**
   //
-  //    S4-2 真正解决的是「**写入方自己**不会把新改动误判成旧数据丢弃」（3d/3e）——
-  //    这是它承诺的范围。跨设备裁决要落在**共享时间轴**上才行，属于 S4-6
-  //    （让服务端在接收时把校正后的刻度写进文档，客户端只读不算）。
+  //    S4-6 的修法：**让服务端在接收写入时盖一个共享刻度**（`serverUpdatedAt`）。
+  //      推送成功后把刻度**写回写者自己的本地副本**（`store.applyStamps`），
+  //      于是两端手里都有一把「与各自本地时钟无关」的尺子：
   //
-  //    所以这里**如实断言**当前行为，把缺陷钉在测试里而不是假装它不存在。
+  //        A 的 10：刻度 T1（A 第一次推送时盖的）
+  //        B 的 99：刻度 T4（B 刚才推送时盖的，T4 > T1）
+  //        A 拉取 → 比刻度 → T4 更大 → 采纳 B 的 99 ✅
+  //        B 拉取 → 自己就是 99，无需变动 ✅
+  //        ⇒ **收敛到 99**，且与两端时钟快慢无关
+  //
+  //      所以下面两条从「钉住缺陷」反转成「验证修复」。
+  //      ⚠️ 若有人把 `shouldTakeRemote` 的刻度逻辑改坏（比如参数顺序写反、
+  //         或忘了 `applyStamps`），这两条会立刻变红 —— 这正是它们的价值。
   await a.engine.sync({ manual: true })
-  eq('3f A 保留了自己的版本（A 的偏移是 0，无从得知 B 的时钟慢）', a.get('bill', 'sk1').amount, 10)
+  eq('3f A 采纳了 B 的版本（共享刻度：B 的写入刻度更晚）', a.get('bill', 'sk1').amount, 99)
 
-  // 【已知缺陷 · 归 S4-6】两端在「各自只校正自己」的策略下**不收敛**。
-  // 这里刻意把失败态固定下来：等 S4-6 引入服务端共享刻度后，这几条断言要**反转**。
+  // 【S4-6 已修复】两端在共享刻度下**收敛**，不再各自坚持自己那版。
   await syncToQuiescence([a, bSlow])
   ok(
-    '3g 【已知缺陷·S4-6】两端各自坚持自己那版，反复同步也不收敛',
-    a.get('bill', 'sk1').amount !== bSlow.get('bill', 'sk1').amount,
-    `a=${a.get('bill', 'sk1').amount} b=${bSlow.get('bill', 'sk1').amount}（若已相等说明 S4-6 修好了，应把本断言反转）`
+    '3g 【S4-6 已修复】两端收敛到同一个值（跨设备时钟偏差不再造成静默分叉）',
+    a.get('bill', 'sk1').amount === bSlow.get('bill', 'sk1').amount,
+    `a=${a.get('bill', 'sk1').amount} b=${bSlow.get('bill', 'sk1').amount}（不相等说明共享刻度裁决没生效）`
   )
+  eq('3g2 收敛到的正是 B 的那一版', a.get('bill', 'sk1').amount, 99)
+  eq('3g3 两端深度相等（不只是金额）', snapshotOf(a.get('bill', 'sk1')), snapshotOf(bSlow.get('bill', 'sk1')))
   eq('3h 尽管如此，云端仍然只有一条（没有裂成两条文档）', cloud._dump('bill').length, 1)
   eq('3i 两边的队列都排空了（没有无限重推）', [await a.outbox.pendingCount(), await bSlow.outbox.pendingCount()], [0, 0])
 }
@@ -777,6 +801,79 @@ group('13. 时钟降级：serverTime 只给下界时，偏移必须按 0 处理'
   eq('13f 云端两条', cloud._dump('bill').length, 2)
 
   cloud._serverTimeSource('cloud-function')
+}
+
+/* ========================================================== */
+/* 14. S4-6：服务端共享刻度的两条边界 —— 降级 与 刻度失效          */
+/* ========================================================== */
+
+group('14. S4-6 边界：云函数不可用时降级 + 本地再改后刻度必须失效')
+{
+  /**
+   * 14-A. **降级**：云函数没部署 / 网关不通时，推送写进去的文档没有 `serverUpdatedAt`。
+   *       裁决必须**静默退回 S4-2 的「客户端时间戳 + 单侧校正」**，既不报错也不卡住。
+   *       刻度是增强，不是必需品 —— 缺了它同步照常工作。
+   */
+  const clock = createClock()
+  const cloud = createFakeCloud({ clock: clock.now })
+  const a = await makeDevice({ cloud, now: clock.now, name: 'a' })
+  const b = await makeDevice({ cloud, now: clock.now, name: 'b' })
+
+  cloud._noServerStamp(true) // 模拟「云函数不可用」
+
+  await a.write('bill', billDoc(clock, 'ns1', 10))
+  const r1 = await a.engine.sync({ manual: true })
+  eq('14a 云函数不可用时同步照常成功（不报错、不卡住）', r1.ok, true)
+  eq('14b 没有刻度也一样推上去了', r1.pushed, 1)
+  eq('14c 云端这份确实没有刻度（降级属实）', cloud._dump('bill')[0].serverUpdatedAt, undefined)
+
+  await b.engine.sync({ manual: true })
+  eq('14d 另一台设备照样拉到（降级不影响读写）', b.get('bill', 'ns1').amount, 10)
+  await syncToQuiescence([a, b])
+  eq(
+    '14e 降级下两端仍收敛（退回客户端时钟比较，测试时钟同源所以不冲突）',
+    snapshotOf(a.get('bill', 'ns1')),
+    snapshotOf(b.get('bill', 'ns1'))
+  )
+
+  /**
+   * 14-B. **刻度失效判据**：本地文档一旦被再次修改，随它同步下来的
+   *       `serverUpdatedAt` 标的就是**上一版内容**，不能再用来裁决 ——
+   *       否则「刚从云端拉下来的旧刻度」会把本地**刚改的新内容**判成不新，
+   *       同步时用云端旧内容覆盖回去，用户白改。
+   *
+   *       判据是「本地 `updatedAt` 晚于刻度 ⇒ 刻度失效」（见 merge.js）。
+   */
+  cloud._noServerStamp(false)
+  const clock2 = createClock()
+  const cloud2 = createFakeCloud({ clock: clock2.now })
+  const c = await makeDevice({ cloud: cloud2, now: clock2.now, name: 'c' })
+
+  await c.write('bill', billDoc(clock2, 'iv1', 1))
+  await c.engine.sync({ manual: true })
+  const stampAfterPush = c.get('bill', 'iv1').serverUpdatedAt
+  ok('14f 推送成功后本地副本拿到了服务端刻度', Number(stampAfterPush) > 0, String(stampAfterPush))
+
+  // 时钟前进 → 本地改成 v2（updatedAt 必然晚于刻度）
+  clock2.stamp()
+  clock2.stamp() // 多走一点，确保严格晚于刻度
+  await c.write('bill', { ...c.get('bill', 'iv1'), amount: 42, updatedAt: clock2.now() })
+  const localV2 = c.get('bill', 'iv1')
+  ok(
+    '14g 本地 v2 的内容时间晚于随它同步下来的刻度（这正是「刻度已失效」的判据）',
+    localV2.updatedAt > Number(localV2.serverUpdatedAt),
+    `updatedAt=${localV2.updatedAt} stamp=${localV2.serverUpdatedAt}`
+  )
+
+  const r2 = await c.engine.sync({ manual: true })
+  eq('14h 本地新改动推上去了（没被自己那份旧刻度挡住）', r2.pushed, 1)
+  eq('14i 云端是 v2', cloud2._dump('bill')[0].amount, 42)
+  ok(
+    '14j 云端刻度被刷新成更晚的值（标记的是 v2 这次写入）',
+    Number(cloud2._dump('bill')[0].serverUpdatedAt) > Number(stampAfterPush),
+    `${cloud2._dump('bill')[0].serverUpdatedAt} vs ${stampAfterPush}`
+  )
+  eq('14k 本地 v2 的刻度也同步刷新了', c.get('bill', 'iv1').serverUpdatedAt, cloud2._dump('bill')[0].serverUpdatedAt)
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`)

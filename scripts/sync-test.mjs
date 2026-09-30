@@ -440,13 +440,37 @@ group('8. 陈旧推送被拒：条件 upsert 把决定权交回客户端')
   const rejectedRes = await cloud.push('bill', [{ id: 's1', updatedAt: 1000, amount: 1 }])
 
   eq('8a 较旧的推送被拒绝', rejectedRes.rejected.length, 1)
-  eq('8b rejected 带回云端的时间戳', rejectedRes.rejected[0].cloudUpdatedAt, 2000)
+  /**
+   * ⚠️ S4-6 后这里带回的是**服务端刻度**（`serverUpdatedAt`），不是客户端的 `2000`。
+   *
+   * 云端第一份文档写进去时服务端就给它盖了刻度。拒绝推送时把那个刻度回给调用方，
+   * 比回客户端 `updatedAt` 更准 —— 引擎据此回拉云端版本，两边落在同一条时间轴上。
+   * 刻度是 `Date.now()` 量级（约 1.7e12），远大于这里的测试时间戳（2000）。
+   */
+  ok(
+    '8b rejected 带回云端的服务端刻度（S4-6 起优先刻度，不再是客户端 2000）',
+    rejectedRes.rejected[0].cloudUpdatedAt > 2000,
+    String(rejectedRes.rejected[0].cloudUpdatedAt)
+  )
   eq('8c 没有写入任何一条', rejectedRes.upserted.length, 0)
   eq('8d 云端保住较新版本', cloud._dump('bill')[0].amount, 2)
 
+  /**
+   * ⚠️ **平局（`updatedAt` 完全相同）时云端赢，推送被拒** —— 这是 S4-6 统一后的规则。
+   *
+   * 早先推送侧用的是**严格小于**（`localTs < remoteTs`，平局就放行），
+   * 而合并侧 `shouldTakeRemote` 用的是 `remoteTs >= localTs`（平局云端赢）。
+   * **两个方向规则不一致**正是「推送说我能写、拉取说云端更新」来回打架的温床 ——
+   * 现在两处都走同一个 `shouldTakeRemote`，平局一律云端赢。
+   *
+   * 后果是幂等的「重复推同一版」也会被拒一次，但这不是问题：
+   * 引擎收到 rejected 会立刻回拉云端那一版，**内容一致、队列照常清空**（见 8c/8e）。
+   * conflict-test 第 2 组（同毫秒并发）验的就是「平局也要收敛」，两边口径一致。
+   */
   const sameRes = await cloud.push('bill', [{ id: 's1', updatedAt: 2000, amount: 3 }])
-  eq('8e 时间戳相同则允许覆盖', sameRes.upserted.length, 1)
-  eq('8f 云端已更新', cloud._dump('bill')[0].amount, 3)
+  eq('8e 平局时云端赢（与 shouldTakeRemote 的 >= 规则统一），推送被拒', sameRes.upserted.length, 0)
+  eq('8e2 平局被拒也带回了刻度', sameRes.rejected.length, 1)
+  eq('8f 云端保持原值（没被平局的另一版冲掉）', cloud._dump('bill')[0].amount, 2)
 }
 
 /* ========================================================== */

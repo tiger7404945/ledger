@@ -1,0 +1,10 @@
+{
+  "name": "ledger_sync_stamp",
+  "version": "1.0.0",
+  "description": "为推送盖上服务端裁决刻度 serverUpdatedAt，供跨设备「新者胜」裁决使用（S4-6）",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

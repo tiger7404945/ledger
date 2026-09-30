@@ -181,6 +181,27 @@ export function createSyncEngine({
       const okIds = new Set(result.upserted || [])
       await outbox.markSynced(group.filter((e) => okIds.has(e.docId)).map((e) => e.id))
       upserted.push(...(result.upserted || []))
+
+      /**
+       * 把服务端盖的裁决刻度**写回本地副本**（S4-6 收敛的最后一环）。
+       *
+       * 服务端盖的刻度只有服务端知道，写者自己的本地副本不会自动获得它。
+       * 若本地副本没有刻度，写者下次拉取时「本地无刻度 vs 远端有刻度」比不了，
+       * 只能退回客户端 `updatedAt` —— 两台时钟不一致的设备又回到**互相觉得
+       * 自己更新**的死局。有了这一刻度，两边才真正落在同一条时间轴上。
+       *
+       * ⚠️ 这是**服务端元数据**，不是用户内容：
+       *    - 不走 outbox（否则会自己推自己，且刻度是服务端生成的、不该由客户端推）；
+       *    - 不碰 `updatedAt`（内容版本是客户端时钟打的，保持原样）；
+       *    - 失败/不可用（`stamps` 为空）时静默跳过，退回 S4-2 行为。
+       *   所以用专门的 `applyStamps`，而不是复用写路径。
+       */
+      const stamps = result.stamps || {}
+      const stampIds = Object.keys(stamps)
+      if (stampIds.length && typeof store.applyStamps === 'function') {
+        await store.applyStamps(collection, stamps)
+      }
+
       ;(result.rejected || []).forEach((r) => rejected.push({ ...r, collection }))
     }
 

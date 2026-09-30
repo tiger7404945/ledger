@@ -16,13 +16,20 @@
  *   _serverTimeSource(src)  把 serverTime() 的 source 改成
  *                   'watermark-lower-bound'，用来验证「云函数不可用时的降级」
  *
+ *   ⚠️ **`push` 会给写入的文档盖 `serverUpdatedAt`**（S4-6）。
+ *   这与真云端 `cloudbaseAdapter` 调用 `ledger-sync-stamp` 云函数的语义一致 ——
+ *   假云端必须跟着做，否则测试永远测不出跨设备裁决到底通没通。
+ *   用 `_noServerStamp(true)` 可以关掉它，模拟「云函数不可用 → 没盖上刻度」，
+ *   用来验证降级路径确实能退回 S4-2 的老行为。
+ *
  * 隔离是怎么实现的：push 时给文档打上当前身份的 `_openid`，pull 时只返回
  * `_openid` 匹配的文档。**注意这只是「客户端自觉」** —— 真实的隔离靠服务端
  * 安全规则，假云端证明不了那件事（见 phase2-backend-plan.md 的 S3 验收）。
  */
 
-export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Date.now() } = {}) {
-  /** key = `${openid}\0${collection}\0${_id}`，一个后端被所有身份共用 */
+import { shouldTakeRemote } from '../core/merge.js'
+
+export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Date.now() } = {}) {  /** key = `${openid}\0${collection}\0${_id}`，一个后端被所有身份共用 */
   const rows = new Map()
   const ctx = {
     failures: 0,
@@ -32,6 +39,8 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
     skew: 0,
     /** serverTime() 返回的 source；改成 'watermark-lower-bound' 可模拟云函数不可用 */
     serverTimeSource: 'cloud-function',
+    /** true = 不盖 serverUpdatedAt（模拟「S4-6 的云函数不可用 → 降级」） */
+    noServerStamp: false,
     calls: { push: 0, pull: 0, serverTime: 0 },
     log: []
   }
@@ -102,21 +111,47 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
         await tick()
         maybeFail()
 
-        // 与真云端同语义：把本地时间戳校正到服务端时间轴后再比（S4-2）
+        // 与真云端同语义：把本地时间戳校正到服务端时间轴后再比（S4-2），
+        // 并且**优先比服务端刻度**（S4-6）。两者都必须与 core/merge.js 的
+        // shouldTakeRemote 一致，否则推送与拉取会给出相反答案、两端来回打架。
         const offset = Number.isFinite(clockOffset) ? clockOffset : 0
         const upserted = []
         const rejected = []
+        /**
+         * 本次成功写入的文档被盖上的刻度：`{ [本地id]: 服务端刻度 }`。
+         *
+         * 为什么要回给调用方（S4-6 收敛的关键一环）：
+         *   服务端盖的刻度**只有服务端知道**，写者的本地副本不会自动获得它。
+         *   写者下次拉取时手里那份「没刻度」，与远端「有刻度」的比不了，
+         *   只能退回客户端 `updatedAt` 比较 —— 时钟偏差下又回到不收敛。
+         *   所以推送成功后必须**把刻度写回本地副本**，本地副本才算真的「是这一版」。
+         *   这与真云端「云函数盖完刻度、下次 pull 自然带回来」等价，只是省了一轮。
+         */
+        const stamps = {}
         for (const doc of docs || []) {
           const id = doc._id || doc.id
           if (!id) continue
           const key = keyOf(openid, collection, id)
           const prev = rows.get(key)
-          const localTs = (doc.updatedAt || 0) + offset
-          const remoteTs = prev ? prev.updatedAt || 0 : -1
 
-          // 条件 upsert：本地这份更旧就不覆盖，并把决定权交回客户端
-          if (prev && localTs < remoteTs) {
-            rejected.push({ id, cloudUpdatedAt: remoteTs })
+          /**
+           * 条件 upsert：云端这份更新就不覆盖，并把决定权交回客户端。
+           *
+           * ⚠️ **参数顺序是 `(本地, 远端)`，即 `(doc, prev)`** —— 与 pull 侧
+           *    `partitionRemote` 的 `shouldTakeRemote(localDoc, remoteDoc)` 同向。
+           *    语义是「**该不该采纳远端那份**」：对推送来说，「远端」就是云端已有的
+           *    `prev`，所以：
+           *
+           *      shouldTakeRemote(doc, prev) === true  ⇒ 云端那份更新 ⇒ 拒绝本次推送
+           *      shouldTakeRemote(doc, prev) === false ⇒ 本地这份不旧 ⇒ 允许覆盖
+           *
+           *    早先写成 `shouldTakeRemote(prev, doc)`（参数反了）会**恰好判反**：
+           *    慢时钟设备明明带着更新的内容，却被自己的「更旧客户端时间戳」挡住，
+           *    推送被拒 + 拉回的旧版本又覆盖不回（合并侧判的是 keep）—— 这才是
+           *    第 3 组 3d/3e 失败的真正原因。**不要改回去。**
+           */
+          if (prev && shouldTakeRemote(doc, prev, offset)) {
+            rejected.push({ id, cloudUpdatedAt: Number(prev.serverUpdatedAt) || prev.updatedAt || 0 })
             continue
           }
 
@@ -149,11 +184,25 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
              *
              * 客户端时间戳是**冲突裁决的依据**，保持原样由合并层按需校正。
              */
-            updatedAt: clean.updatedAt
+            updatedAt: clean.updatedAt,
+            /**
+             * 服务端裁决刻度（S4-6）—— **与真云端同语义**。
+             *
+             * 真云端是在 `.set()` 之后调 `ledger-sync-stamp` 云函数补上这个字段；
+             * 假云端在同一个 push 里直接写，效果等价（都是「服务端接收这一刻」）。
+             *
+             * 它的唯一用途是**跨设备裁决**：`shouldTakeRemote` 优先比它，
+             * 这样两台设备不再因为各自的本地时钟偏差而互相认为「我更新」。
+             * `_noServerStamp(true)` 可关掉，用来验证降级路径。
+             */
+            ...(ctx.noServerStamp ? {} : { serverUpdatedAt: serverNow() })
           })
+          // 把刚盖上的刻度也回给调用方，好让它写回本地副本（见上方 stamps 注释）
+          const stamped = rows.get(key).serverUpdatedAt
+          if (stamped) stamps[id] = stamped
           upserted.push(id)
         }
-        return { upserted, rejected }
+        return { upserted, rejected, stamps }
       },
 
       async pull(collection, { since = 0, cursor = null, limit = pageSize, ids = null } = {}) {
@@ -293,6 +342,18 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       return ctx.serverTimeSource
     },
 
+    /**
+     * 关掉「服务端裁决刻度」（S4-6）：之后 push 写入的文档**不带**
+     * `serverUpdatedAt`，等价于真云端**云函数不可用**时的情况。
+     *
+     * 用它验证降级路径：没有刻度时裁决必须退回 S4-2 的「客户端时间戳 + 单侧校正」，
+     * 而不是报错或卡住 —— 刻度是增强，不是必需品。
+     */
+    _noServerStamp(on = true) {
+      ctx.noServerStamp = Boolean(on)
+      return ctx.noServerStamp
+    },
+
     /** 调用计数（验证防重入 / 防抖：并发 5 次只该发 1 轮） */
     _calls() {
       return { ...ctx.calls }
@@ -314,6 +375,7 @@ export function createFakeCloud({ latency = 0, pageSize = 100, clock = () => Dat
       ctx.persistentFailure = null
       ctx.skew = 0
       ctx.serverTimeSource = 'cloud-function'
+      ctx.noServerStamp = false
       ctx.calls = { push: 0, pull: 0, serverTime: 0 }
       ctx.log = []
       return true

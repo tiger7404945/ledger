@@ -559,6 +559,41 @@ export function createIdbAdapter(options = {}) {
       const { take, keep } = partitionRemote(locals, docs, clockOffset)
       if (take.length) await putMany(name, take)
       return { applied: take.length, kept: keep.length }
+    },
+
+    /**
+     * 把服务端盖的裁决刻度写回本地副本（S4-6）。
+     *
+     * `stamps`：`{ [本地id]: 服务端刻度 }`。只更新 `serverUpdatedAt` 一个字段。
+     *
+     * ⚠️ **不走写路径、不入 outbox**：这是服务端元数据，不是用户内容。
+     *    入队会自己推自己，而且刻度只能由服务端生成，推上去也会被覆盖。
+     *    `updatedAt` 也**不动** —— 那是内容版本（客户端时钟），保持原样。
+     *
+     * ⚠️ 文档可能已被本地再次修改（`updatedAt` 晚于刻度）—— 那没关系，
+     *    写入后 `effectiveServerStamp` 会判定该刻度失效并退回 `updatedAt`，
+     *    不会把新内容误判成旧内容。这里不做判断，判断只留在裁决那一处。
+     *
+     * 写入前 `toPlain()`：结构化克隆处理不了 Vue 的 Proxy（见本文件上方说明）。
+     */
+    async applyStamps(collection, stamps) {
+      await ready()
+      const name = STORE_OF[collection]
+      if (!name || !stamps) return 0
+      const ids = Object.keys(stamps)
+      if (!ids.length) return 0
+      const existing = await readAll(name)
+      const byId = new Map(existing.map((d) => [d.id, d]))
+      const next = []
+      for (const id of ids) {
+        const doc = byId.get(id)
+        if (!doc) continue
+        const stamp = Number(stamps[id])
+        if (!Number.isFinite(stamp) || stamp <= 0) continue
+        next.push({ ...doc, serverUpdatedAt: stamp })
+      }
+      if (next.length) await putMany(name, next)
+      return next.length
     }
   }
 

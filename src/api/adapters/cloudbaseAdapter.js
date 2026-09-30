@@ -39,6 +39,7 @@
 
 import { COLLECTIONS } from '../contract.js'
 import { CLOUD_PAGE_LIMIT } from '../sync/cloudClient.js'
+import { shouldTakeRemote } from '../core/merge.js'
 import { accountPrefixOf, toCloudId, toLocalId } from '../core/cloudId.js'
 import { CLOUD_FUNCTIONS, CLOUD_HTTP_PATHS } from '../../config/cloud.js'
 import { cloudApiBase, isCloudApiConfigured } from '../../config/env.js'
@@ -206,6 +207,67 @@ export function createCloudBaseAdapter({
 
   const collectionName = (collection) => CLOUD_COLLECTIONS[collection] || collection
 
+  /**
+   * 让服务端给一批**已存在**的文档盖上裁决刻度（S4-6）。
+   *
+   * 返回 `Map<云端 _id, 服务端刻度毫秒>`。盖不上的（不存在 / 并发删了）就不在 Map 里，
+   * 调用方按「退回客户端时间戳」处理。
+   *
+   * ## 为什么必须走服务端
+   *
+   * LWW 比的是 `updatedAt`，而那是各设备自己的客户端时钟打的。S4-2 用 `clockOffset`
+   * 把「自己这份」换算到服务端时间轴，但**远端那份偏多少无从得知** —— 于是两台设备
+   * 各自「只校正自己」时会双方都觉得自己更新，反复同步也不收敛（S4-6 缺陷）。
+   *
+   * 唯一出路是让**共享的第三方**盖章：服务端在接收时自己 `Date.now()`。客户端不能伪造，
+   * 因为函数**不接受**客户端传来的时间，只接受「要盖哪些 id」。
+   *
+   * ## 失败必须静默降级
+   *
+   * 云函数没部署 / 网关不通 / 网络抖动时**不能抛错**：
+   *   - 抛错会让整次推送失败，用户看到「同步失败」，而其实数据完全能推上去；
+   *   - 刻度只是「让裁决更准」，缺了它退回 S4-2 的行为，比整个同步挂掉好得多。
+   * 所以这里吞掉异常、返回空 Map，让调用方走降级路径。
+   *
+   * ## `_serverTs` 也交给它写
+   *
+   * 云函数在盖刻度时会**顺带刷新 `_serverTs`**（见 cloudfunctions/ledger-sync-stamp）。
+   * 这样「水位线时间」和「裁决刻度」来自**同一个服务端时刻**，不会出现「刻度说 A、
+   * 水位线说 B」的错位。首次推送走 `.set()`（文档还不存在，云函数盖不了）——
+   * 那条路径下 `_serverTs` 仍由 `db.serverDate()` 写，两者不冲突：
+   * 水位线只要求单调不减，不要求同源。
+   *
+   * @param {string} collection 本地集合名
+   * @param {string[]} cloudIds 云端 `_id`（别名）列表
+   * @returns {Promise<Map<string, number>>}
+   */
+  async function fetchServerStamps(collection, cloudIds) {
+    const out = new Map()
+    if (!isCloudApiConfigured || !cloudIds.length) return out
+    try {
+      const res = await fetch(cloudApiBase + CLOUD_HTTP_PATHS.SYNC_STAMP, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // ⚠️ 只传「要盖哪些」，**绝不传时间** —— 值必须由服务端生成
+        body: JSON.stringify({
+          updates: cloudIds.map((id) => ({ collection, id }))
+        })
+      })
+      if (!res.ok) return out
+      const body = await res.json()
+      const perCollection = body?.stamps?.[collection]
+      if (!perCollection) return out
+      for (const [id, value] of Object.entries(perCollection)) {
+        const n = Number(value)
+        if (Number.isFinite(n) && n > 0) out.set(id, n)
+      }
+    } catch (e) {
+      // 网络不通 / 网关未配置 / 响应不是 JSON —— 一律降级，不打断推送
+      lastError = e
+    }
+    return out
+  }
+
   /* ---------------- cloudClient 的三个方法 ---------------- */
 
   /**
@@ -307,12 +369,17 @@ export function createCloudBaseAdapter({
     //    查询用别名 —— 这里正是 S4-7 的修法：同名本地 id 在不同账号下
     //    映射到不同别名，所以新身份不会再撞上旧身份占的坑。
     const aliases = list.map((x) => toCloudId(x.localId, prefix))
-    const cloudUpdatedAt = new Map()
+    /** alias → 云端那一版的完整裁决信息 */
+    const cloudVersions = new Map()
     for (let i = 0; i < aliases.length; i += pageLimit) {
       const chunk = aliases.slice(i, i + pageLimit)
       const res = await col.where({ _id: cmd.in(chunk) }).get()
       for (const doc of res.data || []) {
-        cloudUpdatedAt.set(doc._id, doc.updatedAt || 0)
+        cloudVersions.set(doc._id, {
+          updatedAt: doc.updatedAt || 0,
+          // 有服务端刻度就用它裁决（S4-6）；没有就退回客户端时间戳
+          serverUpdatedAt: Number(doc.serverUpdatedAt) || 0
+        })
       }
     }
 
@@ -321,12 +388,28 @@ export function createCloudBaseAdapter({
     const rejected = []
     for (const { doc, localId } of list) {
       const alias = toCloudId(localId, prefix)
-      // 本地时间戳校正到服务端时间轴后再比（S4-2）
-      const localTs = (doc.updatedAt || 0) + offset
-      const remoteTs = cloudUpdatedAt.has(alias) ? cloudUpdatedAt.get(alias) : null
+      const cloud = cloudVersions.get(alias)
 
-      if (remoteTs !== null && localTs < remoteTs) {
-        rejected.push({ id: localId, cloudUpdatedAt: remoteTs })
+      /**
+       * 裁决：云端那份更新吗？更新就拒绝本次推送，把它交回引擎去回拉。
+       *
+       * ⚠️ **必须与 `core/merge.js` 的 `shouldTakeRemote` 同一套规则**，
+       * 否则两个方向会给出不同答案（推送说「我更新」、拉取说「你更旧」），
+       * 两端就此来回打架。所以这里直接调它，而不是再写一遍比较。
+       *
+       * ⚠️ 最关键的一条（S4-6）：**只要云端那份有服务端刻度，本地就必须拿刻度比**。
+       *    否则会出现「设备 A 只是同步得晚，就用旧内容把 B 的新内容盖掉」——
+       *    因为 `.set()` 无条件覆盖，`updatedAt` 又更早，看上去毫无问题。
+       *    这个 bug 正是第 3 组 3d 暴露出来的：A 的 10 覆盖了 B 的 99。
+       *
+       * ⚠️ **参数顺序是 `(本地, 远端)`，即 `(doc, cloud)`** —— 与 pull 侧
+       *    `partitionRemote` 的 `shouldTakeRemote(localDoc, remoteDoc)` 同向。
+       *    它是「**该不该采纳远端那份**」：对推送来说「远端」就是云端已有的 `cloud`。
+       *    写成 `shouldTakeRemote(cloud, doc)`（参数反了）会**恰好判反**，
+       *    慢时钟设备带更新内容反而被自己的旧时间戳挡住 —— 3d/3e 的真实原因。
+       */
+      if (cloud && shouldTakeRemote(doc, cloud, offset)) {
+        rejected.push({ id: localId, cloudUpdatedAt: cloud.serverUpdatedAt || cloud.updatedAt })
         continue
       }
 
@@ -334,11 +417,36 @@ export function createCloudBaseAdapter({
       // 业务字段 `id` = 本地 id：本地库靠它还原主键（见 core/cloudId.js）。
       // 它会被 fromRemote() 读回来，所以**必须**写。
       payload.id = localId
-      // 服务端接收时间：水位线的唯一依据（客户端时钟不可信）
+      /**
+       * 服务端接收时间：水位线的唯一依据（客户端时钟不可信）。
+       *
+       * ⚠️ 这里**不写 `serverUpdatedAt`**。裁决刻度由云函数在 `.set()` 之后盖 ——
+       *    `.set()` 整份覆盖会把旧刻度抹掉，必须重新盖。
+       *    为什么不在这一次 `.set()` 里就带上刻度：刻度必须**晚于**本次写入才成立
+       *    （否则「谁更新」的答案会是上次的值）。先写内容、再盖当前刻度，顺序不能反。
+       */
       payload._serverTs = db.serverDate()
       // set() = 指定 _id 的 upsert，文档已存在则整份覆盖 ⇒ 天然幂等
       await col.doc(alias).set(payload)
       upserted.push(localId)
+    }
+
+    /**
+     * ③ 给**本次真正写成功的那些**盖服务端裁决刻度（S4-6）。
+     *
+     * 盖完这一下，其它设备拉这条文档时就能拿到一个**与写者本地时钟无关**的
+     * 「内容版本时间」，跨设备裁决才落在共享时间轴上。
+     *
+     * ⚠️ 顺序不能提前到 ② 之前：刻度要标记「这次写入发生在服务端哪一刻」，
+     *    早于 `.set()` 就会记录成上一次写入的时刻。
+     *
+     * ⚠️ 云函数不可用时这一步静默跳过（`stamps` 为空）—— 云端文档仍带客户端
+     *    `updatedAt`，退回到 S4-2 的行为。**不因此报错**，否则「能推的数据」
+     *    会被一个可选增强搞成「同步失败」。
+     */
+    if (upserted.length && isCloudApiConfigured) {
+      const aliasesToStamp = upserted.map((id) => toCloudId(id, prefix))
+      await fetchServerStamps(collection, aliasesToStamp)
     }
 
     return { upserted, rejected }

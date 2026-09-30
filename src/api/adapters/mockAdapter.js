@@ -472,6 +472,28 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       })
       persist()
       return { applied: take.length, kept: keep.length }
+    },
+
+    /**
+     * 把服务端盖的裁决刻度写回本地副本（S4-6）。
+     * 只更新 `serverUpdatedAt`，**不走写路径、不入 outbox**（服务端元数据，非用户内容）。
+     * 详见 idbAdapter 里同名方法的说明。
+     */
+    async applyStamps(collection, stamps) {
+      const s = await ready()
+      const list = localListOf(s, collection)
+      if (!list || !stamps) return 0
+      let n = 0
+      for (const id of Object.keys(stamps)) {
+        const index = list.findIndex((d) => d.id === id)
+        if (index < 0) continue
+        const stamp = Number(stamps[id])
+        if (!Number.isFinite(stamp) || stamp <= 0) continue
+        list[index] = { ...list[index], serverUpdatedAt: stamp }
+        n += 1
+      }
+      if (n) persist()
+      return n
     }
   }
 

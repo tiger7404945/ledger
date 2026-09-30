@@ -97,7 +97,8 @@ src/
   utils/                   日期 / 金额 / id 工具
   styles/                  tokens.css（设计变量）+ base.css
 cloudfunctions/
-  ledger-server-time/      云函数：返回服务端当前时间（S4-2 冲突裁决用），经 HTTP 网关暴露
+  ledger-server-time/      云函数：返回服务端当前时间（S4-2 时钟校正用），经 HTTP 网关暴露
+  ledger-sync-stamp/       云函数：接收写入后盖服务端裁决刻度 serverUpdatedAt（S4-6 跨设备裁决用）
 ```
 
 ## 数据层现状
@@ -129,6 +130,27 @@ cloudfunctions/
   - HTTP 网关的 `EnableAuth=false` 是**真实生效**的，`curl` 直接 200。
 - **降级**：未配置 `VITE_CLOUDBASE_API_BASE` 或云函数不可用时，`serverTime()` 退回「水位线下界」，返回值 `source` 字段由 `'cloud-function'` 变成 `'watermark-lower-bound'` —— **后者只能当水位线，不能做冲突裁决**。
 - **部署要点**：本地目录名必须与云端函数名完全一致；`runtime=Nodejs18.15`、`handler=index.main`。
+
+### 云函数（S4-6）
+
+`cloudfunctions/ledger-sync-stamp/` —— 云端在**接收写入时**给文档盖一个服务端裁决刻度
+（业务字段 `serverUpdatedAt`），供**跨设备冲突裁决**使用。
+
+- **为什么必须用它**：`updatedAt` 是各设备自己的客户端时钟打的。S4-2 的 `clockOffset` 只能校正
+  「自己那份」，远端那份偏多少**无从得知** —— 两台设备各自「只校正自己」时会**双方都觉得自己更新
+  → 永久分叉**（云端只有一条，两端内容不同）。唯一出路是让**共享的第三方**盖章：服务端自己
+  `Date.now()`，客户端不能伪造（函数**不接受**客户端传来的时间，只接受「要盖哪些 id」）。
+- **和 `_serverTs` 的区别**：`_serverTs` 承担「水位线」职责（服务端接收时间，读回来是 Date 对象）；
+  `serverUpdatedAt` 是**内容版本时间**（明文毫秒数，因为 Web SDK 的 `serverDate()` 只能写不能读）。
+  语义不同，**不要复用**。
+- **同一套规则**：推送侧（`cloudbaseAdapter.push` / `fakeCloud.push`）与拉取侧（`partitionRemote`）
+  都直接调 `core/merge.js` 的 `shouldTakeRemote`，否则两个方向会给出相反答案、两端来回打架。
+- **本地刻度会失效**：本地文档被**再次修改**后，那个刻度标的是上一版内容 —— 判据是
+  「本地 `updatedAt` 晚于刻度 ⇒ 刻度失效」，**只写在 `effectiveServerStamp` 这一处**。
+- **写回本地副本**：推送成功后把刻度写回写者本地副本（`store.applyStamps`），否则本地无刻度、
+  下次拉取比不了，又退回客户端时钟 —— 时钟偏差下**重新分叉**。
+- **降级**：云函数不可用时 `fetchServerStamps` 吞掉异常、返回空 Map，裁决退回 S4-2 行为，
+  **不因此报错**（刻度是增强，不是必需品）。
 
 ### 云端文档 id 约定（S4-7）
 
@@ -170,13 +192,17 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 - **环境能力以实测为准**：当前环境是**纯 NoSQL 后端**（`RuntimeBackends.nosql = true`，官方明确 "PostgreSQL is NOT provisioned in this env"），走 `app.database()`；**不要**改成 `app.rdb()`。
 - **集合名带项目前缀**：`ledger_ledgers` / `ledger_categories` / `ledger_bills`。**该 CloudBase 环境后续可能被其它项目复用**，所以所有云端资源都加 `ledger_` 前缀；代码里由 `CLOUD_COLLECTION_PREFIX` + `CLOUD_COLLECTIONS` 映射产出，**业务代码不手写集合名**。
 - **权限用简单权限 PRIVATE（仅创建者可读写）**，三个集合全设。这是**服务端校验**，所以适配器里的查询**故意不带** `_openid` —— 前端过滤不是安全措施（谁都能改前端代码）。
-- **`push` 是两段式条件 upsert**：先按 `_id` 批量读回云端 `updatedAt`，再逐条判断本地不旧才 `col.doc(id).set({...payload, _serverTs: db.serverDate()})`；否则进 `rejected` 并带 `cloudUpdatedAt`，引擎据此回拉。**两段之间不原子，是留给 S4 的已知窗口。**
+- **`push` 是两段式条件 upsert**：先按 `_id` 批量读回云端 `updatedAt` / `serverUpdatedAt`，再逐条用
+  `shouldTakeRemote(doc, cloud, offset)` 判断；本地不旧才 `col.doc(id).set({...payload, _serverTs: db.serverDate()})`；
+  否则进 `rejected` 并带 `cloudUpdatedAt`，引擎据此回拉。**两段之间不原子，仍是留给后续收口的已知窗口。**
 - **`pull` 用服务端时间做水位线**：`where({ _serverTs: _.gte(new Date(since)) }).orderBy('_serverTs','asc').skip(n).limit(limit)`。注意 `_serverTs` 是 Date 类型，**用数字比较一条都匹配不到**。
 - **`_openid` 由 SDK 自动注入**（手写会报错），拉回时由 `core/merge.js` 的 `fromRemote()` 剥掉，不落本地库。
 - **匿名登录是懒触发的**：只有真正要读写数据时才 `signInAnonymously()`（否则光是打开「我的」页就会触发 88 次写入）。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）——**清掉就永久失联**，这是 S5「匿名转正」要解决的问题。
 - **SDK 走动态 import**，被 Vite 拆成独立 chunk（871 kB / gzip 220.8 kB）；不配云端时这段代码根本不加载。
 - **首次绑定**：`ensureCloudFirstBind()` 把本地三个集合的文档一次性入队推上云（本地优先）。现在是匿名设备身份、云端不可能有别人的数据，所以无覆盖风险；**S5 有真账号后必须改成先问用户**。
-- **已知不修**：本地「新者胜」依赖客户端时钟；`serverTime()` 只是"能观察到的最新 `_serverTs`"，是**下界**，只能做水位线、不能做冲突裁决。都留给 S4-2（云函数提供真服务端时间）。
+- **时钟裁决（S4-2 + S4-6）**：`serverTime()` 来自云函数 `ledger-server-time`（真服务端时间，
+  `source='cloud-function'`）；跨设备裁决由云函数 `ledger-sync-stamp` 盖的 `serverUpdatedAt` 承担。
+  两者都不可用时静默降级：偏移按 0、裁决退回客户端时钟。见上方「云函数」两节。
 
 **两个探针脚本**留在 `.preview/sdk-probe/`（该目录**不入库**，属本地验证脚本），换环境或升 SDK 大版本时可直接重跑：  
 `probe-docdb.mjs`（`serverDate` 读写 / 自定义 `_id` upsert / `_openid` 注入 / 区间+排序+分页 / 水位线边界）、`probe-isolation.mjs`（**独立进程**验证跨身份隔离）。
@@ -252,7 +278,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项             | 结果                                                                                     |
 | --------------- | -------------------------------------------------------------------------------------- |
 | `npm run build` | 通过（122 modules；主包 236.67 kB / gzip 84.31 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
-| 数据层断言合计         | **414 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 127 + 并发边界 122 + 云端 id 42），`syncEngine` 未改动故零回归 |
+| 数据层断言合计         | **428 条全绿**（契约 87 + 区间 22 + 种子 14 + 迁移 11 + 同步 128 + 并发边界 135 + 云端 id 42）。S4-6 后 `syncEngine` 有改动，同步与并发两组随之更新 |
 
 
 | 云端资源 | 三集合 `ledger_ledgers` / `ledger_categories` / `ledger_bills`，权限均为 **PRIVATE**，索引 `_openid + _serverTs` |  

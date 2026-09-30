@@ -162,8 +162,20 @@ ok('5c 更旧的版本被拒', stale.rejected.length === 1)
 ok('5d ★ 被拒回的是本地 id（引擎靠它清队列）', stale.rejected[0].id === 'ledger_default')
 ok('5e 云端仍是新版本', cloud._dump('ledger', 'user_gamma')[0].amount === 300)
 
+/**
+ * 幂等性：再推一次**完全相同**的版本不会产生第二条文档。
+ *
+ * ⚠️ S4-6 后这里返回的是 `rejected` 而不是 `upserted` —— 因为推送与合并统一走
+ * `shouldTakeRemote`，而它的规则是 **`updatedAt` 平局时云端赢**（`remoteTs >= localTs`）。
+ * 这**不是缺陷**：重复推同一版在语义上就是「平局」，被拒 → 引擎回拉云端那一版，
+ * 内容一致、队列照常清空。关键不变式是「**云端不会裂成两条**」，下面照此断言。
+ */
 const again = await d2.push('ledger', [doc('ledger_default', 300, 5000)])
-ok('5f 重复推送不产生重复文档（幂等）', again.upserted.length === 1 && cloud._size('ledger', 'user_gamma') === 1)
+ok(
+  '5f 重复推送不产生重复文档（幂等；平局被拒也仍是同一条）',
+  cloud._size('ledger', 'user_gamma') === 1 && cloud._dump('ledger', 'user_gamma')[0].amount === 300,
+  `size=${cloud._size('ledger', 'user_gamma')} upserted=${again.upserted.length} rejected=${again.rejected.length}`
+)
 
 /* ---------------- 6. 全链路（引擎 + outbox） ---------------- */
 

@@ -38,7 +38,23 @@ export const CLOUD_FUNCTIONS = {
    * 所以用一个云函数返回真正的服务端当前时间。云函数运行在腾讯云侧，
    * `Date.now()` 就是服务端时钟。
    */
-  SERVER_TIME: 'ledger-server-time'
+  SERVER_TIME: 'ledger-server-time',
+
+  /**
+   * 服务端裁决刻度（S4-6）。
+   *
+   * 解决的问题：`clockOffset` 是**每台设备各自算的**，合并时只校正「本地那份」——
+   * 这等于假设远端那份的时间戳已经在正确的时间轴上。可远端也是某台客户端写的，
+   * 它同样可能带偏移。于是两台设备各自「只校正自己」时会**双方都觉得自己更新**，
+   * 反复同步也不收敛（`conflict-test` 第 3 组 3g 钉住的缺陷）。
+   *
+   * 修法是让**服务端**在接收写入时自己盖一个刻度（业务字段 `serverUpdatedAt`），
+   * 各设备拉回来拿到的是同一个客观值，不再依赖对方的本地时钟。
+   *
+   * ⚠️ **不复用 `_serverTs`**：那个承担「水位线」职责（服务端接收时间）。
+   * 两者语义不同 —— 水位线回答「我拉到哪了」，裁决键回答「这份内容是哪一刻的」。
+   */
+  SYNC_STAMP: 'ledger-sync-stamp'
 }
 
 /** 本项目所有云端资源名都必须以此开头（校验用） */
@@ -72,5 +88,8 @@ export const CLOUD_RESOURCE_PREFIX = 'ledger'
  */
 export const CLOUD_HTTP_PATHS = {
   /** 对应云函数 SERVER_TIME，网关路径与函数名同名 */
-  SERVER_TIME: '/ledger-server-time'
+  SERVER_TIME: '/ledger-server-time',
+
+  /** 对应云函数 SYNC_STAMP（S4-6），网关路径与函数名同名 */
+  SYNC_STAMP: '/ledger-sync-stamp'
 }
