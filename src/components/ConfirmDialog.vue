@@ -5,7 +5,13 @@ const props = defineProps({
   message: { type: String, default: '' },
   confirmText: { type: String, default: '确定' },
   cancelText: { type: String, default: '取消' },
-  danger: { type: Boolean, default: false }
+  danger: { type: Boolean, default: false },
+  /**
+   * 点遮罩是否等于「取消」。默认 true。
+   * 做**不可逆抉择**的弹框要传 false（如首绑裁决：两个按钮都有后果，
+   * 不能让用户手滑点一下遮罩就替他把数据选了）。
+   */
+  maskClosable: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm', 'cancel'])
@@ -28,7 +34,7 @@ function onCancel() {
 <template>
   <Teleport to="body">
     <div v-if="modelValue" class="dialog-root">
-      <div class="mask" @click="onCancel" />
+      <div class="mask" @click="maskClosable && onCancel()" />
       <div class="dialog">
         <h3 v-if="title" class="title">{{ title }}</h3>
         <p v-if="message" class="message">{{ message }}</p>

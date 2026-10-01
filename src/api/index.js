@@ -34,9 +34,14 @@ import { createIdbAdapter } from './adapters/idbAdapter.js'
 import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
 import { accountPrefixOf } from './core/cloudId.js'
+import {
+  ensureFirstBind,
+  resolveFirstBind as resolveFirstBindChoice,
+  readPendingFirstBind,
+  cloudHasData
+} from './core/firstBind.js'
 import { DB_NAME, DB_PARTITION_PREFIX, isPartitionedDbName, partitionedDbName } from './core/idb.js'
 import { cloudEnvId, isCloudConfigured } from '../config/env.js'
-import { COLLECTIONS } from './contract.js'
 
 const ADAPTERS = {
   mock: createMockAdapter,
@@ -265,55 +270,53 @@ export async function initDataLayer() {
   return current
 }
 
-/* ---------------- 首次绑定 ---------------- */
-
-/** 「已经做过首次绑定」的标记（meta 表） */
-const FIRST_BIND_KEY = 'firstBindDone'
-/** 与 syncEngine 的 watermarkKey 保持一致 */
-const WATERMARK_KEY = 'syncWatermark'
+/* ---------------- 首次绑定（S5-7：先问用户，不再无脑本地优先） ---------------- */
 
 /**
- * 首次绑定：把本地已有数据**整体入队**，交给第一次同步推上云。
+ * 首次绑定判定。**实现已搬到 `core/firstBind.js`**（纯逻辑 + 依赖注入，可在 Node 里测），
+ * 这里只负责把「当前分区」的 db 与云端递进去。
  *
- * 为什么需要它：种子数据是直接写进本地库的，**没有经过 outbox**，
- * 所以不做这一步的话，用户一开始看到的那些账目永远不会上云 ——
- * 于是「清空本地再从云端恢复」这条路根本无从谈起。
+ * 返回值见 core/firstBind.js：
+ *   - `{ ok:true, queued }`                                  已按本地优先入队
+ *   - `{ ok:false, skipped:true, reason:'already-bound' | … }` 跳过
+ *   - `{ ok:false, skipped:true, reason:'needs-decision', localCount }`
+ *     —— **云端已有该账号的数据**，得先问用户「推本地」还是「留云端」。
+ *     UI 拿到这个要**先别同步**，否则云端那份已经拉下来了，选择就名不副实。
  *
- * 策略选的是「本地优先」。另一半（先问用户要本地还是要云端）留到 S5-7：
- * 等真账号能跨设备登录了，云端可能已经有别处写的旧数据，
- * 那时本地优先就有覆盖风险，必须先问用户。
- *
- * 幂等：标记写在 meta 表，只做一次。重置演示数据会清掉这个标记，
- * 于是重置后会重新绑定（配合「重置时一并清掉云端」，语义才是对的）。
- *
- * ⚠️ S5-5 起它必须读**当前分区**的 db/kv，所以内部走代理而不是闭包捕获。
+ * S3 时期这里是「本地优先」写死的，当时匿名身份下云端不可能有别人的数据；
+ * 有了真账号之后云端**可能已经有数据**（换设备登录 / 重装后重绑），
+ * 无脑本地优先会污染或覆盖人家的账，所以改成先裁决。
  */
 export async function ensureCloudFirstBind() {
   if (!cloud) return { ok: false, skipped: true, reason: 'no-cloud' }
   const inst = current || (await initDataLayer())
-  const kv = inst.db.kv
-  if (!kv) return { ok: false, skipped: true, reason: 'no-kv' }
+  return ensureFirstBind({ db: inst.db, cloud })
+}
 
-  const [done, watermark] = await Promise.all([kv.get(FIRST_BIND_KEY), kv.get(WATERMARK_KEY)])
-  if (done) return { ok: false, skipped: true, reason: 'already-bound' }
-  // 已经有水位线 ⇒ 同步过，本地数据早就上去了，别再整体入队一遍
-  if (watermark) {
-    await kv.set(FIRST_BIND_KEY, Date.now())
-    return { ok: false, skipped: true, reason: 'already-synced' }
-  }
+/**
+ * 执行首绑裁决，并立刻同步一次（两条路都得同步才有意义）：
+ *   - `'push-local'` → 本地已整体入队，同步把改动推上去；
+ *   - `'keep-cloud'` → 本地已清空 + 水位已清，同步全量回拉云端数据。
+ */
+export async function resolveFirstBind(choice) {
+  const inst = current || (await initDataLayer())
+  const res = await resolveFirstBindChoice({ choice, db: inst.db })
+  const sync = await syncEngine
+    .sync({
+      reason: choice === 'keep-cloud' ? 'first-bind-cloud' : 'first-bind-local',
+      manual: true
+    })
+    .catch(() => null)
+  return { ...res, sync }
+}
 
-  const entries = []
-  for (const collection of [COLLECTIONS.LEDGER, COLLECTIONS.CATEGORY, COLLECTIONS.BILL]) {
-    const docs = await inst.db.syncStore.all(collection)
-    for (const doc of docs) {
-      if (!doc || !doc.id) continue
-      entries.push({ collection, op: 'create', docId: doc.id, payload: doc })
-    }
-  }
+/** 探测云端当前账号是否已有数据（调试/排查用；正式判定在 core/firstBind.js 里） */
+export { cloudHasData }
 
-  if (entries.length) await inst.db.outbox.enqueueMany(entries)
-  await kv.set(FIRST_BIND_KEY, Date.now())
-  return { ok: true, queued: entries.length }
+/** 读「待裁决的首绑」标记（UI 用来决定要不要弹框，见 core/firstBind.js 的说明） */
+export async function pendingFirstBindInfo() {
+  const inst = current || (await initDataLayer())
+  return readPendingFirstBind({ db: inst.db })
 }
 
 export { COLLECTIONS, BILL_TYPES, CATEGORY_TYPES, NAME_MAX_LENGTH } from './contract.js'

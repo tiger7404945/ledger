@@ -1,10 +1,13 @@
 import { defineStore } from 'pinia'
 import {
   cloud,
+  db,
   rebuildForAccount,
   initDataLayer,
   currentDbName,
   ensureCloudFirstBind,
+  pendingFirstBindInfo,
+  resolveFirstBind as applyFirstBind,
   syncEngine
 } from '@/api'
 import { useBillStore } from './bill.js'
@@ -51,6 +54,12 @@ export const useAccountStore = defineStore('account', {
     busy: false,
     /** 最近一次失败的提示（UI 直接显示） */
     error: null,
+    /**
+     * S5-7 首绑裁决：云端已有该账号的数据，等用户选「推本地」还是「留云端」。
+     * `null` = 没有待裁决的事。形状：`{ localCount }`（本机待处理的文档数）。
+     * UI（「我的」页）看到它非空就弹框，选择结果走 {@link resolveFirstBind}。
+     */
+    pendingFirstBind: null,
     /** 是否已完成一次身份探测（避免 UI 在探测前就把「未登录」显示出来） */
     ready: false
   }),
@@ -172,24 +181,67 @@ export const useAccountStore = defineStore('account', {
     },
 
     /**
-     * 退出登录。
+     * 退出登录（S5-4）。
      *
-     * ⚠️ **只登出、只切分区，不删任何数据**。「退出后本地数据怎么办」
-     *    是 S5-4 的产品决策（清掉 / 保留 / 下次登录还看得见），
-     *    在没定下来之前保持现状最安全 —— 用户登回去还能看到自己的账。
-     *    登出后落到「未认证分区」，那个分区里通常什么都没有（干净的开始）。
+     * 规则：**先把改动全部推上云，再清掉本地这份副本**。
+     *
+     * 为什么这样排：退出之后本机不该再留着上一个账号的账（本地会清空），
+     * 所以云端必须是「最新且完整」的那一份。只要还有没推上去的改动，
+     * 就**取消退出**并告诉用户原因 —— 宁可退不出去，不可丢账。
+     *
+     * ⚠️ 匿名身份退出**理论上**等于失联（匿名登录态一清，云端那份自己也进不去），
+     *    所以 UI 本来准备了风险提示文案。但实测（2026-10-01）CloudBase 的匿名身份
+     *    是**设备绑定**的：signOut 之后 `ensureSignedIn()` 拿回来的还是同一个 uid，
+     *    因此「退出两次就找不回」这个说法在当前实现下不成立 —— 文案暂按保守口径保留，
+     *    且匿名账号目前**不显示**退出入口（见 MineView 的 `phase === 'formal'` 判断）。
      */
     async signOut() {
+      if (!cloud) throw new Error('未配置云端，没有可退出的登录态')
+
+      // ① 保数据：有未推送的改动就先推一轮，推不干净不往下走
+      const before = await db.sync.pendingCount().catch(() => 0)
+      if (before > 0) {
+        const r = await syncEngine
+          .sync({ reason: 'before-signout', manual: true })
+          .catch((e) => ({ ok: false, error: e }))
+        const left = await db.sync.pendingCount().catch(() => 0)
+        if (!r?.ok || left > 0) {
+          const why = r?.error?.message || r?.reason || '未知原因'
+          throw new Error(`还有 ${left || before} 条改动没同步到云端，已取消退出（${why}）`)
+        }
+      }
+
+      // ② 登出 → 清本地 → 切分区。顺序不能反：
+      //    云端登出失败就不该动本地数据（用户还是登录状态，数据得留着）。
+      //
+      // ⚠️ 切分区**不能写死 null**：退出的只是「手机号那层身份」，设备随后
+      //    立刻又会拿到一个**匿名身份**（CloudBase 的匿名会话不随 signOut 消失，
+      //    随便一次数据访问都会 `ensureSignedIn` 把它要回来）。
+      //    写死 null 会落到未认证分区 `ledger_anon`，而 store 里 uid 却是那个匿名账号，
+      //    于是「uid 是 A、库是 ledger_anon」错位 —— 用户看到的是**别的**历史数据，
+      //    还会莫名弹一次首绑裁决。所以先问明退出后的身份是谁，再按它选分区。
       return this.runIdentityChange(async () => {
         const res = await cloud.signOut()
-        await this.switchPartition(null)
+        await db.clearLocalData()
+        let uid = null
+        try {
+          uid = await cloud.ensureSignedIn()
+        } catch (e) {
+          uid = null // 离线 / 匿名登录失败：退回未认证分区，不阻断退出
+        }
+        await this.switchPartition(uid || null)
         return res
       })
     },
 
     /**
-     * 身份变动后的统一收尾。把「切分区 → 重新绑定 → 同步 → 刷新 store 状态」
+     * 身份变动后的统一收尾。把「切分区 → 首绑判定 → 同步 → 刷新 store 状态」
      * 收敛成一处，免得三个入口各写一遍、漏掉其中一步。
+     *
+     * ⚠️ 首绑判定可能是「等用户裁决」（`needs-decision`）—— 那种情况**先不同步**：
+     *    同步的第一件事就是 pull，会把云端那份拉下来，用户再选「留云端」
+     *    固然没问题，但选「推本地」时看到的已经不是「本机原来的数据」了。
+     *    裁决结果由 UI 消费（`pendingFirstBind`），选完再同步。
      *
      * @param {Function} mutate 真正执行身份操作的回调
      */
@@ -201,9 +253,16 @@ export const useAccountStore = defineStore('account', {
         const res = await mutate()
         // 切库后所有「已加载」标记都要作废，否则页面还显示上一个账号的数据
         await this.resetLoadedStores()
-        await ensureCloudFirstBind().catch(() => {})
-        // 用 manual 跳过「离线就不发请求」，因为这是用户主动要的结果
-        await syncEngine.sync({ reason: 'account-change', manual: true }).catch(() => {})
+
+        const bind = await ensureCloudFirstBind().catch(() => null)
+        if (bind?.reason === 'needs-decision') {
+          this.pendingFirstBind = { localCount: bind.localCount || 0 }
+        } else {
+          this.pendingFirstBind = null
+          // 用 manual 跳过「离线就不发请求」，因为这是用户主动要的结果
+          await syncEngine.sync({ reason: 'account-change', manual: true }).catch(() => {})
+        }
+
         await this.refreshIdentity()
         return res
       } catch (e) {
@@ -216,18 +275,71 @@ export const useAccountStore = defineStore('account', {
     },
 
     /**
+     * 补一次首绑判定（进「我的」页时调）。
+     *
+     * 为什么需要它：`main.js` 启动时也跑 `ensureCloudFirstBind()`，但那次的返回值
+     * 没人接住，紧接着引擎的 startup 同步还会把水位线写回去 —— 之后再判定就短路成
+     * `already-synced` 了，用户**永远等不到那个弹框**。所以判定结果会落成 meta 标记
+     * （`firstBindPending`），这里先读标记，没有再实探一次。
+     *
+     * 已经处理过的分区会走 `already-bound` 短路，**不会**再探测云端，代价极小。
+     */
+    async checkFirstBindDecision() {
+      if (this.pendingFirstBind) return this.pendingFirstBind
+
+      const flagged = await pendingFirstBindInfo().catch(() => null)
+      if (flagged) {
+        this.pendingFirstBind = flagged
+        return flagged
+      }
+
+      const bind = await ensureCloudFirstBind().catch(() => null)
+      if (bind?.reason === 'needs-decision') {
+        this.pendingFirstBind = { localCount: bind.localCount || 0 }
+      }
+      return this.pendingFirstBind
+    },
+
+    /**
+     * 执行首绑裁决（S5-7），两条路各自同步一次（在 api 层里做）。
+     * 裁决会改本地数据，所以之后要把各 store 的已加载标记作废重读。
+     *
+     * @param {'push-local'|'keep-cloud'} choice
+     */
+    async resolveFirstBind(choice) {
+      if (!this.pendingFirstBind) return null
+      if (this.busy) throw new Error('正在处理上一个账号操作，请稍候')
+      this.busy = true
+      this.error = null
+      try {
+        const res = await applyFirstBind(choice)
+        this.pendingFirstBind = null
+        await this.resetLoadedStores()
+        await this.refreshIdentity()
+        return res
+      } catch (e) {
+        this.error = (e && e.message) || String(e)
+        throw e
+      } finally {
+        this.busy = false
+      }
+    },
+
+    /**
      * 切换本地数据分区并重启同步。
      *
      * 重建之后要显式 `start()`：`rebuildForAccount` 会先把旧引擎 `stop()`，
      * 新引擎是「停着」的状态。不停旧引擎不行 —— 它醒来会把**旧账号的队列**
      * 推出去，那正是要防的串号。
+     *
+     * `start()` 是幂等的（内部 `if (started) return stop`），所以这里**无条件调**：
+     * 库名没变（`changed: false`）也可能需要重启 —— 比如 S5-4「退出登录清空本地、
+     * 之后又登回同一个账号」，那套引擎在上次切走时已经被 stop，不重启就再也不会自动同步。
      */
     async switchPartition(uid) {
       const { changed } = rebuildForAccount(uid)
       this.dbName = currentDbName()
-      if (changed) {
-        syncEngine.start()
-      }
+      syncEngine.start()
       return { changed, dbName: this.dbName }
     },
 

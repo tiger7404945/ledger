@@ -692,6 +692,43 @@ export function createIdbAdapter(options = {}) {
       return true
     },
 
+    /**
+     * 清空业务数据 + 同步水位线。**故意不复用 `reset()`**：
+     * reset 是「重置演示数据」，清完会重新播种；这里要的是**干净的空库**。
+     *
+     * 两个使用场景：
+     *   - S5-4 退出登录：改动已全部推上云 → 本地这份副本按约定清掉；
+     *   - S5-7 首绑裁决选「保留云端」：舍弃本地内容，让云端成为唯一真相。
+     *
+     * 保留什么（**都别清，清了会出怪事**）：
+     *   - `schemaVersion` —— 清了下次开库会重新播种，等于把「空库」又灌成演示数据；
+     *   - `importedFromLocalStorage` / `outboxImported` —— 清了会把 localStorage 的
+     *     旧库/旧队列再导入一遍；
+     *   - `seedMeta` / `firstBindDone` —— 让这个分区记住「自己已经是什么状态」。
+     * 清掉什么：
+     *   - 三个业务集合、同步队列；
+     *   - **`syncWatermark`** —— 必须清！留着的话下次登录是增量拉取，
+     *     而云端文档的 `_serverTs` 都早于水位，一条都拉不回来，
+     *     用户会看到一个**空账号**（数据其实还在云端）。
+     */
+    async clearLocalData() {
+      await getDB()
+      const meta = await readMeta()
+      const kept = {}
+      Object.entries(meta).forEach(([key, value]) => {
+        if (key !== META_KEYS.WATERMARK) kept[key] = value
+      })
+
+      await clearStore(STORES.LEDGER)
+      await clearStore(STORES.CATEGORY)
+      await clearStore(STORES.BILL)
+      await clearStore(STORES.META)
+      await outbox.clear()
+      if (Object.keys(kept).length) await writeMeta(kept)
+      // ⚠️ 不碰 initPromise：这里要的是「空库保持空」，不是重新走一遍建库播种
+      return true
+    },
+
     /** 仅调试用：读出全部数据（结构对齐 mockAdapter.snapshot） */
     async snapshot() {
       await ready()

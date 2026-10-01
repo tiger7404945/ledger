@@ -5,7 +5,7 @@
 
 ## 阶段
 Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。v0.2.0 前端完成；
-**S0–S5 主体完成**（S5-4/S5-7 待办），云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
+**S0–S5 全部完成**（含 S5-4 退出、S5-7 首绑裁决），云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
@@ -44,7 +44,8 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - 水位线只认 `_serverTs` 且**严格单调**、pull 左闭；**推送被拒必须回拉**（否则两端静默分叉）。
 - fakeCloud 必须带身份（`as('openid')`）；测试注入 `createClock()`+`createFakeTimer()`
   （记得把 `now: clock.now` 传进 makeDevice）。
-- `npm run test:data` 八脚本 479 条（contract87/period22/seed14/migrate11/sync128/conflict135/cloudid42/partition51）。
+- `npm run test:data` **九脚本 529 条**（contract87/period22/seed14/migrate11/sync128/conflict135/
+  cloudid42/partition51/**firstbind39**）。migrate 脚本输出 `PASS` 行、不打印「N 通过」汇总。
 
 ## 装配与启动（顺序错会静默失败）
 - `db`/`*Repo`/`syncEngine` 全是稳定 Proxy（内部指针可换）→ `rebuildForAccount(uid)` 只换指针，
@@ -66,10 +67,29 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   「绑定后数据原地保留」成立。探针已按真机行为建模（4e uid 会换、4i prefix 跟随），21 条全绿。
 - `getAuth()` 必须缓存（authPromise）；`getIdentity()` 不触发登录；两类返回形状用 `unwrap()`/`userOf()` 统一。
 - toast 停留 1800ms（useToast），自动化验证抓不到——先装 MutationObserver 记 body 文本再触发。
+- **匿名身份是设备绑定的**：`cloud.signOut()` 之后 `ensureSignedIn()` 拿回的 uid 与退出前**相同**，
+  所以「匿名退出＝永久失联」不成立（该文案目前也不可达：MineView 的退出按钮只在 `phase==='formal'` 渲染）。
+
+## S5-4 退出 / S5-7 首绑（规则写死后别改回去）
+- `clearLocalData()` = 清业务 + 清 outbox + **清水位线**，但保留 `schemaVersion`（清了下一次开库会
+  **重新播种**）/`seedMeta`/两个导入标记/`partitionMigratedFrom`。
+- 退出规则：**先推干净再清本地**；`pendingCount>0` 先同步一轮，推不干净就**抛错取消退出**。
+- ⚠️ 退出后**禁止** `switchPartition(null)`：会落 `ledger_anon` 而 uid 是那个匿名账号 → 身份/库名错位
+  （看到别分区历史数据 + 莫名弹首绑框 + 后续写操作落错分区）。改为先 `await cloud.ensureSignedIn()`
+  问明身份，再 `switchPartition(uid || null)`（离线才退回未认证分区）。
+- 首绑逻辑在 `src/api/core/firstBind.js`（纯逻辑 + 依赖注入，Node 可测）。`needs-decision` **必须落盘**
+  meta `firstBindPending`（main.js 那次判定没人接住，且 startup 同步会写回水位线 → 之后永久短路）。
+  UI 先读标记再实探；裁决两条路都要写 `firstBindDone` 并清 `firstBindPending`。
+- 「保留云端」= `clearLocalData()` + 清水位线（**必须**，否则增量拉取一条都回不来）。
+- `migratePartitionData` 只搬 `SCHEMA/SEED/IMPORTED/OUTBOX_IMPORTED`，**刻意不搬 WATERMARK**。
 
 ## 运行 / 版本 / 选型
 - `npm run dev` → 127.0.0.1:5173。不配 `.env.local` 退纯本地（`ledger_anon` 分区）。
   「重置演示数据」清本地+云端再播种（保留两导入标记）。装新包后删 `node_modules/.vite` 再重启 dev。
+- ⚠️ **Vite 在本机会漏掉文件变更**：改了代码但 dev server 仍吐**旧编译产物**（`?t=` 是新的、
+  内容还是旧的），表现为「代码改了、浏览器行为没变」。判别：`curl localhost:5173/<该模块路径>`
+  再 grep 新代码关键字；对不上就是产物过期 → **`touch <file>` 强制刷新**（比重启 dev 快）。
+  曾因此把「弹框不出现」误判成模块实例分裂，浪费一轮排查。
 - 本机无 Git for Windows，用 WorkBuddy 内置 PortableGit；主分支 main，约定式提交前缀；
   打 tag 时对齐 package.json。不提交 node_modules/dist/.preview；**设计图与 .workbuddy/memory 入库**。
 - `.preview/` 子目录装依赖前先放自己的 package.json（否则向上冒泡污染根）。

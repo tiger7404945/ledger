@@ -927,10 +927,10 @@ id    = <本地 id>（业务字段，权威来源）  例：ledger_default
 | S5-1 | 匿名 → 正式账号 | 用**手机号验证码**登录（云开发内置，`getVerification` + `signUp({ anonymous_token })` 原地转正）；**未开邮箱** provider | ✅ 已完成 |
 | S5-2 | 登录态持久化 | SDK 会存 session；实测刷新页面后 `getIdentity()` 仍能拿回 uid 与手机号 | ✅ 已完成（实测通过） |
 | S5-3 | 未登录也能用 | 启动时**不再自动建匿名账号**（`initDataLayer` 只读身份）；真需要数据方法时适配器才 `ensureSignedIn` 兜底。没配云端时落在 `ledger_anon` 分区，本地记账照常 | ✅ 已完成 |
-| S5-4 | 退出登录的数据处置 | **先定产品规则再写代码**：保留本地 / 清空 / 标记待确认？（建议保留并提示） | ⬜ 待定 |
+| S5-4 | 退出登录的数据处置 | **已定规则：先推干净、再清本地**。有未推送改动就先同步一轮；推不干净**取消退出**并告知原因（宁可退不出去，不可丢账）。清本地 = 业务数据 + outbox + **水位线**（保留 `schemaVersion`/`seedMeta`/导入标记/`partitionMigratedFrom`）。⚠️ 退出后**不能**写死 `switchPartition(null)`，见实施记录 | ✅ 已完成（走查通过） |
 | S5-5 | **本地库按用户分区** | 库名 `ledger_<账号前缀>`（`partitionedDbName` + `accountPrefixOf` 同源）；装配层用**稳定 Proxy** 暴露 repository，`rebuildForAccount(uid)` 只换内部指针，视图与 store 零改动。**串号风险在本地不在云端**：两账号共用一个 `ledger` 库时，A 残留的 outbox 条目会被推到 B 名下 | ✅ 已完成 |
 | S5-6 | 「我的」页改造 | 显示：当前账号 / 上次同步时间 / 待同步条数 / 手动同步 / 退出登录。**已做**：账号卡片（匿名/正式/未登录三态）、分区库名、待同步条数、退出登录、登录/绑定弹层 | ✅ 已完成（缺"上次同步时间"，归 S6-1） |
-| S5-7 | 首次绑定改为询问用户 | S3 的 `ensureCloudFirstBind()` 是**本地优先**（因为匿名身份下云端不可能有别人的数据）。有了真账号后云端**可能已有数据**，必须让用户选"本地推上去"还是"云端拉下来" | ⬜ 新增（S3 的临时代价） |
+| S5-7 | 首次绑定改为询问用户 | S3 的 `ensureCloudFirstBind()` 是**本地优先**（因为匿名身份下云端不可能有别人的数据）。有了真账号后云端**可能已有数据**，必须让用户选"本地推上去"还是"云端拉下来"。实现搬到 `core/firstBind.js`（纯逻辑 + 依赖注入），`needs-decision` 落盘成 meta 标记 `firstBindPending` | ✅ 已完成（两条路径真机走查通过） |
 
 **验收标准**：两个浏览器（或电脑 + 手机）登录同一账号，A 记一笔 → 5 秒内 B 能刷到。
 
@@ -984,6 +984,67 @@ fake SDK 探针的「转正 uid 不变」前提被真机推翻：
 - 结论：「绑定后数据原地保留」**在线场景成立**（转正本身必须联网）；刚转正就断网会暂时只见种子，等下次同步恢复。这条链路能走通，靠的正是 S4-7「本地 id 与账号解耦」+ 稳定代理 + `rebuildForAccount`。
 - 另一个真机发现：`confirmUpgrade` 对 `verifyOtp` 是**一次性消费**（调用前置空），验证码过期/输错后同一条短信无法重试，必须重新发码；toast 只停 1800ms，自动化验证要先装 MutationObserver 记 body 文本再触发，否则抓不到错误。
 - 待办：`.preview/probe-adapter-auth.mjs` 4e 的「uid 不变」断言是 fake 前提，应改为建模 uid 变化（探针层面验「身份切换后不崩、数据靠回拉恢复」）。
+
+#### S5-4 + S5-7 实施记录（退出登录与首绑裁决）
+
+**① S5-4：先推干净，再清本地**
+
+`stores/account.js` 的 `signOut()` 分两步，顺序不能反：
+
+1. **保数据**：先看 `db.sync.pendingCount()`。有未推送改动就手动同步一轮；同步后仍未清空（或同步本身失败）→ **抛错取消退出**（`还有 N 条改动没同步到云端，已取消退出（原因）`）。宁可退不出去，不可丢账。
+2. **清副本**：`cloud.signOut()` → `db.clearLocalData()` → 切分区。登出失败就不动本地数据（用户还是登录态，数据得留着）。
+
+`clearLocalData()`（`idbAdapter`）的语义是**清业务数据 + 清 outbox + 清水位线**，但保留 `schemaVersion`、`seedMeta`、`importedFromLocalStorage`、`outboxImported`、`partitionMigratedFrom`：
+
+- 清 `schemaVersion` → 下次开库会以为要新建、**重新播种**，用户会莫名多出一套演示数据；
+- 清水位线 → 下次同步是**全量回拉**（这是「保留云端」和「退出后重新登录」能恢复数据的前提）。
+
+**② ⚠️ 退出后不能写死 `switchPartition(null)`（这是本轮抓到的真 bug）**
+
+原写法 `await this.switchPartition(null)` 假设「退出后就没有身份了」。实测（见 ⑤）**不成立**：CloudBase 的匿名身份是**设备绑定**的，`signOut()` 之后随便一次数据访问都会 `ensureSignedIn()` 把它要回来（uid 与退出前**完全相同**）。
+
+于是出现**身份 / 分区错位**：store 里 `uid = 0OuzUrrt…`，库却是 `ledger_anon`。用户可见症状三条：
+
+- 退出后看到的是**别的分区的历史数据**（`ledger_anon` 里那 87 条），不是该身份自己的分区；
+- 立刻**莫名弹一次首绑裁决**（`ledger_anon` 没有 `firstBindDone`，而云端该账号有数据）；
+- 之后再写账会写进 `ledger_anon`，与该 uid 的天然分区 `ledger_0ouzurrt` 分叉。
+
+**修法**：退出时**先问明退出后的身份是谁**，再按它选分区 ——
+
+```js
+const res = await cloud.signOut()
+await db.clearLocalData()
+let uid = null
+try { uid = await cloud.ensureSignedIn() } catch (e) { uid = null } // 离线则退回未认证分区
+await this.switchPartition(uid || null)
+```
+
+修后实测：退出后落在 `ledger_0ouzurrt`（身份自己的分区），uid 与库名一致，不再弹多余的首绑框；被退出的那个账号分区确实清空（0/0/0 + 水位线被移除）。
+
+**③ S5-7：判定结果必须落盘，否则弹框永远出不来**
+
+`main.js` 启动时也跑 `ensureCloudFirstBind()`，但**那次的返回值没人接住**；紧接着引擎的 startup 同步会把水位线写回去 —— 于是进「我的」页再判定时已经短路成 `already-synced`，用户永远等不到那个框。
+
+所以 `needs-decision` 时顺手把待裁决状态写进 meta 的 `firstBindPending`，UI 先读标记（不重复探测云端），没有标记再实探一次。这也顺手解决了「用户没选就关掉页面，下次进来还能接着问」。
+
+**④ 「保留云端」必须清水位线，且迁移不能带水位线**
+
+- 清水位线是为了让下一次拉取**从 0 全量**：留着水位的话，云端文档的 `_serverTs` 比水位旧，增量拉取**一条都不返回**，用户看到一个空账号。
+- `migratePartitionData` 只搬 `SCHEMA / SEED / IMPORTED / OUTBOX_IMPORTED` 四个 meta 键，**刻意不搬 `WATERMARK`** —— 搬了的话新分区一进来就被判成「已经同步过」，首绑裁决同样永远不会问。
+
+**⑤ 真机走查记录（2026-10-01，真实云端）**
+
+| 场景 | 操作 | 结果 |
+| --- | --- | --- |
+| 弹框触发 | `ledger_0ouzurrt` 有 87 条 + 云端该账号有数据 | 弹出「云端已有数据 / 本机这份数据共 87 条…」，「保留云端」「同步本地」两键 ✅ |
+| 同步本地 | 先往本地裸写一条云端没有的探针账单（绕过 outbox，避免自动同步干扰） | toast「已同步本机数据（**88** 条入队）」＝ 87 + 探针，说明是**整体入队**（连没经过 App 写操作的文档也收）；云端账单 44 → 45，探针带 remark 落地 ✅ |
+| 保留云端 | 同上再插一条本地专有探针 | toast「已保留云端数据，本机数据已舍弃」；账单 46 → 45（探针被舍弃），`firstBindPending` 被清、`firstBindDone` 更新，`schemaVersion`/`seedMeta`/导入标记/`partitionMigratedFrom` 全部保留；**本地被云端数据正确回填**（水位线数值不变是对的：全量回拉后的最大值与原值相同） ✅ |
+| 退出的保数据分支 | 打桩让 `cloud.push` 抛错，再经 `billRepo.create` 造一条待推改动 | 抛 `还有 1 条改动没同步到云端，已取消退出（模拟离线：推送失败）`；本地 46 条账单**一条没动**、outbox 仍为 1、分区未变 ✅ |
+
+**⑥ 两处与旧文案不符的事实（待用户裁决）**
+
+- **匿名账号没有「退出登录」入口**：`MineView` 的按钮条件是 `account.phase === 'formal'`，所以 `signOutTitle` / `signOutMessage` 里的**匿名分支文案是死代码**，`ConfirmDialog` 的 `:danger="account.phase !== 'formal'"` 也恒为 `false`。
+- 因此「匿名身份退出＝永久失联」这句提示**不可达**；而且按 ⑤ 的实测（匿名 uid 退出后原样回来），这个说法本身在当前实现下也**不成立**。代码注释已按实测口径改写。
 
 ---
 

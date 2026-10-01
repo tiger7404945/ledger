@@ -10,6 +10,7 @@ import { clearRecordDraft } from '@/composables/useRecordDraft.js'
 import AppHeader from '@/components/AppHeader.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 import TabBar from '@/components/TabBar.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 
 const router = useRouter()
 const categoryStore = useCategoryStore()
@@ -77,6 +78,17 @@ const countdown = ref(0)
  */
 const verificationInfo = ref(null)
 let countdownTimer = null
+
+/** 退出登录确认框（S5-4）：正式账号与匿名账号两套文案，见 signOutMessage */
+const signOutOpen = ref(false)
+const signOutTitle = computed(() =>
+  account.phase === ACCOUNT_PHASE.FORMAL ? '退出登录' : '退出匿名账号'
+)
+const signOutMessage = computed(() =>
+  account.phase === ACCOUNT_PHASE.FORMAL
+    ? '退出后会清空本机的账目数据（云端已保存完整副本），下次用手机号登录即可恢复。'
+    : '匿名身份一旦退出就找不回来了 —— 云端那份副本同样进不去。建议先绑定手机号再退出。'
+)
 
 const sheetTitle = computed(() =>
   sheetMode.value === 'upgrade' ? '绑定手机号' : '手机号登录'
@@ -172,12 +184,43 @@ async function submit() {
 }
 
 async function handleSignOut() {
+  // 退出登录的后果不一样，先确认（S5-4）：
+  //   正式账号 —— 本地副本清空，云端有完整一份，登回来即可；
+  //   匿名账号 —— 退出 = 永久失联（云端那份自己也进不去），必须警告。
+  signOutOpen.value = true
+}
+
+async function doSignOut() {
   try {
     await account.signOut()
+    await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
     pending.value = await db.sync.pendingCount()
-    toast.success('已退出登录')
+    toast.success('已退出登录，本地数据已清空')
   } catch (e) {
     toast.show(`退出失败：${e?.message || e}`)
+  }
+}
+
+/* ---------------- 首次绑定裁决（S5-7） ---------------- */
+
+/**
+ * 首绑裁决的文案。云端已有数据时，本机这份不再被无脑覆盖上去，先问用户。
+ * 条数来自 store（`pendingFirstBind.localCount`，本机三个集合里的文档数）。
+ */
+const firstBindMessage = computed(() => {
+  const n = account.pendingFirstBind?.localCount ?? 0
+  return `该账号云端已经有数据。本机这份数据共 ${n} 条，要把它也同步到云端吗？选择「保留云端」将舍弃本机数据（云端数据不受影响）。`
+})
+
+async function decideFirstBind(choice) {
+  try {
+    const r = await account.resolveFirstBind(choice)
+    await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
+    pending.value = await db.sync.pendingCount()
+    if (choice === 'keep-cloud') toast.success('已保留云端数据，本机数据已舍弃')
+    else toast.success(`已同步本机数据（${r?.queued || 0} 条入队）`)
+  } catch (e) {
+    toast.show(`处理失败：${e?.message || e}`)
   }
 }
 
@@ -185,6 +228,9 @@ onMounted(async () => {
   await account.bootstrap()
   await db.ready?.()
   await Promise.all([categoryStore.ensureLoaded(), billStore.ensureLoaded()])
+  // 补一次首绑裁决判定：启动阶段（main.js）那次不负责弹框，
+  // 这里发现「云端已有数据且本机还没裁决过」就把弹框拉起来
+  await account.checkFirstBindDecision().catch(() => {})
   // 队列方法已改为异步，而且「全貌」（状态 / 待推数 / 上次同步时间）只有引擎知道，
   // 所以这里订阅引擎，而不是直接问 outbox。订阅时会立刻回调一次当前状态。
   offSync = syncEngine.onStateChange((s) => {
@@ -421,6 +467,32 @@ async function resetDemo() {
         </div>
       </div>
     </Teleport>
+
+    <!-- 退出登录确认（S5-4）：正式账号与匿名账号两套文案 -->
+    <ConfirmDialog
+      v-model="signOutOpen"
+      :title="signOutTitle"
+      :message="signOutMessage"
+      confirm-text="退出"
+      :danger="account.phase !== 'formal'"
+      @confirm="doSignOut"
+    />
+
+    <!--
+      首绑裁决（S5-7）：云端已有数据时才出现，由 store 的 pendingFirstBind 驱动。
+      刻意不用 v-model —— 关闭由「裁决完成」决定，用户在选完之前关不掉；
+      遮罩也不响应（maskClosable=false），避免手滑替用户做选择。
+    -->
+    <ConfirmDialog
+      :model-value="Boolean(account.pendingFirstBind)"
+      :mask-closable="false"
+      title="云端已有数据"
+      :message="firstBindMessage"
+      confirm-text="同步本地"
+      cancel-text="保留云端"
+      @confirm="decideFirstBind('push-local')"
+      @cancel="decideFirstBind('keep-cloud')"
+    />
   </div>
 </template>
 
