@@ -6,6 +6,7 @@
 ## 阶段
 Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。v0.2.0 前端完成；
 **S0–S5 全部完成**（含 S5-4 退出、S5-7 首绑裁决），云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
+**S7 已裁决、待实施**：去掉匿名身份，改为「写操作登录门禁」（2026-10-01，见下）。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
@@ -78,7 +79,7 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   实测（2026-10-01）：清掉后重开 → SDK 给**全新 uid + 新 device_id**，云端按 `_openid` 隔离
   → 旧账号的数据（仍在云端）彻底读不到。反之**只**用 `clearLocalData()` 清本地（身份保留）
   → 重载即全量回拉。⇒ 匿名数据**有**云备份，但清浏览器数据后**找不回**；正式账号才可跨设备找回。
-- ⚠️ **首访分区错位（待修，S6）**：`initDataLayer()` 用 `getIdentity()`（**不触发登录**，防 88 次写入），
+- ⚠️ **首访分区错位（S6 记录；按 S7 去匿名后会自然消失，无需单独修）**：`initDataLayer()` 用 `getIdentity()`（**不触发登录**，防 88 次写入），
   设备无身份缓存时 uid=null → 分区落 `ledger_anon`；随后 `ensureCloudFirstBind()` 才登录拿到 uid，
   **分区不重建**。若 `ledger_anon` 带着上个会话的 `syncWatermark`，`ensureFirstBind` 命中
   `already-synced`（写 done、**不入队**）→ **数据一条都不上云**（实测新匿名账号云端 0 条、outbox 0）。
@@ -97,6 +98,22 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   UI 先读标记再实探；裁决两条路都要写 `firstBindDone` 并清 `firstBindPending`。
 - 「保留云端」= `clearLocalData()` + 清水位线（**必须**，否则增量拉取一条都回不来）。
 - `migratePartitionData` 只搬 `SCHEMA/SEED/IMPORTED/OUTBOX_IMPORTED`，**刻意不搬 WATERMARK**。
+
+## S7 去匿名（**已裁决 2026-10-01，代码待实施**）
+- 决策（P10）：**删掉本地默认匿名用户**。未登录只读可浏览（空账本），
+  写操作（记一笔 / 编辑账单 / 分类增删）一律先弹手机号登录；`cloud=null` 时**不做门禁**（保 S0-3 降级）。
+- 连带删除：转正链路（`prepareUpgrade`/`confirmUpgrade`）、**整个 `core/firstBind.js` + 39 条测试**
+  —— 因为「本机攒了未登录期数据、要决定推不推上云」这个前提**消失了**（未登录根本写不了）。
+- 落点：`ensureSignedIn` 只复用**现有**登录态、拿不到就抛 `NOT_SIGNED_IN`（**绝不 `signInAnonymously`**）；
+  未登录分区改名 `ledger_anon` → **`ledger_guest`**（`seed:false` + 不继承旧库）；
+  `accountPrefixOf(null)` 兜底 `'anon'` → `'guest'`；未登录**不启动** syncEngine。
+- 登录弹层要从 `MineView`（813 行里的内嵌弹层，带 login/upgrade 两模式）抽成全局
+  `LoginSheet.vue` + `useLoginSheet.js`（只留 login）；门禁走 `useLoginGate.requireLogin()`
+  + 路由 `meta.requiresAuth`（`/record` 含 `?id=`、`/category*`）。
+- ⚠️ 前提：**换号必须先退出**（退出清本地 + 水位线 ⇒ 下次登录必是空库全量回拉）。
+  将来若要支持「不退出直接切号」，必须补回本地 / 云端裁决 —— 那正是 S5-7 被删掉的东西。
+- ⚠️ 代码改完**不等于**禁用匿名登录：上线前必须去 CloudBase 控制台关「匿名登录」开关。
+- 本机现有的 `ledger_anon` / `ledger_<匿名uid>` 数据（各 87~88 条）**将被忽略**（用户已确认）。
 
 ## 运行 / 版本 / 选型
 - `npm run dev` → 127.0.0.1:5173。不配 `.env.local` 退纯本地（`ledger_anon` 分区）。
