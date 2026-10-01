@@ -1041,10 +1041,11 @@ await this.switchPartition(uid || null)
 | 保留云端 | 同上再插一条本地专有探针 | toast「已保留云端数据，本机数据已舍弃」；账单 46 → 45（探针被舍弃），`firstBindPending` 被清、`firstBindDone` 更新，`schemaVersion`/`seedMeta`/导入标记/`partitionMigratedFrom` 全部保留；**本地被云端数据正确回填**（水位线数值不变是对的：全量回拉后的最大值与原值相同） ✅ |
 | 退出的保数据分支 | 打桩让 `cloud.push` 抛错，再经 `billRepo.create` 造一条待推改动 | 抛 `还有 1 条改动没同步到云端，已取消退出（模拟离线：推送失败）`；本地 46 条账单**一条没动**、outbox 仍为 1、分区未变 ✅ |
 
-**⑥ 两处与旧文案不符的事实（待用户裁决）**
+**⑥ 文案口径裁决与执行（2026-10-01 用户确认）**
 
-- **匿名账号没有「退出登录」入口**：`MineView` 的按钮条件是 `account.phase === 'formal'`，所以 `signOutTitle` / `signOutMessage` 里的**匿名分支文案是死代码**，`ConfirmDialog` 的 `:danger="account.phase !== 'formal'"` 也恒为 `false`。
-- 因此「匿名身份退出＝永久失联」这句提示**不可达**；而且按 ⑤ 的实测（匿名 uid 退出后原样回来），这个说法本身在当前实现下也**不成立**。代码注释已按实测口径改写。
+- **删掉匿名分支死代码**：`MineView` 的退出入口条件是 `account.phase === 'formal'`，所以 `signOutTitle` / `signOutMessage` 的匿名分支永远走不到，`:danger="account.phase !== 'formal'"` 也恒为 `false`。已把两个 computed 收敛成常量字符串，`danger` 写死（正式账号退出确实不可逆）。`handleSignOut` 也不再需要 `async`。
+- **口径统一为「清除浏览器数据才找不回」**：按 ⑤ 的实测，匿名登录态与设备绑定，`signOut()` 之后 `ensureSignedIn()` 拿回同一个 uid，「匿名退出＝永久失联」**不成立**。已据此改写代码注释、README、项目记忆 —— 匿名唯一的真风险是**清除浏览器数据**（登录态在 localStorage），这条提示保留并写清楚。
+- **测试输出统一**：新增 `scripts/_harness.mjs` 作为九个脚本共用的断言外壳（逐条 `✓`/`✗`，末尾 `──── <脚本名> ────` + `N 通过 / M 失败（共 N 条）`）。`migrate-test` 从「只打 `PASS/FAIL`、不汇总、不设退出码」改为与其他脚本一致 —— 它以前**失败也不会让 `test:data` 中断**，是个真隐患。
 
 ---
 

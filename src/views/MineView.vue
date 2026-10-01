@@ -49,8 +49,11 @@ const cloudLabel = computed(() => {
 
 /**
  * 个人卡片那行说明。
- * ⚠️ 匿名身份必须**明确写出风险**（清掉浏览器就找不回）——
- *    这是 S5 做「转正」的全部理由，藏在代码注释里没用，得让用户看见。
+ *
+ * ⚠️ 匿名身份必须**明确写出风险**，但风险只有一条：**清除浏览器数据就找不回**
+ *    （登录态在 localStorage）。别写成「退出登录就失联」—— 匿名根本没有退出入口，
+ *    而且实测（2026-10-01）匿名登录态与设备绑定，`signOut()` 之后同一个 uid 会原样
+ *    回来（见 account store 的 `signOut`）。这是 S5 做「转正」的全部理由，得让用户看见。
  */
 const profileSub = computed(() => {
   if (!cloud) return '数据仅保存在本机 · 未配置云端'
@@ -79,16 +82,17 @@ const countdown = ref(0)
 const verificationInfo = ref(null)
 let countdownTimer = null
 
-/** 退出登录确认框（S5-4）：正式账号与匿名账号两套文案，见 signOutMessage */
+/**
+ * 退出登录确认框（S5-4）。
+ *
+ * ⚠️ 只有正式账号有退出入口（模板里是 `phase === 'formal'`），所以文案是**定值**，
+ *    不为「匿名也能退出」预留分支 —— 实测匿名登录态与设备绑定：`signOut()` 之后
+ *    随便一次数据访问都会把**同一个 uid** 要回来，退出对匿名身份没有实际效果，
+ *    自然也不存在「退出即失联」。匿名真正的风险是清掉浏览器数据（见 `profileSub`）。
+ */
 const signOutOpen = ref(false)
-const signOutTitle = computed(() =>
-  account.phase === ACCOUNT_PHASE.FORMAL ? '退出登录' : '退出匿名账号'
-)
-const signOutMessage = computed(() =>
-  account.phase === ACCOUNT_PHASE.FORMAL
-    ? '退出后会清空本机的账目数据（云端已保存完整副本），下次用手机号登录即可恢复。'
-    : '匿名身份一旦退出就找不回来了 —— 云端那份副本同样进不去。建议先绑定手机号再退出。'
-)
+const signOutTitle = '退出登录'
+const signOutMessage = '退出后会清空本机的账目数据（云端已保存完整副本），下次用手机号登录即可恢复。'
 
 const sheetTitle = computed(() =>
   sheetMode.value === 'upgrade' ? '绑定手机号' : '手机号登录'
@@ -183,10 +187,8 @@ async function submit() {
   }
 }
 
-async function handleSignOut() {
-  // 退出登录的后果不一样，先确认（S5-4）：
-  //   正式账号 —— 本地副本清空，云端有完整一份，登回来即可；
-  //   匿名账号 —— 退出 = 永久失联（云端那份自己也进不去），必须警告。
+function handleSignOut() {
+  // 本地副本会被清掉（云端保留完整一份，登回来即可），不可逆，先确认（S5-4）
   signOutOpen.value = true
 }
 
@@ -468,13 +470,13 @@ async function resetDemo() {
       </div>
     </Teleport>
 
-    <!-- 退出登录确认（S5-4）：正式账号与匿名账号两套文案 -->
+    <!-- 退出登录确认（S5-4）：只有正式账号有这个入口，本地副本会被清掉 -->
     <ConfirmDialog
       v-model="signOutOpen"
       :title="signOutTitle"
       :message="signOutMessage"
       confirm-text="退出"
-      :danger="account.phase !== 'formal'"
+      danger
       @confirm="doSignOut"
     />
 

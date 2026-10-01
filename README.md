@@ -211,7 +211,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   否则进 `rejected` 并带 `cloudUpdatedAt`，引擎据此回拉。**两段之间不原子，仍是留给后续收口的已知窗口。**
 - **`pull` 用服务端时间做水位线**：`where({ _serverTs: _.gte(new Date(since)) }).orderBy('_serverTs','asc').skip(n).limit(limit)`。注意 `_serverTs` 是 Date 类型，**用数字比较一条都匹配不到**。
 - **`_openid` 由 SDK 自动注入**（手写会报错），拉回时由 `core/merge.js` 的 `fromRemote()` 剥掉，不落本地库。
-- **匿名登录是懒触发的**：只有真正要读写数据时才 `signInAnonymously()`（否则光是打开「我的」页就会触发 88 次写入）。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）——**清掉就永久失联**，这是 S5「匿名转正」要解决的问题。
+- **匿名登录是懒触发的**：只有真正要读写数据时才 `signInAnonymously()`（否则光是打开「我的」页就会触发 88 次写入）。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）——**清掉这个登录态就找不回那个账号**（指的是清除浏览器数据；**不是**「退出登录」：匿名身份与设备绑定，退出后同一个 uid 会原样回来，且匿名根本没有退出入口）。这是 S5「匿名转正」要解决的问题。
 - **SDK 走动态 import**，被 Vite 拆成独立 chunk（871 kB / gzip 220.8 kB）；不配云端时这段代码根本不加载。
 - **首次绑定**：`ensureCloudFirstBind()` 把本地三个集合的文档一次性入队推上云（本地优先）。现在是匿名设备身份、云端不可能有别人的数据，所以无覆盖风险；**S5 有真账号后必须改成先问用户**。
 - **时钟裁决（S4-2 + S4-6）**：`serverTime()` 来自云函数 `ledger-server-time`（真服务端时间，
@@ -306,7 +306,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 
 > **验证过程中在云端产生的探针数据已全部清理**，云端为干净的种子状态（44 / 42 / 1）。  
 > **一个工具经验**：用无头浏览器验证时，其 `click` 命令**不一定会触发 Vue 的 `@click` 处理器**；遇到"点了没反应但逻辑明明是对的"时，用 `element.click()` 原生触发同一元素做对照，就能区分是工具问题还是真实 bug（本次即如此）。  
-> **待办**：`serverTime()` 只是水位线下界，冲突裁决仍需 S4 用云函数打真服务端时间；S5 需把匿名身份转成正式账号，否则清掉浏览器数据即永久失联。
+> **待办**：`serverTime()` 只是水位线下界，冲突裁决仍需 S4 用云函数打真服务端时间；S5 需把匿名身份转成正式账号，否则清掉浏览器数据就找不回那份云端账目。
 
 ## 第二阶段 S5 验收结论（账号与库分区）
 

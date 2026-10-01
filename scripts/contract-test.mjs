@@ -28,21 +28,10 @@ const date = await import(`${SRC}utils/date.js`)
 
 const LEDGER_ID = 'ledger_default'
 
-let pass = 0
-let fail = 0
-function eq(label, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want)
-  if (ok) pass += 1
-  else fail += 1
-  console.log(
-    `${ok ? '✓' : '✗'} ${label}${ok ? '' : `\n    期望 ${JSON.stringify(want)}\n    实得 ${JSON.stringify(got)}`}`
-  )
-}
-function ok(label, cond, extra = '') {
-  if (cond) pass += 1
-  else fail += 1
-  console.log(`${cond ? '✓' : '✗'} ${label}${cond ? '' : `  ${extra}`}`)
-}
+/* 断言与汇总统一走 scripts/_harness.mjs（输出格式见该文件顶部说明） */
+import { createSuite } from './_harness.mjs'
+
+const t = createSuite('contract-test')
 
 const codeOf = async (fn) => {
   try {
@@ -277,18 +266,18 @@ async function writeProbe(adapter) {
 console.log('== 阶段 1：mockAdapter 播种（模拟第一阶段老用户） ==')
 const mock = createMockAdapter({ latency: 0 })
 const mockRead = await readProbe(mock)
-ok('mock 已播种账单', mockRead.bills.length > 40, `实得 ${mockRead.bills.length}`)
-ok('mock 已把库写进 localStorage', store.has('ledger.db.v1'))
+t.ok('mock 已播种账单', mockRead.bills.length > 40, `实得 ${mockRead.bills.length}`)
+t.ok('mock 已把库写进 localStorage', store.has('ledger.db.v1'))
 
 console.log('\n== 阶段 2：idbAdapter 首次打开应接管旧库，只读结果须与 mock 完全一致 ==')
 const idb = createIdbAdapter({ dbName: 'ledger_contract_test' })
 const idbRead = await readProbe(idb)
 
 const rawMeta = await idb.snapshot()
-ok('idb 确实接管了 localStorage 的旧库（时间戳一致即可证明）', idbRead.bills[0]?.id === mockRead.bills[0]?.id)
+t.ok('idb 确实接管了 localStorage 的旧库（时间戳一致即可证明）', idbRead.bills[0]?.id === mockRead.bills[0]?.id)
 
 for (const key of Object.keys(mockRead)) {
-  eq(`[只读] ${key}`, idbRead[key], mockRead[key])
+  t.eq(`[只读] ${key}`, idbRead[key], mockRead[key])
 }
 
 console.log('\n== 阶段 3：写入探针，两个适配器结果须一致 ==')
@@ -296,7 +285,7 @@ const mockWrite = await writeProbe(mock)
 const idbWrite = await writeProbe(idb)
 
 for (const key of Object.keys(mockWrite)) {
-  eq(`[写入] ${key}`, idbWrite[key], mockWrite[key])
+  t.eq(`[写入] ${key}`, idbWrite[key], mockWrite[key])
 }
 
 console.log('\n== 阶段 4：契约完备性 ==')
@@ -305,15 +294,15 @@ for (const [name, adapter] of [
   ['idb', idb]
 ]) {
   const has = (obj, keys) => keys.every((k) => typeof obj[k] === 'function')
-  ok(
+  t.ok(
     `${name}.ledger 方法齐全`,
     has(adapter.ledger, ['list', 'get', 'update'])
   )
-  ok(
+  t.ok(
     `${name}.category 方法齐全`,
     has(adapter.category, ['list', 'get', 'create', 'update', 'remove', 'listChildren', 'reorder'])
   )
-  ok(
+  t.ok(
     `${name}.bill 方法齐全`,
     has(adapter.bill, [
       'list',
@@ -328,9 +317,9 @@ for (const [name, adapter] of [
       'remarkHistory'
     ])
   )
-  ok(`${name}.sync 方法齐全`, has(adapter.sync, ['pendingCount']))
+  t.ok(`${name}.sync 方法齐全`, has(adapter.sync, ['pendingCount']))
   // 同步引擎的接缝：适配器把队列与本地读写口暴露出去，引擎才不用认识适配器
-  ok(
+  t.ok(
     `${name} 暴露了 outbox / syncStore（同步引擎的接缝）`,
     !!adapter.outbox &&
       has(adapter.outbox, [
@@ -343,25 +332,24 @@ for (const [name, adapter] of [
         'onChange'
       ])
   )
-  ok(`${name}.syncStore 方法齐全`, has(adapter.syncStore, ['get', 'all', 'applyRemote']))
-  ok(`${name} 有 reset / snapshot`, has(adapter, ['reset', 'snapshot']))
-  ok(`${name}.name 为 ${name === 'mock' ? 'mock' : 'idb'}`, adapter.name === (name === 'mock' ? 'mock' : 'idb'))
+  t.ok(`${name}.syncStore 方法齐全`, has(adapter.syncStore, ['get', 'all', 'applyRemote']))
+  t.ok(`${name} 有 reset / snapshot`, has(adapter, ['reset', 'snapshot']))
+  t.ok(`${name}.name 为 ${name === 'mock' ? 'mock' : 'idb'}`, adapter.name === (name === 'mock' ? 'mock' : 'idb'))
 }
 
 // 写入后 idb 的数据确实落在 IndexedDB（而不是内存里）
 const idbSnap = await idb.snapshot()
-ok('idb 的写入已落库（账本名已持久化）', idbSnap.ledgers[0].name === '改过的账本')
-ok('idb 的软删除已落库', idbSnap.bills.some((b) => b.deleted === 1))
+t.ok('idb 的写入已落库（账本名已持久化）', idbSnap.ledgers[0].name === '改过的账本')
+t.ok('idb 的软删除已落库', idbSnap.bills.some((b) => b.deleted === 1))
 
 // reset 后回到干净种子
 await idb.reset()
 const afterReset = await idb.snapshot()
-ok('idb.reset 后账单数回到种子量', afterReset.bills.length === 44, `实得 ${afterReset.bills.length}`)
-ok('idb.reset 后账本名回到默认', afterReset.ledgers[0].name === '默认账本')
-ok(
+t.ok('idb.reset 后账单数回到种子量', afterReset.bills.length === 44, `实得 ${afterReset.bills.length}`)
+t.ok('idb.reset 后账本名回到默认', afterReset.ledgers[0].name === '默认账本')
+t.ok(
   'idb.reset 后不含测试期间新增的分类（证明没有重新导入被写脏的旧库）',
   !afterReset.categories.some((c) => c.name.startsWith('契约类目'))
 )
 
-console.log(`\n${pass} 通过 / ${fail} 失败`)
-process.exit(fail ? 1 : 0)
+t.done()

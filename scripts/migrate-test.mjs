@@ -15,8 +15,13 @@ const { createMockAdapter } = await import(`${BASE}api/adapters/mockAdapter.js`)
 
 const KEY = 'ledger.db.v1'
 const LEDGER = 'ledger_default'
-const assert = (label, cond, extra = '') =>
-  console.log(`${cond ? 'PASS' : 'FAIL'}  ${label}${extra ? '  → ' + extra : ''}`)
+/* 断言与汇总统一走 scripts/_harness.mjs（输出格式见该文件顶部说明） */
+import { createSuite } from './_harness.mjs'
+
+const t = createSuite('migrate-test')
+
+/** 历史叫法：migrate-test 通篇用 assert，语义等同 t.ok */
+const assert = (...args) => t.assert(...args)
 
 /* ---------- 1. 全新库：播种即带备注 ---------- */
 const fresh = buildSeed()
@@ -62,3 +67,5 @@ const first = after.bills.find((b) => b.categoryId === 'cat_food' && b.remark)
 await db.bill.remove(first.id)
 const afterRemove = await db.bill.remarkHistory({ ledgerId: LEDGER, categoryId: 'cat_food' })
 assert('删除后该备注从候选中消失', !afterRemove.includes(first.remark), afterRemove.join(' | '))
+
+t.done()

@@ -45,7 +45,10 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - fakeCloud 必须带身份（`as('openid')`）；测试注入 `createClock()`+`createFakeTimer()`
   （记得把 `now: clock.now` 传进 makeDevice）。
 - `npm run test:data` **九脚本 529 条**（contract87/period22/seed14/migrate11/sync128/conflict135/
-  cloudid42/partition51/**firstbind39**）。migrate 脚本输出 `PASS` 行、不打印「N 通过」汇总。
+  cloudid42/partition51/**firstbind39**）。输出格式由 `scripts/_harness.mjs` 统一
+  （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
+  **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
+  `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
 
 ## 装配与启动（顺序错会静默失败）
 - `db`/`*Repo`/`syncEngine` 全是稳定 Proxy（内部指针可换）→ `rebuildForAccount(uid)` 只换指针，
@@ -68,7 +71,9 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - `getAuth()` 必须缓存（authPromise）；`getIdentity()` 不触发登录；两类返回形状用 `unwrap()`/`userOf()` 统一。
 - toast 停留 1800ms（useToast），自动化验证抓不到——先装 MutationObserver 记 body 文本再触发。
 - **匿名身份是设备绑定的**：`cloud.signOut()` 之后 `ensureSignedIn()` 拿回的 uid 与退出前**相同**，
-  所以「匿名退出＝永久失联」不成立（该文案目前也不可达：MineView 的退出按钮只在 `phase==='formal'` 渲染）。
+  所以「匿名退出＝永久失联」不成立。匿名**没有**退出入口（MineView 只在 `phase==='formal'` 渲染按钮），
+  匿名分支文案已删（`signOutTitle`/`signOutMessage` 是常量、`danger` 恒 true）。
+  口径统一为：匿名唯一的真风险是**清除浏览器数据**（登录态在 localStorage）。
 
 ## S5-4 退出 / S5-7 首绑（规则写死后别改回去）
 - `clearLocalData()` = 清业务 + 清 outbox + **清水位线**，但保留 `schemaVersion`（清了下一次开库会
