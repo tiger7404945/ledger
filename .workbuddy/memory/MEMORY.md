@@ -100,13 +100,22 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - `migratePartitionData` 只搬 `SCHEMA/SEED/IMPORTED/OUTBOX_IMPORTED`，**刻意不搬 WATERMARK**。
 
 ## S7 去匿名（**已裁决 2026-10-01，代码待实施**）
-- 决策（P10）：**删掉本地默认匿名用户**。未登录只读可浏览（空账本），
+- 决策（P10，**五条规则**）：**删掉本地默认匿名用户**。未登录只读可浏览（空账本 0.00 + **分类齐备**），
   写操作（记一笔 / 编辑账单 / 分类增删）一律先弹手机号登录；`cloud=null` 时**不做门禁**（保 S0-3 降级）。
 - 连带删除：转正链路（`prepareUpgrade`/`confirmUpgrade`）、**整个 `core/firstBind.js` + 39 条测试**
   —— 因为「本机攒了未登录期数据、要决定推不推上云」这个前提**消失了**（未登录根本写不了）。
 - 落点：`ensureSignedIn` 只复用**现有**登录态、拿不到就抛 `NOT_SIGNED_IN`（**绝不 `signInAnonymously`**）；
-  未登录分区改名 `ledger_anon` → **`ledger_guest`**（`seed:false` + 不继承旧库）；
+  未登录分区改名 `ledger_anon` → **`ledger_guest`**（`seed: import.meta.env.DEV ? 'full' : 'base'` + 不继承旧库）；
   `accountPrefixOf(null)` 兜底 `'anon'` → `'guest'`；未登录**不启动** syncEngine。
+- **种子分层（S7-9，用户 2026-10-01 追加裁决）**：种子里三样东西性质不同 ——
+  **账本 + 分类是「基础设施」**（`buildBase()`，任何分区都播），**~44 条演示账单是「演示数据」**
+  （`buildDemoBills()`，**仅 `import.meta.env.DEV`**，生产构建下返回 `[]` 让打包器摇掉）。
+  `seed` 参数 boolean → 三态 `'base' | 'full' | false`；`runSeedMigration()` **只在播了演示账单时跑**
+  （否则它会把演示账单当「缺失的补充数据」灌进空库）。
+  ⚠️ **账号分区兜底播种的分类 `updatedAt` 必须置 0** —— `updatedAt` 新者胜，否则本地刚生成的默认分类
+  会在合并时**覆盖用户在云端改过的分类名**（比「没有分类」更糟）。
+  ⚠️ `buildInstance()` 原先**根本没传 `seed`**（走默认 `true`）⇒ **所有分区都播全套** ⇒
+  新账号首次登录就把 44 条演示账单推上云（实测旁证：匿名分区本地与云端条数完全一致）。
 - 登录弹层要从 `MineView`（813 行里的内嵌弹层，带 login/upgrade 两模式）抽成全局
   `LoginSheet.vue` + `useLoginSheet.js`（只留 login）；门禁走 `useLoginGate.requireLogin()`
   + 路由 `meta.requiresAuth`（`/record` 含 `?id=`、`/category*`）。
