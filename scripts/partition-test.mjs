@@ -339,9 +339,10 @@ t.group('12. 未登录分区只播基础设施（没有演示账单）')
   t.eq('12c ★ guest 分区没有任何演示账单', snap.bills.length, 0)
   t.ok('12d guest 分区没写演示数据迁移标记', snap.meta.seedExtra === undefined)
 
-  // 开发构建下的未登录分区用 `'full'` 档（对着设计稿看页面方便）
+  // `'full'` 档仍能播出演示数据 —— S7-9 补丁后它只留给开发构建的
+  // 「重置演示数据」抬档用，任何分区的常规启动都不再走这一档
   const devGuest = createIdbAdapter({ dbName: nextDb('guestfull'), seed: 'full' })
-  t.ok('12e 开发构建的 guest 分区能看到演示数据', (await devGuest.snapshot()).bills.length > 0)
+  t.ok('12e \'full\' 档播出演示数据（保留给「重置演示数据」抬档）', (await devGuest.snapshot()).bills.length > 0)
 
   // 登录后的账号分区：只播基础设施，且兜底分类 updatedAt = 0
   const acct = createIdbAdapter({
@@ -362,6 +363,48 @@ t.group('12. 未登录分区只播基础设施（没有演示账单）')
   const snap2 = await guest.snapshot()
   t.eq('12i 二次加载仍是 0 条账单（base 档不跑演示数据迁移）', snap2.bills.length, 0)
   t.eq('12j 二次加载分类数不变', snap2.categories.length, 42)
+}
+
+/* ---------------- 13. 未登录分区的一次性清理（S7-9 补丁） ---------------- */
+
+t.group('13. ★ purgeSeedBills：老 guest 库里的演示账单清一次')
+
+{
+  // 造一个「S7-9 补丁之前」的 guest 库：已被旧构建灌过整套演示账单
+  const legacyGuest = nextDb('guestlegacy')
+  const raw = await openDB({ dbName: legacyGuest, version: DB_VERSION })
+  await putMany(raw, STORES.BILL, [
+    { id: 'bill_demo_1', ledgerId: 'ledger_default', categoryId: null, type: 'income', amount: 12000, date: '2026-10-01', remark: '月薪', updatedAt: 1 },
+    { id: 'bill_demo_2', ledgerId: 'ledger_default', categoryId: null, type: 'expense', amount: 45, date: '2026-10-01', remark: '地铁通勤', updatedAt: 1 }
+  ])
+
+  const g1 = createIdbAdapter({ dbName: legacyGuest, seed: 'base', purgeSeedBills: true })
+  const snap1 = await g1.snapshot()
+  t.eq('13a ★ 老 guest 库的演示账单在首次启动被整批清掉', snap1.bills.length, 0)
+  // ⚠️ snapshot().meta 只含 seedMeta 子对象，顶层标记要用 readMeta 直读
+  const meta1 = await readMeta(await openDB({ dbName: legacyGuest, version: DB_VERSION }))
+  t.ok('13b 清理动作落了一次性标记', Boolean(meta1.seedBillsPurged))
+  t.eq('13c 清理不碰基础设施（分类还在）', snap1.categories.length, 42)
+
+  // 模拟「重置演示数据」之后的库：标记在、账单也在 ⇒ 二次启动**不清**
+  const g2 = createIdbAdapter({ dbName: legacyGuest, seed: 'base', purgeSeedBills: true })
+  await putMany(raw, STORES.BILL, [
+    { id: 'bill_reset_1', ledgerId: 'ledger_default', categoryId: null, type: 'expense', amount: 66, date: '2026-10-02', remark: '重置灌进来的', updatedAt: 2 }
+  ])
+  const snap2 = await g2.snapshot()
+  t.eq('13d ★ 标记已落 ⇒ 再次启动不再清（保住「重置演示数据」的成果）', snap2.bills.length, 1)
+
+  // 对照组：不传 purgeSeedBills 的分区（账号分区）绝不能动用户的账单
+  const acctDb = nextDb('acctnopurge')
+  const acctRaw = await openDB({ dbName: acctDb, version: DB_VERSION })
+  await putMany(acctRaw, STORES.BILL, [
+    { id: 'bill_user_1', ledgerId: 'ledger_default', categoryId: null, type: 'expense', amount: 99, date: '2026-10-01', remark: '用户的真账', updatedAt: 1 }
+  ])
+  const acct = createIdbAdapter({ dbName: acctDb, seed: 'base' })
+  const acctSnap = await acct.snapshot()
+  t.eq('13e ★ 不传 purgeSeedBills 的分区一条账单都不动', acctSnap.bills.length, 1)
+  const acctMeta = await readMeta(acctRaw)
+  t.ok('13f 账号分区也没有清理标记', acctMeta.seedBillsPurged === undefined)
 }
 
 t.done()

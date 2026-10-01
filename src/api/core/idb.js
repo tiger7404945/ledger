@@ -110,7 +110,16 @@ export const META_KEYS = {
    * ⚠️ `clearLocalData()`（退出登录）时**保留它**：同一个分区再登录时本地是
    *    空的（内容从云端全量回拉），没有东西需要再入队。
    */
-  LOCAL_PUSHED: 'localPushedToCloud'
+  LOCAL_PUSHED: 'localPushedToCloud',
+  /**
+   * 未登录分区的「演示账单已清理」一次性标记（S7-9 补丁）。
+   *
+   * guest 改为只播 `'base'` 之后，**更早的开发构建**已经给 guest 分区播过
+   * 整套演示账单 —— 未登录写路径被门禁拦着，guest 库里的账单只可能来自
+   * 种子，所以可以整批清掉。这个标记保证清理只做一次：否则开发构建下
+   * 「重置演示数据」抬档 FULL 灌进去的演示账单，会在下一次启动又被清掉。
+   */
+  SEED_BILLS_PURGED: 'seedBillsPurged'
 }
 
 /** 见文件头约定 1 */

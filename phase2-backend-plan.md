@@ -1128,13 +1128,13 @@ await this.switchPartition(uid || null)
    `'base'`（基础设施）/ `'full'`（含演示账单）/ `false`（什么都不播，测试空库用）。
    配套：`runSeedMigration()`（补种）只在**播了演示账单**时才跑，否则它会把演示账单当成
    「缺失的补充数据」补进空库。
-3. **各分区怎么传**
+3. **各分区怎么传**（**2026-10-02 修订**：guest 开发构建也不再播演示账单，见下方补丁记录）
 
-   | 分区 | 开发构建 | 生产构建 |
-   | --- | --- | --- |
-   | `ledger_guest`（未登录） | `'full'`（照旧，方便对着设计稿看） | `'base'`（空账本 0.00 + 分类齐备） |
-   | `ledger_<账号前缀>`（登录后） | `'base'` | `'base'` |
-   | 「重置演示数据」按钮 | `'full'` | 按钮隐藏（生产环境没有演示数据可重置，且它会**清云端**） |
+   | 分区 | 播种档位 |
+   | --- | --- |
+   | `ledger_guest`（未登录） | `'base'`（空账本 0.00 + 分类齐备，**开发与生产一致**） |
+   | `ledger_<账号前缀>`（登录后） | `'base'` |
+   | 「重置演示数据」按钮（仅开发构建显示） | `'full'`（显式抬档） |
 
 4. **新账号登录后的兜底播种**：登录后的分区库同样播 `'base'`，但**分类的 `updatedAt` 置 0**，
    语义是「这是默认值，优先级最低」：
@@ -1151,7 +1151,7 @@ await this.switchPartition(uid || null)
 | 编号 | 任务 | 要点 | 状态 |
 | --- | --- | --- | --- |
 | S7-1 | 云端适配器：`ensureSignedIn` 不再创建账号 | `cloudbaseAdapter.js` 里拿不到**已持久化的**登录态时**抛 `NOT_SIGNED_IN`**，删掉 `signInAnonymously()` 调用；4 处数据方法的调用点（约 320 / 381 / 531 / 559 行）跟着改。`getIdentity()` 语义本来就「不触发登录」，不动 | ✅ |
-| S7-2 | 未登录分区：`ledger_anon` → `ledger_guest` | `index.js` 的 `dbNameFor` 兜底值改 `'guest'`；`buildInstance` 对 guest 分区传 `seed: isDev ? 'full' : 'base'` + `migrateFrom: false`（播基础设施、不继承旧裸库）；`cloudId.js` 的 `accountPrefixOf` 兜底改 `'guest'` | ✅ |
+| S7-2 | 未登录分区：`ledger_anon` → `ledger_guest` | `index.js` 的 `dbNameFor` 兜底值改 `'guest'`；`buildInstance` 对 guest 分区传 `seed: 'base'` + `purgeSeedBills: true` + `migrateFrom: false`（播基础设施、不继承旧裸库；老 guest 库的演示账单清一次）；`cloudId.js` 的 `accountPrefixOf` 兜底改 `'guest'` | ✅ |
 | S7-3 | 同步引擎：未登录不启动、失效不再自动重登 | `switchPartition` 未登录时**不** `start()`；`syncEngine.tryReauth()` 改为只复用现有登录态，失败就置 `needs-reauth`；`sync/errors.js` 的 `needsReauth` 策略从「自动续期」改为「**提示重新登录**」 | ✅ |
 | S7-4 | 登录界面抽成全局组件 | 新建 `components/LoginSheet.vue`（从 `MineView` 迁出，**只留 login 模式**，删 upgrade 分支）+ `composables/useLoginSheet.js`（全局单例：`open(reason)` / `close()` / 登录成功后执行挂起的动作），挂到 `App.vue` | ✅ |
 | S7-5 | 写操作门禁 | 新建 `composables/useLoginGate.js`：`requireLogin(label)` → 已登录返 `true`；未登录则开登录弹层、登记待执行动作、返 `false`。路由守卫给 `/record`（含 `?id=` 编辑）与 `/category*` 加 `meta.requiresAuth`；`MineView` 的「重置演示数据」等写操作一并走它 | ✅ |
@@ -1182,7 +1182,7 @@ await this.switchPartition(uid || null)
 
 **实施步骤（按依赖顺序，每步都可独立验证）**
 
-1. **S7-9**（种子分层）—— **最先做**：它是 S7-2 的前置，并顺手在改造当期就掐掉「新账号凭空拿到 44 条演示账单」这条污染链。单独可验：`test:data` 全绿 + 开发构建下未登录仍能看到演示数据。
+1. **S7-9**（种子分层）—— **最先做**：它是 S7-2 的前置，并顺手在改造当期就掐掉「新账号凭空拿到 44 条演示账单」这条污染链。单独可验：`test:data` 全绿 + 未登录看到空账本（0.00）。
 2. **S7-1 + S7-3**（适配器 + 引擎）—— 先切掉「不再自动匿名登录」这条根，后面的简化才有依据。此步做完应用会暂时退化成「未登录什么都读不到」，属**预期中间态**。
 3. **S7-2**（未登录分区）—— 让未登录仍有一个可读的分区（基础设施齐备、无演示账单），中间态恢复可用。
 4. **S7-6 + S7-7**（store 简化 + 删首绑）—— 代码量最大的减法。删完先跑 `test:data`，按红了哪些脚本对照上表修。
@@ -1194,7 +1194,7 @@ await this.switchPartition(uid || null)
 
 **端到端走查清单（浏览器）—— 2026-10-01 实测**
 
-- [x] 未登录：能进首页 / 账单 / 统计，**不弹**登录框（开发构建下看到演示账本；生产构建下是空账本 0.00）
+- [x] 未登录：能进首页 / 账单 / 统计，看到**空账本**（0.00，开发与生产一致），**不弹**登录框
 - [x] 未登录进记账页 —— ⚠️ **与原计划的写法有出入，见下方「差异说明」**
 - [x] **全新账号登录**（云端无数据）→ 账号里有默认分类、没有任何演示账单，分类已推上云 —— ⏳ 由 `partition-test` 61 条断言等价覆盖，**真机仍待验**
 - [x] 生产构建（`npm run build` + `vite preview`）：未登录分区**无演示账单**（首页 `¥0.00` + 「今天还没有记账」空态、账本存在、分类齐备）；「重置演示数据」按钮**不出现**；「我的」页显示 `IndexedDB（ledger_guest）`

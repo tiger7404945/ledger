@@ -35,7 +35,7 @@ import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
 import { GUEST_ACCOUNT_PREFIX, accountPrefixOf } from './core/cloudId.js'
 import { DB_NAME, DB_PARTITION_PREFIX, isPartitionedDbName, partitionedDbName } from './core/idb.js'
-import { cloudEnvId, isCloudConfigured, IS_DEV } from '../config/env.js'
+import { cloudEnvId, isCloudConfigured } from '../config/env.js'
 
 const ADAPTERS = {
   mock: createMockAdapter,
@@ -119,12 +119,14 @@ function buildInstance(dbName) {
           /**
            * 播种档位（S7-9 三态：`'base'` / `'full'` / `false`）。
            *
-           * - **未登录分区**：开发构建播整套（对着设计稿看页面方便），
-           *   生产构建只播基础设施（账本 + 分类齐备，金额 0.00）。
-           * - **账号分区**：只有基础设施，一条演示账单都没有 ——
-           *   新账号凭空多出 ¥8720.72 就是这条链污染上去的。
+           * **所有分区常规启动都只播基础设施**（账本 + 分类齐备，金额 0.00）——
+           * 包括未登录分区。演示账单只出现在两个地方：开发构建的
+           * 「重置演示数据」按钮（显式抬档 `'full'`），以及历史遗留的分区库
+           * （下面的 `purgeSeedBills` 负责清一次）。
+           * 账号分区更是必须如此：新账号凭空多出 ¥8720.72 就是
+           * 「演示账单被种子推上云」这条链污染上去的。
            */
-          seed: isGuest ? (IS_DEV ? 'full' : 'base') : 'base',
+          seed: 'base',
           /**
            * 账号分区兜底播种的分类 `updatedAt = 0`：语义是「这是默认值，
            * 优先级最低」。云端已有同名 id 的分类（用户改过名字/图标）时，
@@ -132,6 +134,12 @@ function buildInstance(dbName) {
            * 云端没有（全新账号）时，这份默认分类被推上去，换设备也带得走。
            */
           seedCategoryUpdatedAt: isGuest ? null : 0,
+          /**
+           * 未登录分区的一次性清理（S7-9 补丁）：guest 只播 `'base'` 之前，
+           * 更早的开发构建已经往 guest 分区灌过整套演示账单 —— 未登录
+           * 写不了账单，guest 库里的账单只可能来自种子，清掉是安全的。
+           */
+          purgeSeedBills: isGuest,
           /**
            * 继承旧裸库（S5-5）：**只有账号分区才认领**。
            * 未登录分区传 false —— 它不是一个「账号」，没有资格把旧库据为己有

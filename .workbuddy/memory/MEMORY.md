@@ -46,8 +46,8 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - 水位线只认 `_serverTs` 且**严格单调**、pull 左闭；**推送被拒必须回拉**（否则两端静默分叉）。
 - fakeCloud 必须带身份（`as('openid')`）；测试注入 `createClock()`+`createFakeTimer()`
   （记得把 `now: clock.now` 传进 makeDevice）。
-- `npm run test:data` **九脚本 549 条**（contract87/period22/seed28/migrate11/sync134/conflict135/
-  cloudid42/partition61/**gate**29）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **九脚本 555 条**（contract87/period22/seed28/migrate11/sync134/conflict135/
+  cloudid42/partition67/**gate**29）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
@@ -97,7 +97,15 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - **种子分层（S7-9）**：`buildBase()`（账本 + 42 分类 = **基础设施**，任何分区都播）与
   `buildDemoBills()`（演示账单，**仅 `import.meta.env.DEV`**，生产构建返回 `[]`）。
   `seed` 参数三态 `'base' | 'full' | false`；`runSeedMigration()` **只在播了演示账单时跑**。
-  分区取值：`ledger_guest` = `IS_DEV ? 'full' : 'base'`；账号分区恒 `'base'` + `seedCategoryUpdatedAt: 0`。
+  分区取值（**2026-10-02 修订**）：**所有分区常规启动恒 `'base'`** —— guest 开发构建也不播
+  演示账单（用户实测发现「未登录账单页还有 13768.50 演示收入」，容易当成没清理的脏数据）；
+  `'full'` 只留给「重置演示数据」抬档（`pendingResetMode`）。
+  账号分区恒 `'base'` + `seedCategoryUpdatedAt: 0`。
+- ⚠️ **老 guest 库的一次性清理**：`buildInstance` 对 guest 传 `purgeSeedBills: true` —— 首次启动
+  清空 BILL store（未登录写路径被门禁拦着，guest 库里的账单**只可能来自种子**，整批清是安全的），
+  落 meta `SEED_BILLS_PURGED` 保证只清一次（**不然重置灌进去的演示账单活不过下次启动**；
+  抬档 FULL 那次 init 跳过清理但**照样落标记**）。⚠️ `snapshot().meta` 只含 **seedMeta 子对象**，
+  顶层 meta 标记要 `readMeta()` 直读。
 - ⚠️ **账号分区兜底播种的分类 `updatedAt` 必须置 0** —— 否则「新者胜」会让本地刚生成的默认分类
   **覆盖用户在云端改过的分类名**（比「没有分类」更糟）。
 - ⚠️ **门禁必须注册在 `installRecordDraftGuard` 之前**，否则被拦下的导航会被草稿守卫当成
@@ -113,7 +121,7 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   `SEED_BILL_NOTES`（导出常量）与 `buildExtraBills`（导出函数）是给**开发期遗留本地库做历史回填**的
   公开 API，依赖模板数组，一经导出即**不可摇**。功能上生产**不会写入**演示账单；要根治得把整块
   改成 dev-only 的动态 `import()`。
-- **未验**：真实云端登录往返（需真机短信）—— `partition-test` 61 条提供等价覆盖。
+- **未验**：真实云端登录往返（需真机短信）—— `partition-test` 67 条提供等价覆盖。
 
 ## 运行 / 版本 / 选型
 - `npm run dev` → 127.0.0.1:5173。不配 `.env.local` 退纯本地（`ledger_guest` 分区，**门禁不生效**）。

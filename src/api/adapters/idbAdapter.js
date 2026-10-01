@@ -86,9 +86,10 @@ export function createIdbAdapter(options = {}) {
     /**
      * 播种档位（S7-9）。**三态**：
      *   - `true` / `'full'` —— 基础设施（账本 + 分类）**加演示账单**。
-     *     开发构建下的未登录分区用它，方便对着设计稿看页面。
+     *     现在只有「重置演示数据」抬档时用（见 `reset()`）—— 任何分区
+     *     的常规启动都不再播演示账单。
      *   - `'base'` —— **只播基础设施**（账本 + 分类），一条演示账单都没有。
-     *     登录后的账号分区、以及生产构建下的未登录分区用它 ——
+     *     未登录分区、登录后的账号分区都用它 ——
      *     账号里凭空多出 ¥8720.72 演示账就是这套种子推上去的（见 mock/seed.js）。
      *   - `false` —— 什么都不播。测试要的空库走这条。
      */
@@ -115,7 +116,16 @@ export function createIdbAdapter(options = {}) {
      * 之后登录的别的账号不会再把同一份数据搬进自己名下（防跨账号串号）。
      * 传空 = 不做认领检查（测试 / 未分区场景）。
      */
-    claimant = ''
+    claimant = '',
+    /**
+     * S7-9 补丁：启动时做一次「演示账单清理」（只有未登录分区传 true）。
+     *
+     * guest 改为只播 `'base'` 之前，更早的开发构建已经给 guest 分区播过
+     * 整套演示账单。未登录写路径被门禁拦着 ⇒ guest 库里的账单**只可能
+     * 来自种子**，整批清掉是安全的。靠 `META_KEYS.SEED_BILLS_PURGED`
+     * 保证只清一次（不然「重置演示数据」灌进去的演示账单活不过下次启动）。
+     */
+    purgeSeedBills = false
   } = options
 
   /** 归一化播种档位：`false` → 不播；`'base'` → 只播基础设施；其余 → 整套 */
@@ -264,6 +274,20 @@ export function createIdbAdapter(options = {}) {
     //   - S7-9 起还要 **`'base'` 档位也跳过** —— 那个分区里压根没有演示账单，
     //     跑迁移等于把它们凭空补进一个不该有演示数据的账号分区。
     if (wantsDemo && !inheritSettled) await runSeedMigration()
+
+    /**
+     * S7-9 补丁：未登录分区的「演示账单一次性清理」。
+     *
+     *   - 抬档 FULL（开发构建的「重置演示数据」）时**跳过清理** —— 那次
+     *     init 刚把演示账单灌进去，不能自己清自己；
+     *   - 但**照样落标记** —— 标记的语义是「这个分区做过清理裁决了」，
+     *     落了标记，重置灌进去的演示账单才不会在下次启动（mode 回到
+     *     `'base'`）被误清。
+     */
+    if (purgeSeedBills && !meta[META_KEYS.SEED_BILLS_PURGED]) {
+      if (mode !== SEED_MODE.FULL) await clearStore(STORES.BILL)
+      await writeMeta({ [META_KEYS.SEED_BILLS_PURGED]: now() })
+    }
     return true
   }
 
