@@ -74,6 +74,16 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   所以「匿名退出＝永久失联」不成立。匿名**没有**退出入口（MineView 只在 `phase==='formal'` 渲染按钮），
   匿名分支文案已删（`signOutTitle`/`signOutMessage` 是常量、`danger` 恒 true）。
   口径统一为：匿名唯一的真风险是**清除浏览器数据**（登录态在 localStorage）。
+- **「钥匙」= localStorage 四个键**：`lang_/user_info_/credentials_<envId>` + `device_id`。
+  实测（2026-10-01）：清掉后重开 → SDK 给**全新 uid + 新 device_id**，云端按 `_openid` 隔离
+  → 旧账号的数据（仍在云端）彻底读不到。反之**只**用 `clearLocalData()` 清本地（身份保留）
+  → 重载即全量回拉。⇒ 匿名数据**有**云备份，但清浏览器数据后**找不回**；正式账号才可跨设备找回。
+- ⚠️ **首访分区错位（待修，S6）**：`initDataLayer()` 用 `getIdentity()`（**不触发登录**，防 88 次写入），
+  设备无身份缓存时 uid=null → 分区落 `ledger_anon`；随后 `ensureCloudFirstBind()` 才登录拿到 uid，
+  **分区不重建**。若 `ledger_anon` 带着上个会话的 `syncWatermark`，`ensureFirstBind` 命中
+  `already-synced`（写 done、**不入队**）→ **数据一条都不上云**（实测新匿名账号云端 0 条、outbox 0）。
+  根因：水位线只证明「某账号在这分区推过」，不证明「**当前**账号推过」。修法方向：分区名 ≠
+  `ledger_<accountPrefixOf(uid)>` 时水位线不可信，强制走 `pushLocal`。
 
 ## S5-4 退出 / S5-7 首绑（规则写死后别改回去）
 - `clearLocalData()` = 清业务 + 清 outbox + **清水位线**，但保留 `schemaVersion`（清了下一次开库会

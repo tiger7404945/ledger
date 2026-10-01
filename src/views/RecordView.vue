@@ -107,6 +107,26 @@ function switchType(key) {
   selectFirstPrimary()
 }
 
+/**
+ * 分类兜底：清掉「指向已删除分类」的选中项，并回退到当前类型的第一个一级分类。
+ *
+ * 为什么需要：分类是**可删的**（「分类管理」页），而选中项有两个来源都会带上
+ * 历史 id ——
+ *   ① 草稿：去「分类管理」改完分类再返回记账页时恢复（见 useRecordDraft）；
+ *   ② 编辑既有账单：`bill.primaryCategoryId`。
+ * 分类被删掉之后这两个 id 就悬空了，宫格会**一个都不高亮**，
+ * 表现就是「没有默认分类」；用户接着点保存还会莫名收到「请选择分类」。
+ *
+ * 注意降级顺序：先清二级/展开项，最后才回退一级 ——
+ * `selectFirstPrimary()` 会整体重设三者。
+ */
+function normalizeSelection() {
+  const alive = (id) => Boolean(id && categoryStore.byId[id])
+  if (!alive(subId.value)) subId.value = ''
+  if (!alive(expandedId.value)) expandedId.value = ''
+  if (!alive(primaryId.value)) selectFirstPrimary()
+}
+
 function selectCategory(item) {
   if (item.id === '__manage__') {
     router.push({ path: '/category', query: { type: type.value } })
@@ -328,6 +348,8 @@ onMounted(async () => {
   const draft = readRecordDraft()
   if (draft && String(draft.editingId || '') === String(id || '')) {
     applyDraft(draft)
+    // 草稿里的分类可能已经在上次「分类管理」里被删掉，兜底回退
+    normalizeSelection()
   } else if (id) {
     const bill = await billStore.getBill(id)
     if (bill) {
@@ -346,6 +368,8 @@ onMounted(async () => {
       remark.value = bill.remark || ''
       dateKey.value = bill.date || todayKey()
       noReimburse.value = !!bill.noReimburse
+      // 这笔账引用的分类可能已被删除（悬空 id），兜底回退
+      normalizeSelection()
     } else {
       toast.error('账单不存在')
     }
@@ -372,6 +396,14 @@ watch(
 /* 切换分类后重新拉取该分类下的历史备注 */
 watch(currentCategoryId, () => {
   loadRemarkSuggestions()
+})
+
+/* 分类列表整体刷新后（刚在「分类管理」里增删过分类）再兜一次底：
+   当前选中的分类若已消失，立即回退到第一个，
+   绝不让宫格停在「一个都没高亮」的状态 */
+watch(primaries, () => {
+  if (loading.value) return
+  normalizeSelection()
 })
 </script>
 
