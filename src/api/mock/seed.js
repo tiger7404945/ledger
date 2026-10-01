@@ -13,7 +13,51 @@ import { round2 } from '../../utils/money.js'
  * Mock 种子数据
  * 参考截图还原：支出 17 个一级分类（含 4 个带二级分类）、收入 7 个一级分类，
  * 以及 2026 年 9 月的账单流水（本月支出精确为 ¥8720.72）。
+ *
+ * ## 种子分两层（S7-9）
+ *
+ * 这里的「种子」原本捆着三样性质完全不同的东西，接云端之后成了一条**静默的
+ * 数据污染链**（新账号首次登录 → 空分区 ⇒ 播种整套 → 整批推上云 → 账号里
+ * 凭空多出 ¥8720.72 演示账）。所以按性质拆开：
+ *
+ *   | 内容 | 性质 | 谁需要 | 播不播 |
+ *   | --- | --- | --- | --- |
+ *   | 账本 + 分类（{@link buildBase}） | **基础设施** —— 没有它记不了账、宫格是空的 | 全部场景 | **始终播** |
+ *   | 演示账单（{@link buildDemoBills}） | **演示数据** —— 某个人编出来的账 | 开发 / 设计稿对照 | 仅开发构建 |
+ *
+ * `buildSeed()` 是组合入口，`mode` 决定要不要带上演示账单：
+ *   - `'full'` —— 基础设施 + 演示账单（开发构建下的未登录分区）；
+ *   - `'base'` —— 只有基础设施（登录后的账号分区、生产构建）。
+ *
+ * ⚠️ **不要为了少播演示数据去 bump `SCHEMA_VERSION`**：那会让适配器认定数据结构
+ *    不兼容而重新播种，把用户自己记的账清空。补数据走 `SEED_EXTRA_VERSION`。
  */
+
+/**
+ * 是否「开发构建」。
+ *
+ * ⚠️ 写成 `import.meta.env.DEV`（而不是从 `config/env.js` 取 `IS_DEV`）是有意的：
+ *    Vite 在**生产构建时会把这一处整段替换成 `false`**，于是下面 `buildDemoBills`
+ *    里那段账单数据成为死代码，打包器可以把它摇掉 —— 我们要的是「生产包里根本
+ *    没有演示数据」，而不是「有数据但运行时不读」。
+ *
+ * ⚠️ `try/catch` 是给 Node 用的：`scripts/*.mjs` 里 `import.meta.env` 不存在，
+ *    访问 `.DEV` 会抛 TypeError。测试脚本按「开发构建」处理（除非显式设了
+ *    `NODE_ENV=production`），否则演示数据相关断言没有数据可测。
+ */
+const DEMO_ENABLED = (() => {
+  try {
+    return Boolean(import.meta.env.DEV)
+  } catch (e) {
+    return typeof process === 'undefined' || process.env?.NODE_ENV !== 'production'
+  }
+})()
+
+/** 播种档位。`base` = 只播基础设施，`full` = 基础设施 + 演示账单 */
+export const SEED_MODE = {
+  BASE: 'base',
+  FULL: 'full'
+}
 
 export const LEDGER_ID = 'ledger_default'
 
@@ -217,8 +261,30 @@ export const SEED_BILL_NOTES = (() => {
   return map
 })()
 
-export function buildSeed() {
-  const ts = Date.now()
+/**
+ * 基础设施种子：账本 + 分类。
+ *
+ * **每一个分区都要播它**，否则新用户打开 App 看到的是「没有账本 + 空宫格」，
+ * 连一笔账都记不了（`ledgerStore.currentId` 也依赖 `ledger_default` 存在）。
+ *
+ * @param {number} [ts] 时间戳（createdAt / updatedAt 用）
+ * @param {{ categoryUpdatedAt?: number|null }} [options]
+ *   `categoryUpdatedAt` —— 分类专用时间戳，不传则用 `ts`。
+ *   ⚠️ **登录后的账号分区必须传 `0`**：登录时本地会先播一份默认分类，随后
+ *   全量回拉云端。若这份默认分类带着「刚刚生成」的新时间戳，合并裁决
+ *   （新者胜）会让它**盖掉用户在云端改过的分类名/图标**。
+ *   置 0 的语义是「这是默认值，优先级最低」：云端有同名 id 的，云端赢；
+ *   云端没有（全新账号），这份默认分类被推上去，换设备登录也带得走。
+ * @returns {{ ledgers: Array, categories: Array }}
+ */
+export function buildBase(ts = Date.now(), { categoryUpdatedAt = null } = {}) {
+  // ⚠️ 不能用 `Number(categoryUpdatedAt)` 直接判：`Number(null)` 是 0，
+  //    会把「没传」误判成「显式传了 0」。null/undefined 都表示「用 ts」。
+  const catTs =
+    categoryUpdatedAt === null || categoryUpdatedAt === undefined
+      ? ts
+      : Number(categoryUpdatedAt) || 0
+
   const ledger = {
     id: LEDGER_ID,
     name: '默认账本',
@@ -239,7 +305,7 @@ export function buildSeed() {
         ledgerId: LEDGER_ID,
         order: index,
         createdAt: ts,
-        updatedAt: ts,
+        updatedAt: catTs,
         deleted: 0
       })
       ;(node.subs || []).forEach((sub, subIndex) => {
@@ -252,7 +318,7 @@ export function buildSeed() {
           ledgerId: LEDGER_ID,
           order: subIndex,
           createdAt: ts,
-          updatedAt: ts,
+          updatedAt: catTs,
           deleted: 0
         })
       })
@@ -261,7 +327,20 @@ export function buildSeed() {
   pushTree(CATEGORY_TREE, 'expense')
   pushTree(INCOME_TREE, 'income')
 
-  const mainOf = (subKey) => SUB_ID(subKey).replace('sub_', 'cat_').split('-')[0]
+  return { ledgers: [ledger], categories }
+}
+
+/**
+ * 演示账单种子：本月支出（精确到 ¥8720.72）+ 补充收入与往月流水。
+ *
+ * ⚠️ **只在开发构建下返回数据，生产构建返回 `[]`** —— 见 `DEMO_ENABLED`。
+ *    它是「某个人编出来的账」，不该出现在真账号里。
+ *
+ * @param {number} [ts] 时间戳
+ * @returns {Array} 账单数组（含差额补齐那笔与补充账单）
+ */
+export function buildDemoBills(ts = Date.now()) {
+  if (!DEMO_ENABLED) return []
 
   const bills = BILL_TEMPLATES.map((tpl, index) => {
     const date = toDateKey(addDays(new Date(), -tpl.offset))
@@ -311,11 +390,29 @@ export function buildSeed() {
   // 补充账单放在差额补齐之后，保证「本月支出 = 8720.72」的等式不受收入影响
   bills.push(...buildExtraBills(ts))
 
+  return bills
+}
+
+/**
+ * 组合入口：按 `mode` 播种。
+ *
+ * @param {number} [ts]
+ * @param {{ mode?: 'base'|'full', categoryUpdatedAt?: number|null }} [options]
+ * @returns {{ ledgers: Array, categories: Array, bills: Array, meta: object }}
+ *   `meta` 的演示数据迁移标记**只在真播了账单时**才带上 —— 没播就没得迁移，
+ *   带上会让 `migrateSeedData` 误以为「已经补过了」。
+ */
+export function buildSeed(ts = Date.now(), { mode = SEED_MODE.FULL, categoryUpdatedAt = null } = {}) {
+  const { ledgers, categories } = buildBase(ts, { categoryUpdatedAt })
+  const bills = mode === SEED_MODE.FULL ? buildDemoBills(ts) : []
+
   return {
-    ledgers: [ledger],
+    ledgers,
     categories,
     bills,
     // 迁移标记：本次播种已带备注、已带补充账单，适配器无需再回填
-    meta: { seedNotes: SEED_NOTES_VERSION, seedExtra: SEED_EXTRA_VERSION }
+    meta: bills.length
+      ? { seedNotes: SEED_NOTES_VERSION, seedExtra: SEED_EXTRA_VERSION }
+      : {}
   }
 }

@@ -4,9 +4,12 @@ import { useRouter } from 'vue-router'
 import { useCategoryStore } from '@/stores/category.js'
 import { useBillStore } from '@/stores/bill.js'
 import { useAccountStore, ACCOUNT_PHASE } from '@/stores/account.js'
-import { db, DATA_SOURCE, cloud, syncEngine, ensureCloudFirstBind } from '@/api'
+import { db, DATA_SOURCE, cloud, syncEngine } from '@/api'
+import { IS_DEV } from '@/config/env.js'
 import { useToast } from '@/composables/useToast.js'
 import { clearRecordDraft } from '@/composables/useRecordDraft.js'
+import { openLoginSheet } from '@/composables/useLoginSheet.js'
+import { requireLogin } from '@/composables/useLoginGate.js'
 import AppHeader from '@/components/AppHeader.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 import TabBar from '@/components/TabBar.vue'
@@ -38,11 +41,18 @@ const storageLabel = computed(() => {
 })
 const cacheLabel = DATA_SOURCE === 'idb' ? '已启用' : '未启用（仍是内存）'
 
-/** 云端那一行：没接入就说清楚，接入了就说当前状态 */
+/**
+ * 云端那一行。
+ *
+ * ⚠️ 「未登录」要排在最前面（S7-3）：引擎在未登录时**压根不启动**，所以
+ *    `syncState` 长期停在 `idle`，若按状态机往下判会显示成「已同步」——
+ *    那是在骗人：根本没同步过。未登录就是未登录，直说。
+ */
 const cloudLabel = computed(() => {
   if (!cloud) return '未配置（纯本地记账）'
+  if (!account.signedIn) return '未登录，登录后自动同步'
   if (syncState.value === 'syncing') return '同步中…'
-  if (syncState.value === 'error') return '同步失败，稍后自动重试'
+  if (syncState.value === 'error') return syncEngine.lastError?.label || '同步失败，稍后自动重试'
   if (syncState.value === 'offline') return '离线，联网后自动补推'
   return pending.value ? `待推 ${pending.value} 条` : '已同步'
 })
@@ -50,145 +60,38 @@ const cloudLabel = computed(() => {
 /**
  * 个人卡片那行说明。
  *
- * ⚠️ 匿名身份必须**明确写出风险**，但风险只有一条：**清除浏览器数据就找不回**
- *    （登录态在 localStorage）。别写成「退出登录就失联」—— 匿名根本没有退出入口，
- *    而且实测（2026-10-01）匿名登录态与设备绑定，`signOut()` 之后同一个 uid 会原样
- *    回来（见 account store 的 `signOut`）。这是 S5 做「转正」的全部理由，得让用户看见。
+ * ⚠️ S7 去掉了匿名身份，这里只剩两句：**已登录**（数据跟着手机号走）与
+ *    **未登录**（数据只在本机）。别再写「匿名身份清浏览器即失效」——
+ *    那个身份已经不存在了，现在「未登录」本身就把风险说清楚了。
  */
 const profileSub = computed(() => {
   if (!cloud) return '数据仅保存在本机 · 未配置云端'
   if (!account.ready) return '本地优先 · 正在确认账号…'
-  if (account.phase === ACCOUNT_PHASE.ANONYMOUS) return '本地优先 · 匿名身份，清浏览器即失效'
-  if (account.phase === ACCOUNT_PHASE.FORMAL) return '本地优先 · 已绑定手机号，换设备可找回'
+  if (account.phase === ACCOUNT_PHASE.FORMAL) return '本地优先 · 已登录，换设备可找回'
   return '本地优先 · 未登录，数据只在本机'
 })
 
 const avatarText = computed(() => (account.phase === ACCOUNT_PHASE.FORMAL ? '我' : '默'))
 
-/* ---------------- 登录弹层 ---------------- */
-
-const sheetOpen = ref(false)
-/** 弹层模式：login（换账号登录）| upgrade（匿名转正） */
-const sheetMode = ref('login')
-const formPhone = ref('')
-const formCode = ref('')
-const codeSent = ref(false)
-const countdown = ref(0)
 /**
- * 发码返回的 `{ verification_id, is_user }`。
- * ⚠️ 登录时必须带回去 —— 它是服务端用来配对「这条验证码属于哪次请求」的凭据，
- *    丢了 `signInWithSms` 内部的 verify() 会因 verification_id 为空而失败。
- */
-const verificationInfo = ref(null)
-let countdownTimer = null
-
-/**
- * 退出登录确认框（S5-4）。
+ * 头像右侧的标题。
  *
- * ⚠️ 只有正式账号有退出入口（模板里是 `phase === 'formal'`），所以文案是**定值**，
- *    不为「匿名也能退出」预留分支 —— 实测匿名登录态与设备绑定：`signOut()` 之后
- *    随便一次数据访问都会把**同一个 uid** 要回来，退出对匿名身份没有实际效果，
- *    自然也不存在「退出即失联」。匿名真正的风险是清掉浏览器数据（见 `profileSub`）。
+ * ⚠️ 不能写死「本地用户」：S7 之前只有匿名一种身份，写死看不出来；
+ *    现在登录态下它旁边就是「已登录」，还写「本地用户」就自相矛盾了。
+ *    具体手机号由下面账号卡的 `account.label` 承担，这里只给一个身份层级词。
  */
+const profileName = computed(() => (account.phase === ACCOUNT_PHASE.FORMAL ? '我的账号' : '本地用户'))
+
+/** 退出登录确认框（S5-4）：本地副本会被清掉（云端保留完整一份），先确认 */
 const signOutOpen = ref(false)
 const signOutTitle = '退出登录'
 const signOutMessage = '退出后会清空本机的账目数据（云端已保存完整副本），下次用手机号登录即可恢复。'
 
-const sheetTitle = computed(() =>
-  sheetMode.value === 'upgrade' ? '绑定手机号' : '手机号登录'
-)
-
-const sheetHint = computed(() =>
-  sheetMode.value === 'upgrade'
-    ? '绑定后当前账号与数据原地保留，换设备用手机号即可找回。'
-    : '登录会切换到该手机号名下的数据；本机当前未登录的数据仍留在原分区。'
-)
-
-const canSubmit = computed(
-  () => /^1[3-9]\d{9}$/.test(formPhone.value) && formCode.value.length >= 4 && !account.busy
-)
-
-function openSheet(mode) {
-  if (!cloud) {
-    toast.show('未配置云端（见 .env.local），无法登录')
-    return
-  }
-  sheetMode.value = mode
-  formPhone.value = mode === 'upgrade' ? account.phone || '' : ''
-  formCode.value = ''
-  codeSent.value = false
-  sheetOpen.value = true
-}
-
-function closeSheet() {
-  sheetOpen.value = false
-  stopCountdown()
-  account.error = null
-}
-
-function stopCountdown() {
-  if (countdownTimer) {
-    clearInterval(countdownTimer)
-    countdownTimer = null
-  }
-  countdown.value = 0
-}
-
-/**
- * 发验证码。两种模式走的是**两条完全不同的路**（混用必失败，踩过）：
- * - 登录模式：getVerification 发码 → verificationInfo 留给 signInWithSms 配对。
- * - 转正模式：短信由 signUp 自己发（verifyOtp 与它配对），所以这里调的是
- *   `account.prepareUpgrade`。**不要**在这里再调一次 sendSmsCode ——
- *   同号一分钟连发两条会撞频控，而且用户输入的第一条码与 verifyOtp 对不上。
- */
-async function sendCode() {
-  if (!/^1[3-9]\d{9}$/.test(formPhone.value)) {
-    toast.show('请输入正确的手机号')
-    return
-  }
-  try {
-    if (sheetMode.value === 'upgrade') {
-      await account.prepareUpgrade(formPhone.value)
-    } else {
-      const res = await account.sendCode(formPhone.value)
-      verificationInfo.value = res?.verificationInfo || null
-    }
-    codeSent.value = true
-    countdown.value = 60
-    stopCountdown()
-    countdownTimer = setInterval(() => {
-      countdown.value -= 1
-      if (countdown.value <= 0) stopCountdown()
-    }, 1000)
-    toast.success('验证码已发送')
-  } catch (e) {
-    toast.show(`发送失败：${e?.message || e}`)
-  }
-}
-
-async function submit() {
-  if (!canSubmit.value) return
-  try {
-    if (sheetMode.value === 'upgrade') {
-      await account.upgradeWithPhone({ phone: formPhone.value, code: formCode.value })
-      toast.success('已绑定手机号，数据完好')
-    } else {
-      await account.signInWithPhone({
-        phone: formPhone.value,
-        code: formCode.value,
-        verificationInfo: verificationInfo.value
-      })
-      toast.success('登录成功')
-    }
-    closeSheet()
-    pending.value = await db.sync.pendingCount()
-  } catch (e) {
-    toast.show(`${sheetMode.value === 'upgrade' ? '绑定' : '登录'}失败：${e?.message || e}`)
-  }
+function openLogin() {
+  openLoginSheet({ reason: '登录后可在多台设备之间同步账目。' })
 }
 
 function handleSignOut() {
-  // 本地副本会被清掉（云端保留完整一份，登回来即可），不可逆，先确认（S5-4）
   signOutOpen.value = true
 }
 
@@ -203,43 +106,17 @@ async function doSignOut() {
   }
 }
 
-/* ---------------- 首次绑定裁决（S5-7） ---------------- */
-
-/**
- * 首绑裁决的文案。云端已有数据时，本机这份不再被无脑覆盖上去，先问用户。
- * 条数来自 store（`pendingFirstBind.localCount`，本机三个集合里的文档数）。
- */
-const firstBindMessage = computed(() => {
-  const n = account.pendingFirstBind?.localCount ?? 0
-  return `该账号云端已经有数据。本机这份数据共 ${n} 条，要把它也同步到云端吗？选择「保留云端」将舍弃本机数据（云端数据不受影响）。`
-})
-
-async function decideFirstBind(choice) {
-  try {
-    const r = await account.resolveFirstBind(choice)
-    await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
-    pending.value = await db.sync.pendingCount()
-    if (choice === 'keep-cloud') toast.success('已保留云端数据，本机数据已舍弃')
-    else toast.success(`已同步本机数据（${r?.queued || 0} 条入队）`)
-  } catch (e) {
-    toast.show(`处理失败：${e?.message || e}`)
-  }
-}
-
 onMounted(async () => {
   await account.bootstrap()
   await db.ready?.()
   await Promise.all([categoryStore.ensureLoaded(), billStore.ensureLoaded()])
-  // 补一次首绑裁决判定：启动阶段（main.js）那次不负责弹框，
-  // 这里发现「云端已有数据且本机还没裁决过」就把弹框拉起来
-  await account.checkFirstBindDecision().catch(() => {})
   // 队列方法已改为异步，而且「全貌」（状态 / 待推数 / 上次同步时间）只有引擎知道，
   // 所以这里订阅引擎，而不是直接问 outbox。订阅时会立刻回调一次当前状态。
   offSync = syncEngine.onStateChange((s) => {
     syncState.value = s.state
     pending.value = s.pendingCount
   })
-  // 登录态变化时同步刷新 store（账号可能在别处被改，比如引擎自己重新登录）
+  // 登录态变化时同步刷新 store（账号可能在别处被改，比如登录弹层里刚登录完）
   if (cloud?.onAuthChange) {
     offAuth = cloud.onAuthChange(() => {
       account.refreshIdentity()
@@ -253,11 +130,11 @@ onUnmounted(() => {
   offSync = null
   offAuth?.()
   offAuth = null
-  stopCountdown()
 })
 
 async function handleEntry(entry) {
   if (entry.to) {
+    // 写操作入口（分类管理）：由路由守卫统一拦未登录，这里不用重复判断
     router.push(entry.to)
     return
   }
@@ -268,6 +145,10 @@ async function handleEntry(entry) {
   if (entry.label === '云端同步') {
     if (!cloud) {
       toast.show(`待推 ${pending.value} 条，队列已就绪；但没配云端（见 .env.local）`)
+      return
+    }
+    if (!account.signedIn) {
+      openLoginSheet({ reason: '登录后才会把本机数据同步到云端。' })
       return
     }
     await syncNow()
@@ -290,12 +171,21 @@ async function syncNow() {
   return r
 }
 
+/**
+ * 重置演示数据（开发构建专用）。
+ *
+ * ⚠️ 它会**连云端一起清**，所以要过登录门禁 —— 未登录时云端没有「我的数据」
+ *    可清，点了只会白等一轮。生产构建里这个按钮不出现（`v-if="IS_DEV"`）：
+ *    生产环境本来就不播演示数据，没有可重置的东西。
+ *
+ * 顺序不能反：
+ *   ① 先把本地清掉、重新播种（会清空 outbox、水位线与入队标记）
+ *   ② 再把云端清掉 —— 不然后面同步会把刚清掉的旧数据原样拉回来，
+ *      看起来就像「重置按钮没生效」
+ *   ③ 最后重新入队 + 同步，把新的演示数据送上去
+ */
 async function resetDemo() {
-  // 顺序不能反：
-  //   ① 先把本地清掉、重新播种（这一步会清空 outbox、水位线与首次绑定标记）
-  //   ② 再把云端清掉 —— 不然后面同步会把刚清掉的旧数据原样拉回来，
-  //      看起来就像「重置按钮没生效」
-  //   ③ 最后重新绑定 + 同步，把新的演示数据送上去
+  if (!requireLogin('重置演示数据')) return
   await db.reset()
   if (cloud?.wipe) {
     try {
@@ -308,10 +198,8 @@ async function resetDemo() {
   billStore.resetPeriod()
   await Promise.all([categoryStore.ensureLoaded(true), billStore.ensureLoaded()])
   await Promise.all([billStore.refresh(), billStore.refreshPeriod()])
-  if (cloud) {
-    await ensureCloudFirstBind().catch(() => {})
-    await syncEngine.sync({ reason: 'manual', manual: true }).catch(() => {})
-  }
+  await db.enqueueAll?.().catch(() => 0)
+  if (cloud) await syncEngine.sync({ reason: 'manual', manual: true }).catch(() => {})
   pending.value = await db.sync.pendingCount()
   toast.success('演示数据已重置')
 }
@@ -325,7 +213,7 @@ async function resetDemo() {
       <section class="card profile">
         <span class="avatar">{{ avatarText }}</span>
         <div class="profile-info">
-          <span class="name">本地用户</span>
+          <span class="name">{{ profileName }}</span>
           <span class="sub">{{ profileSub }}</span>
         </div>
       </section>
@@ -333,40 +221,35 @@ async function resetDemo() {
       <!-- 账号卡片：只在配了云端时出现（没云端就没有账号概念） -->
       <section v-if="cloud" class="card account">
         <header class="account-head">
-          <span class="account-label">{{ account.label }}</span>
-          <span v-if="account.phase === 'anonymous'" class="pill warn">未绑定</span>
-          <span v-else-if="account.phase === 'formal'" class="pill ok">已绑定</span>
+          <!--
+            ⚠️ 未登录时**不能**直接用 `account.label`：它和右边的 pill 都是「未登录」，
+               会让同一行相邻出现两个一模一样的词。这里换成「本机数据」——
+               它说的是数据归属（与下方 hint 呼应），和 pill 的登录状态是两个维度。
+          -->
+          <span class="account-label">{{ account.signedIn ? account.label : '本机数据' }}</span>
+          <span v-if="account.signedIn" class="pill ok">已登录</span>
+          <span v-else class="pill warn">未登录</span>
         </header>
         <p class="account-hint">
-          <template v-if="account.phase === 'anonymous'">
-            匿名身份只存在于这台浏览器，清除数据或换设备后将无法找回这些账目。
+          <template v-if="account.signedIn">
+            数据与手机号绑定，换设备登录即可继续记账；未同步的改动会在恢复网络后自动补推。
           </template>
-          <template v-else-if="account.phase === 'formal'">
-            数据与手机号绑定，换设备登录即可继续记账。
+          <template v-else>
+            未登录时数据只保存在本机（清除浏览器数据会丢失）。登录后可同步到云端，多台设备共用一套账。
           </template>
-          <template v-else>登录后可在多台设备之间同步账目。</template>
         </p>
         <div class="actions">
           <button
-            v-if="account.canUpgrade"
+            v-if="!account.signedIn"
             class="primary"
             type="button"
             :disabled="account.busy"
-            @click="openSheet('upgrade')"
-          >
-            绑定手机号
-          </button>
-          <button
-            v-else-if="account.phase !== 'formal'"
-            class="primary"
-            type="button"
-            :disabled="account.busy"
-            @click="openSheet('login')"
+            @click="openLogin"
           >
             登录 / 注册
           </button>
           <button
-            v-if="account.phase === 'formal'"
+            v-else
             class="ghost"
             type="button"
             :disabled="account.busy"
@@ -408,69 +291,15 @@ async function resetDemo() {
         </ul>
         <div class="actions">
           <button class="ghost" type="button" @click="syncNow">立即同步</button>
-          <button class="ghost" type="button" @click="resetDemo">重置演示数据</button>
+          <!-- 生产构建不显示：那里没有演示数据可重置，而且它会清云端 -->
+          <button v-if="IS_DEV" class="ghost" type="button" @click="resetDemo">重置演示数据</button>
         </div>
       </section>
     </div>
 
     <TabBar />
 
-    <!-- 手机号登录 / 绑定弹层 -->
-    <Teleport to="body">
-      <div v-if="sheetOpen" class="sheet-mask" @click.self="closeSheet">
-        <div class="sheet">
-          <header class="sheet-head">
-            <span class="sheet-title">{{ sheetTitle }}</span>
-            <button class="sheet-close" type="button" @click="closeSheet">
-              <IconBase name="close" :size="17" />
-            </button>
-          </header>
-          <p class="sheet-desc">{{ sheetHint }}</p>
-
-          <label class="field">
-            <span class="field-label">手机号</span>
-            <input
-              v-model.trim="formPhone"
-              class="field-input"
-              type="tel"
-              inputmode="numeric"
-              maxlength="11"
-              placeholder="请输入 11 位手机号"
-            />
-          </label>
-
-          <label class="field">
-            <span class="field-label">验证码</span>
-            <span class="field-code">
-              <input
-                v-model.trim="formCode"
-                class="field-input"
-                type="text"
-                inputmode="numeric"
-                maxlength="6"
-                placeholder="6 位验证码"
-              />
-              <button
-                class="code-btn"
-                type="button"
-                :disabled="countdown > 0 || !/^1[3-9]\d{9}$/.test(formPhone)"
-                @click="sendCode"
-              >
-                {{ countdown > 0 ? `${countdown}s` : codeSent ? '重新发送' : '获取验证码' }}
-              </button>
-            </span>
-          </label>
-
-          <p v-if="account.error" class="sheet-error">{{ account.error }}</p>
-
-          <button class="submit" type="button" :disabled="!canSubmit" @click="submit">
-            {{ account.busy ? '处理中…' : sheetMode === 'upgrade' ? '确认绑定' : '登录' }}
-          </button>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- 退出登录确认（S5-4）：只有正式账号有这个入口，本地副本会被清掉 -->
+    <!-- 退出登录确认（S5-4）：本地副本会被清掉 -->
     <ConfirmDialog
       v-model="signOutOpen"
       :title="signOutTitle"
@@ -478,22 +307,6 @@ async function resetDemo() {
       confirm-text="退出"
       danger
       @confirm="doSignOut"
-    />
-
-    <!--
-      首绑裁决（S5-7）：云端已有数据时才出现，由 store 的 pendingFirstBind 驱动。
-      刻意不用 v-model —— 关闭由「裁决完成」决定，用户在选完之前关不掉；
-      遮罩也不响应（maskClosable=false），避免手滑替用户做选择。
-    -->
-    <ConfirmDialog
-      :model-value="Boolean(account.pendingFirstBind)"
-      :mask-closable="false"
-      title="云端已有数据"
-      :message="firstBindMessage"
-      confirm-text="同步本地"
-      cancel-text="保留云端"
-      @confirm="decideFirstBind('push-local')"
-      @cancel="decideFirstBind('keep-cloud')"
     />
   </div>
 </template>
@@ -591,9 +404,7 @@ async function resetDemo() {
   font-weight: 500;
 }
 
-.primary:disabled,
-.submit:disabled,
-.code-btn:disabled {
+.primary:disabled {
   opacity: 0.45;
 }
 
@@ -705,109 +516,5 @@ async function resetDemo() {
   background: var(--surface-3);
   color: var(--ink-2);
   font-size: 14px;
-}
-
-/* ---- 登录 / 绑定弹层 ---- */
-.sheet-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.sheet {
-  width: min(var(--frame-w), 100%);
-  padding: 18px 20px calc(20px + var(--safe-b));
-  border-radius: 18px 18px 0 0;
-  background: var(--surface-raised, #fff);
-}
-
-.sheet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.sheet-title {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.sheet-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  color: var(--ink-3);
-}
-
-.sheet-desc {
-  margin-top: 6px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--ink-3);
-}
-
-.field {
-  display: block;
-  margin-top: 14px;
-}
-
-.field-label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-
-.field-input {
-  width: 100%;
-  height: 44px;
-  padding: 0 14px;
-  border-radius: var(--r-md);
-  background: var(--surface-3);
-  font-size: 15px;
-  color: var(--ink);
-}
-
-.field-code {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.field-code .field-input {
-  flex: 1;
-}
-
-.code-btn {
-  flex: none;
-  height: 44px;
-  padding: 0 14px;
-  border-radius: var(--r-md);
-  background: var(--brand-soft);
-  color: var(--brand-ink);
-  font-size: 13px;
-}
-
-.sheet-error {
-  margin-top: 10px;
-  font-size: 12.5px;
-  color: #d94a3d;
-}
-
-.submit {
-  width: 100%;
-  height: 46px;
-  margin-top: 18px;
-  border-radius: var(--r-pill);
-  background: var(--brand);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 500;
 }
 </style>

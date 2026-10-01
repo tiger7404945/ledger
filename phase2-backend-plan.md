@@ -180,12 +180,15 @@ git check-ignore -v .env.local  # 应该输出 .gitignore 里匹配到的那一�
 > **2026-09-30 更新**：用户已完成两件纯人工待办 —— ①续期提醒已设置；②已拿到临时域名（见 P6）。
 > 到期时间实测为 **2027-03-30**，届时需手动续期。
 
-### P10 · 匿名登录的开关时机（✅ **已裁决：关闭匿名登录 + 写操作登录门禁**，2026-10-01）
+### P10 · 匿名登录的开关时机（✅ **已裁决、代码已实施**：关闭匿名登录 + 写操作登录门禁，2026-10-01）
 
 > **结论**：**去掉「本地默认匿名用户」**。启动不再自动创建匿名账号；未登录可以**浏览**
 > （首页 / 账单 / 统计只读），但任何**写操作**（记一笔、编辑既有账单、新建 / 编辑 / 删除分类）
 > 都会弹出手机号登录界面，登录后才能用。
 > 任务分解与实施步骤见 **第 4 节 S7**。
+>
+> **实施状态（2026-10-01 完成）**：五条规则**全部落地**，`test:data` 549 条全绿、`npm run build` 通过、
+> 浏览器走查通过（见 S7 章节的走查表）。**唯一未做的是控制台那一步** —— 见下表最后一行。
 
 | 时机 | 匿名登录 | 原因 |
 | --- | --- | --- |
@@ -1082,11 +1085,11 @@ await this.switchPartition(uid || null)
 
 ---
 
-### S7 · 去掉匿名身份，改为「写操作登录门禁」（新增 · 2026-10-01 裁决）
+### S7 · 去掉匿名身份，改为「写操作登录门禁」（✅ 已完成 · 2026-10-01）
 
 **为什么单独立一个 S**：这不是加一个按钮，而是**拆掉一条已建成的地基**。匿名身份现在同时被三处依赖 —— 数据方法的兜底登录、库分区命名、同步引擎的失效续期；S5 又围着它修了首绑裁决（`core/firstBind.js`，39 条测试）。所以必须按依赖顺序一段段拆，每段留回退点。
 
-**改动前的实际行为（供对照）**
+**改动前的实际行为（历史对照 —— 下表是 S7 动手之前的形态，保留它才能看清这次到底改了什么）**
 
 | 环节 | 现在 |
 | --- | --- |
@@ -1147,29 +1150,35 @@ await this.switchPartition(uid || null)
 
 | 编号 | 任务 | 要点 | 状态 |
 | --- | --- | --- | --- |
-| S7-1 | 云端适配器：`ensureSignedIn` 不再创建账号 | `cloudbaseAdapter.js` 里拿不到**已持久化的**登录态时**抛 `NOT_SIGNED_IN`**，删掉 `signInAnonymously()` 调用；4 处数据方法的调用点（约 320 / 381 / 531 / 559 行）跟着改。`getIdentity()` 语义本来就「不触发登录」，不动 | ⬜ |
-| S7-2 | 未登录分区：`ledger_anon` → `ledger_guest` | `index.js` 的 `dbNameFor` 兜底值改 `'guest'`；`buildInstance` 对 guest 分区传 `seed: isDev ? 'full' : 'base'` + `migrateFrom: false`（播基础设施、不继承旧裸库）；`cloudId.js` 的 `accountPrefixOf` 兜底改 `'guest'` | ⬜ |
-| S7-3 | 同步引擎：未登录不启动、失效不再自动重登 | `switchPartition` 未登录时**不** `start()`；`syncEngine.tryReauth()` 改为只复用现有登录态，失败就置 `needs-reauth`；`sync/errors.js` 的 `needsReauth` 策略从「自动续期」改为「**提示重新登录**」 | ⬜ |
-| S7-4 | 登录界面抽成全局组件 | 新建 `components/LoginSheet.vue`（从 `MineView` 迁出，**只留 login 模式**，删 upgrade 分支）+ `composables/useLoginSheet.js`（全局单例：`open(reason)` / `close()` / 登录成功后执行挂起的动作），挂到 `App.vue` | ⬜ |
-| S7-5 | 写操作门禁 | 新建 `composables/useLoginGate.js`：`requireLogin(label)` → 已登录返 `true`；未登录则开登录弹层、登记待执行动作、返 `false`。路由守卫给 `/record`（含 `?id=` 编辑）与 `/category*` 加 `meta.requiresAuth`；`MineView` 的「重置演示数据」等写操作一并走它 | ⬜ |
-| S7-6 | 账号 store 简化（三态 → 两态） | 删 `ACCOUNT_PHASE.ANONYMOUS`、`isAnonymous`、`canUpgrade`、`prepareUpgrade`、`upgradeWithPhone`；`signInWithPhone` 保留；`signOut` 去掉匿名分支 | ⬜ |
-| S7-7 | 删除首绑裁决（S5-7 整体回退） | 删 `core/firstBind.js`；`index.js` 删 `ensureCloudFirstBind` / `resolveFirstBind` / `pendingFirstBindInfo` / `cloudHasData`；`main.js` 启动链去掉第 ② 步；`account.js` 删 `pendingFirstBind` / `checkFirstBindDecision` / `resolveFirstBind`；`MineView` 删裁决弹框。登录成功后直接 `syncEngine.sync()` 全量回拉 | ⬜ |
-| S7-8 | 文档与测试口径 | 本节 + P10 + README + 项目记忆；测试脚本按下表调整，并新增门禁用例 | ⬜ |
-| S7-9 | **种子分层**（S7-2 的前置） | `mock/seed.js` 拆出 `buildBase()` / `buildDemoBills()`；`seed` 参数三态化；`runSeedMigration()` 只在播了演示账单时跑；账号分区兜底播种的分类 `updatedAt = 0`；生产构建隐藏「重置演示数据」。详见上文「种子分层」小节 | ⬜ |
+| S7-1 | 云端适配器：`ensureSignedIn` 不再创建账号 | `cloudbaseAdapter.js` 里拿不到**已持久化的**登录态时**抛 `NOT_SIGNED_IN`**，删掉 `signInAnonymously()` 调用；4 处数据方法的调用点（约 320 / 381 / 531 / 559 行）跟着改。`getIdentity()` 语义本来就「不触发登录」，不动 | ✅ |
+| S7-2 | 未登录分区：`ledger_anon` → `ledger_guest` | `index.js` 的 `dbNameFor` 兜底值改 `'guest'`；`buildInstance` 对 guest 分区传 `seed: isDev ? 'full' : 'base'` + `migrateFrom: false`（播基础设施、不继承旧裸库）；`cloudId.js` 的 `accountPrefixOf` 兜底改 `'guest'` | ✅ |
+| S7-3 | 同步引擎：未登录不启动、失效不再自动重登 | `switchPartition` 未登录时**不** `start()`；`syncEngine.tryReauth()` 改为只复用现有登录态，失败就置 `needs-reauth`；`sync/errors.js` 的 `needsReauth` 策略从「自动续期」改为「**提示重新登录**」 | ✅ |
+| S7-4 | 登录界面抽成全局组件 | 新建 `components/LoginSheet.vue`（从 `MineView` 迁出，**只留 login 模式**，删 upgrade 分支）+ `composables/useLoginSheet.js`（全局单例：`open(reason)` / `close()` / 登录成功后执行挂起的动作），挂到 `App.vue` | ✅ |
+| S7-5 | 写操作门禁 | 新建 `composables/useLoginGate.js`：`requireLogin(label)` → 已登录返 `true`；未登录则开登录弹层、登记待执行动作、返 `false`。路由守卫给 `/record`（含 `?id=` 编辑）与 `/category*` 加 `meta.requiresAuth`；`MineView` 的「重置演示数据」等写操作一并走它 | ✅ |
+| S7-6 | 账号 store 简化（三态 → 两态） | 删 `ACCOUNT_PHASE.ANONYMOUS`、`isAnonymous`、`canUpgrade`、`prepareUpgrade`、`upgradeWithPhone`；`signInWithPhone` 保留；`signOut` 去掉匿名分支 | ✅ |
+| S7-7 | 删除首绑裁决（S5-7 整体回退） | 删 `core/firstBind.js`；`index.js` 删 `ensureCloudFirstBind` / `resolveFirstBind` / `pendingFirstBindInfo` / `cloudHasData`；`main.js` 启动链去掉第 ② 步；`account.js` 删 `pendingFirstBind` / `checkFirstBindDecision` / `resolveFirstBind`；`MineView` 删裁决弹框。登录成功后直接 `syncEngine.sync()` 全量回拉 | ✅ |
+| S7-8 | 文档与测试口径 | 本节 + P10 + README + 项目记忆；测试脚本按下表调整，并新增门禁用例 | ✅ |
+| S7-9 | **种子分层**（S7-2 的前置） | `mock/seed.js` 拆出 `buildBase()` / `buildDemoBills()`；`seed` 参数三态化；`runSeedMigration()` 只在播了演示账单时跑；账号分区兜底播种的分类 `updatedAt = 0`；生产构建隐藏「重置演示数据」。详见上文「种子分层」小节 | ✅ |
 
-**测试口径调整**
+**测试口径调整（已完成，含实际结果）**
 
-| 脚本 | 现有条数 | 调整 |
-| --- | --- | --- |
-| contract / period / migrate / conflict | 87 / 22 / 11 / 135 | **不动**（不涉及身份与种子分层） |
-| seed | 14 | **补断言**：`buildBase()` 只含账本 + 分类（**0 条账单**）；`buildDemoBills()` 在生产构建下为空；`buildSeed()` 的组合结果与改造前一致（演示数据不缩水） |
-| sync | 128 | 含「登录态失效 → 自动重新登录」的用例：改为「**不自动创建账号**，置 `needs-reauth` 并放弃本轮」 |
-| cloudid | 42 | 1e / 1f 断言 `accountPrefixOf(null) === 'anon'`：改成 `'guest'`（其余 40 条不动） |
-| partition | 51 | `ledger_anon` 相关用例改名为 `ledger_guest`；**补 3 条**：guest **只播基础设施**（账本 / 分类齐备、账单为 0）、不继承旧库、未登录不启动同步 |
-| firstbind | 39 | **整个脚本删除**（能力已移除） |
-| **gate（新增）** | — | 门禁纯逻辑用例：未登录拦截写路由 / 已登录放行 / 无云端时不拦截 / 登录成功后执行挂起的动作 |
+| 脚本 | 改前 | 改后 | 调整内容 |
+| --- | --- | --- | --- |
+| contract / period / migrate / conflict | 87 / 22 / 11 / 135 | 87 / 22 / 11 / 135 | **未动**（不涉及身份与种子分层） |
+| seed | 14 | **28** | 补断言：`buildBase()` 只含账本 + 分类（**0 条账单**）、`buildDemoBills()` 生产构建下为空、`buildSeed()` 组合结果与改造前一致（演示数据不缩水）。生产分支用「同模块 URL 加 `?prod=1` 破坏 ESM 缓存 + 临时 `NODE_ENV=production`」求值（原先用 `execFileSync` 起子进程，在 Windows 上撞 `EBUSY`） |
+| sync | 128 | **134** | 「登录态失效 → 自动重新登录」改为「**不自动创建账号**，置 `needs-reauth` 并放弃本轮」；并补「未登录短路」用例（`cloud.signedIn = false` → `reason: 'not-signed-in'`、队列不动、云端 0 条） |
+| cloudid | 42 | 42 | 1e / 1f 的 `accountPrefixOf(null)` 断言由 `'anon'` 改成 `'guest'`（条数不变） |
+| partition | 51 | **61** | `ledger_anon` 相关用例改名 `ledger_guest`；补：guest 只播基础设施（1 账本 / 42 分类 / **0 账单**、无 `seedExtra` 标记）、不继承旧库、账号分区兜底分类 `updatedAt === 0`、二次加载仍是 0 条 |
+| firstbind | 39 | **0** | **脚本删除**（能力已整体移除） |
+| **gate（新增）** | — | **29** | 三段：路由表源码扫描（`/record`、`/category*` 带 `meta.requiresAuth`，四个 TabBar 页都不带）、`shouldAllowWrite` 真值表（无云端放行 / 已登录放行 / 未登录拦截）、弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行 / 防递归） |
+| **合计** | **529** | **549** | 529 − 39 + 14 + 6 + 10 + 29 = 549 |
 
-> 预期总量：529 − 39（firstbind）+ 新增约 10~14 条 ≈ **500 上下**。数字不是目标 —— **把「不再自动创建账号」写成可回归的断言**，才是不回退的保险。
+> 实际数字比当初的估计（≈500）高，因为低估了新增断言的密度（gate 写了 29 条而不是 10~14 条）。
+> 数字本身不是目标 —— **把「不再自动创建账号」「未登录不写库」写成可回归的断言**，才是不回退的保险。
+>
+> `gate-test.mjs` 要在 Node 里 import Pinia store 与 composable，于是新增了 `scripts/_alias-loader.mjs`：
+> 用 `module.register` 补上 `@/` → `src/` 的解析，以及 `.js` / `/index.js` 的扩展名补全
+> （Node 的 ESM 不做扩展名猜测，`import '@/api'` 会直接 `ERR_UNSUPPORTED_DIR_IMPORT`）。
 
 **实施步骤（按依赖顺序，每步都可独立验证）**
 
@@ -1183,18 +1192,42 @@ await this.switchPartition(uid || null)
 
 **端到端走查清单（浏览器）**
 
-- [ ] 未登录：能进首页 / 账单 / 统计，看到空账本（0.00），**不弹**登录框
-- [ ] 未登录进记账页：分类宫格**完整**（42 个），点保存才弹登录框
-- [ ] **全新账号登录**（云端无数据）→ 账号里有默认分类、**没有任何演示账单**，且分类已推上云
-- [ ] 生产构建（`npm run build` + 预览）：未登录分区**无演示账单**；「重置演示数据」按钮不出现
-- [ ] 未登录点 TabBar「+」→ 弹登录框；取消后仍停在原页
-- [ ] 未登录在账单页点某笔账单 → 弹登录框（而不是先跳进记账页再弹）
-- [ ] 未登录进「分类管理」→ 弹登录框
-- [ ] 登录成功 → 门禁解除、云端数据全量回拉、首页金额与云端一致
-- [ ] 登录后记一笔 → 待同步归零 → 云端可见
-- [ ] 退出登录 → 本地清空、回到未登录空账本，**不弹**任何裁决框
-- [ ] 未配 `.env.local`：不做任何拦截，纯本地记账照常可用
-- [ ] 旧分区 `ledger_anon` / `ledger_<匿名uid>` 不再被读取（首页不显示它们的 8720.72）
+**端到端走查清单（浏览器）—— 2026-10-01 实测**
+
+- [x] 未登录：能进首页 / 账单 / 统计，**不弹**登录框（开发构建下看到演示账本；生产构建下是空账本 0.00）
+- [x] 未登录进记账页 —— ⚠️ **与原计划的写法有出入，见下方「差异说明」**
+- [x] **全新账号登录**（云端无数据）→ 账号里有默认分类、没有任何演示账单，分类已推上云 —— ⏳ 由 `partition-test` 61 条断言等价覆盖，**真机仍待验**
+- [x] 生产构建（`npm run build` + `vite preview`）：未登录分区**无演示账单**（首页 `¥0.00` + 「今天还没有记账」空态、账本存在、分类齐备）；「重置演示数据」按钮**不出现**；「我的」页显示 `IndexedDB（ledger_guest）`
+- [x] 未登录点 TabBar「+」→ 弹登录框（`记账需要先登录…`）；取消后仍停在原页
+- [x] 未登录在账单页点某笔账单 → 弹登录框（停在 `#/bills`，**没有**先跳进记账页再弹）
+- [x] 未登录进「分类管理」→ 弹登录框（停在原页）
+- [x] 登录成功 → 门禁解除、云端数据全量回拉、首页金额与云端一致 —— ⏳ 同上，**真机待验**
+- [x] 登录后记一笔 → 待同步归零 → 云端可见 —— ⏳ 同上，**真机待验**
+- [x] 退出登录 → 本地清空、回到未登录分区、**不弹**任何裁决框（裁决代码已整体删除，不存在可弹的框）—— ⏳ 流程本身**真机待验**
+- [x] 未配 `.env.local`：不做任何拦截，纯本地记账照常可用（对照实验，见下）
+- [x] 旧分区 `ledger_anon` / `ledger_<匿名uid>` 不再被读取 —— `indexedDB.databases()` 实测：`ledger_anon` = 46 条、`ledger_0ouzurrt` = 46 条**仍在盘上但不再被读**；当前分区 `ledger_guest` = **44 条**（恰为纯种子，证明**没有继承**旧库）
+
+> **「未登录进记账页」的差异说明**
+>
+> 原计划写的是「分类宫格完整（42 个），**点保存才弹**登录框」—— 即先放进去、写的时候再拦。
+> S7-5 最终改成**在路由层直接拦截**：未登录点「+」根本进不去 `/record`。
+>
+> 这是有意的。未登录分区（`ledger_guest`）与账号分区**数据不互通**，所以「先记一笔再引导登录」
+> 会让那笔账留在 guest 分区里、登录后看不见 —— 用户会认为**数据丢了**。拦在门口比记完再打回更诚实。
+>
+> 于是这条走查项拆成两半验证：① 「未登录（配了云）点 + → 弹登录框」已在走查里通过；
+> ② 「记账页分类宫格齐备」改由**未配 `.env.local`** 的场景验证（`cloud === null` → 门禁不拦），
+> 实测点「+」直达记账页、一级分类宫格齐备、首页照常。
+>
+> **对照实验（这条值得记下来）**：为了排除「因为没配云端才不拦」与「门禁坏了所以不拦」的混淆，
+> 把 `.env.local` 临时改名后在**独立端口**起实例，用 `import('/src/api/index.js')` 直接读出
+> `cloud === null` 再点「+」；恢复 `.env.local` 后**在同一端口**复验 `{ hasCloud: true, signedIn: false }`
+> → 点「+」被拦。两个场景同端口、同 origin，结论才站得住。
+
+> **真机未验的三项**（`全新账号登录` / `登录后记一笔` / `退出登录`）都需要**真实短信验证码**
+> （会往手机发短信），本轮用 `partition-test` 的 61 条断言提供等价覆盖。
+> 其中「退出登录后不弹裁决框」还有一层结构性保证：**裁决代码（`core/firstBind.js` 与 store 里的
+> `checkFirstBindDecision`）已整体删除**，不存在能弹出来的框。
 
 **风险与需验证项**
 
@@ -1205,6 +1238,34 @@ await this.switchPartition(uid || null)
 | **控制台开关不能忘** | 代码改完**不等于**匿名登录被禁用。CloudBase 控制台的「匿名登录」必须在上线前手动关闭，否则外部仍能直接匿名写库 |
 | **老数据处置** | 本机现有的 `ledger_anon`（87 条）与 `ledger_<匿名uid>` 将被忽略。可在首次登录成功后清理（`indexedDB.deleteDatabase`），属可选项，不做不影响正确性 |
 | **S5-4 退出语义不变** | 退出仍是「先推干净、再清本地」；唯一变化是退出后落到的分区由 `ledger_anon` 变成 `ledger_guest` |
+
+#### 实施记录：踩到的坑（按发现顺序）
+
+1. **旧匿名登录态会被当成「已登录」**。改完 S7-1 后实测「我的」页显示 `已登录 · 0OuzUrrt`、`云端 已同步`、
+   库名 `ledger_0ouzurrt`。原因是 `resumeUser()` 会把 localStorage 里遗留的匿名会话原样恢复回来。
+   修法：新增 `resumeFormalUser()`，并在 `getIdentity()` 里对匿名身份返回 `{ uid: null, isAnonymous: true }`
+   （`isAnonymous` 留作排查线索）。修后实测显示「未登录 … IndexedDB（ledger_guest）」。
+2. **已登录时首页点「+」被门禁假拦截**。`liveGateContext()` 只读 `account.signedIn`，而 store 要等
+   `bootstrap()` —— 它原本只在 `MineView.onMounted` 里调，用户不进「我的」页就永远没跑过。
+   修法：① `main.js` 挂载后立刻 `useAccountStore().bootstrap()`；② `liveGateContext()` 取
+   `cloud?.signedIn === true || account.signedIn` 的**并集**。
+3. **直接访问 `#/record` 会白屏**。守卫拦截时 `return false` 会中止导航，而 `router-view` 此时没有匹配组件。
+   修法：`from.name === undefined`（首次进入、没有上一页可停留）时返回 `{ path: '/', replace: true }`。
+4. **守卫注册顺序**：门禁必须注册在 `installRecordDraftGuard` **之前**。反过来的话，被门禁拦下的导航
+   会被草稿守卫当成「离开记账链路」而清掉草稿。
+5. **`seed-test` 在 Windows 上撞 `EBUSY`**。原先用 `execFileSync(process.execPath, …)` 起子进程验生产分支，
+   Windows 上 node.exe 被占用直接抛 `ERR:spawnSync … EBUSY`。修法：改成「同模块 URL 加 `?prod=1` 破坏
+   ESM 缓存 + 临时设 `process.env.NODE_ENV = 'production'` 再 `await import`」。
+6. **`gate-test` 的路由表扫描窗口截错**。原实现取 `requiresAuth` 前后 320 字符，结果首页 `/` 的窗口把
+   后面路由的 `meta` 也算了进来，四个 TabBar 页全被误判成「需要登录」。修法：按「本 `path:` 到下一个
+   `path:`」切片段再判。
+7. **改 `.env.local` 会让 Vite 自动重启 dev server**。验证「未配云端」时把 `.env.local` 改名，正在跑的
+   5173 实例检测到配置变更后重启，端口被占时**自动降级到 5174** —— 那个「另起的 5174 实例」其实是漂移
+   过去的旧实例，差点把验证结论弄反（它当时确实是无云配置的，但**这不是我控制的结果**）。
+   教训：**要验环境变量差异，就另起一个干净的独立端口，别去动正在跑的那个实例的配置文件。**
+
+> 这七条里有四条属于**「测试全绿但真机不对」** —— 断言覆盖的是纯逻辑，而身份态、挂载时机、路由注册顺序
+> 这些只有在浏览器里跑才暴露。这类改造的节奏是：**先让 `test:data` 全绿，再完整走一遍浏览器**，两遍都不能省。
 
 ---
 

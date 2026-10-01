@@ -33,15 +33,9 @@ import { createMockAdapter } from './adapters/mockAdapter.js'
 import { createIdbAdapter } from './adapters/idbAdapter.js'
 import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
-import { accountPrefixOf } from './core/cloudId.js'
-import {
-  ensureFirstBind,
-  resolveFirstBind as resolveFirstBindChoice,
-  readPendingFirstBind,
-  cloudHasData
-} from './core/firstBind.js'
+import { GUEST_ACCOUNT_PREFIX, accountPrefixOf } from './core/cloudId.js'
 import { DB_NAME, DB_PARTITION_PREFIX, isPartitionedDbName, partitionedDbName } from './core/idb.js'
-import { cloudEnvId, isCloudConfigured } from '../config/env.js'
+import { cloudEnvId, isCloudConfigured, IS_DEV } from '../config/env.js'
 
 const ADAPTERS = {
   mock: createMockAdapter,
@@ -87,38 +81,66 @@ const bucketCache = new Map()
 /**
  * 由 uid 决定库名。
  *
- * 拿不到 uid 时用**未认证分区**（`ledger_anon`）而不是裸 `ledger`：
- *   裸库是 S5 之前所有数据的老家，继续往里写会让「老数据」与「新匿名数据」
- *   混在一起，日后无法区分该继承给谁。`ledger_anon` 是一个明确的、
- *   表示「还没身份」的分区。
+ * 拿不到 uid 时用**未登录分区**（`ledger_guest`）而不是裸 `ledger`：
+ *   裸库是 S5 之前所有数据的老家，继续往里写会让「老数据」与「未登录数据」
+ *   混在一起，日后无法区分该继承给谁。`ledger_guest` 是一个明确的、
+ *   表示「这台设备还没登录」的分区。
+ *
+ * ⚠️ S7-2 之前它叫 `ledger_anon`（匿名分区）。改名是**有意的**：匿名身份已经
+ *    不存在了，那个库不会再被读取（旧数据留在盘上，不做迁移）。
  */
 function dbNameFor(uid) {
   if (!PARTITION_DB_BY_ACCOUNT) return DB_NAME
-  return partitionedDbName(accountPrefixOf(uid) || 'anon')
+  return partitionedDbName(accountPrefixOf(uid) || GUEST_ACCOUNT_PREFIX)
 }
 
 /**
  * 造一套实例。[dbName 相同则复用缓存] —— 切回上一个账号时不必重建引擎。
  *
- * `migrateFrom`：分区库第一次进来时从旧裸库继承数据（见 core/idb.js）。
- * 只在「分区库 + 不是裸库本身」时传，避免自搬自。
+ * 两类分区在选项上**差别很大**，见下面逐项注释：
  *
- * `claimant`：本分区的认领标识（账号前缀）。裸库只会被**第一个**分区认领，
- * 之后再登录的别的账号不会继承到同一份数据 —— 防跨账号串号（见 core/idb.js）。
- * 未认证分区（`ledger_anon`）也带自己的认领标识：它同样是一个明确的身份。
+ * | | `ledger_guest`（未登录） | `ledger_<账号前缀>`（已登录） |
+ * | --- | --- | --- |
+ * | 播种 | 开发构建整套（含演示账单）/ 生产构建只播基础设施 | **只播基础设施** |
+ * | 分类时间戳 | 正常 | **0**（默认值，永远输给云端真实数据） |
+ * | 继承旧裸库 | **不继承** | 继承（且裸库只能被认领一次） |
  */
 function buildInstance(dbName) {
   if (bucketCache.has(dbName)) return bucketCache.get(dbName)
+
+  const partitioned = isPartitionedDbName(dbName)
+  const isGuest = dbName === partitionedDbName(GUEST_ACCOUNT_PREFIX)
 
   const options =
     DATA_SOURCE === 'mock'
       ? { latency: 24 }
       : {
           dbName,
-          // 分区库首次进入时继承旧裸库的数据——否则用户会以为账全丢了
-          migrateFrom: isPartitionedDbName(dbName) ? DB_NAME : false,
+          /**
+           * 播种档位（S7-9 三态：`'base'` / `'full'` / `false`）。
+           *
+           * - **未登录分区**：开发构建播整套（对着设计稿看页面方便），
+           *   生产构建只播基础设施（账本 + 分类齐备，金额 0.00）。
+           * - **账号分区**：只有基础设施，一条演示账单都没有 ——
+           *   新账号凭空多出 ¥8720.72 就是这条链污染上去的。
+           */
+          seed: isGuest ? (IS_DEV ? 'full' : 'base') : 'base',
+          /**
+           * 账号分区兜底播种的分类 `updatedAt = 0`：语义是「这是默认值，
+           * 优先级最低」。云端已有同名 id 的分类（用户改过名字/图标）时，
+           * 冲突裁决「新者胜」会让**云端赢**，本地默认值静默让位；
+           * 云端没有（全新账号）时，这份默认分类被推上去，换设备也带得走。
+           */
+          seedCategoryUpdatedAt: isGuest ? null : 0,
+          /**
+           * 继承旧裸库（S5-5）：**只有账号分区才认领**。
+           * 未登录分区传 false —— 它不是一个「账号」，没有资格把旧库据为己有
+           * （裸库只能被认领一次，被 guest 占了，用户第一次登录的那个账号
+           * 就再也继承不到旧数据）。
+           */
+          migrateFrom: partitioned && !isGuest ? DB_NAME : false,
           // 认领标识 = 库名去掉前缀，与库名一一对应
-          claimant: isPartitionedDbName(dbName) ? dbName.slice(DB_PARTITION_PREFIX.length) : ''
+          claimant: partitioned ? dbName.slice(DB_PARTITION_PREFIX.length) : ''
         }
 
   const db = ADAPTERS[DATA_SOURCE](options)
@@ -245,15 +267,16 @@ export function currentInstance() {
  * 初始化：确定「我是谁」→ 选库 → 建实例。
  *
  * 身份获取的优先级：
- *   1. 已经登录过的会话（`cloud.getIdentity()`，**不会**新建匿名账号）——
+ *   1. 已经登录过的会话（`cloud.getIdentity()`，**不会**新建任何账号）——
  *      这样「上次用手机号登录过」的用户一进来就落在自己那个分区，
- *      而不是先匿名建一个分区、再切走；
- *   2. 没有云端（未配置）→ 用未认证分区；
- *   3. 有云端但还没登录 → 先落到未认证分区；后续登录/转正时再 `rebuildForAccount`。
+ *      而不是先在别处建一个分区、再切走；
+ *   2. 没有云端（未配置）→ 用未登录分区（纯本地记账）；
+ *   3. 有云端但还没登录 → 落到未登录分区 `ledger_guest`；登录时再 `rebuildForAccount`。
  *
- * ⚠️ **刻意不在启动时调 `ensureSignedIn()`**（那会创建匿名账号）。
- *    启动即匿名的老行为在 S5 要改：先看有没有真身份。真正需要数据方法时
- *    适配器自己会 `ensureSignedIn` 兜底。
+ * ⚠️ **启动时绝不创建账号**。S7 去掉了匿名身份，`ensureSignedIn()` 也只会
+ *    「复用已存在的登录态」、拿不到就抛 `NOT_SIGNED_IN`。所以未登录就是
+ *    老老实实待在 `ledger_guest` 分区 —— 那里有账本和分类（能看能算），
+ *    只是不能写：写操作会被 UI 的登录门禁拦住（见 `composables/useLoginGate.js`）。
  */
 export async function initDataLayer() {
   if (current) return current
@@ -270,53 +293,34 @@ export async function initDataLayer() {
   return current
 }
 
-/* ---------------- 首次绑定（S5-7：先问用户，不再无脑本地优先） ---------------- */
+/* ---------------- 账号切换的收尾 ---------------- */
 
 /**
- * 首次绑定判定。**实现已搬到 `core/firstBind.js`**（纯逻辑 + 依赖注入，可在 Node 里测），
- * 这里只负责把「当前分区」的 db 与云端递进去。
+ * 把本分区**已有的本地文档**整体入队，等下一轮同步推上云（S7-7）。
  *
- * 返回值见 core/firstBind.js：
- *   - `{ ok:true, queued }`                                  已按本地优先入队
- *   - `{ ok:false, skipped:true, reason:'already-bound' | … }` 跳过
- *   - `{ ok:false, skipped:true, reason:'needs-decision', localCount }`
- *     —— **云端已有该账号的数据**，得先问用户「推本地」还是「留云端」。
- *     UI 拿到这个要**先别同步**，否则云端那份已经拉下来了，选择就名不副实。
+ * ## 为什么需要它（原本是首绑裁决里的一半）
  *
- * S3 时期这里是「本地优先」写死的，当时匿名身份下云端不可能有别人的数据；
- * 有了真账号之后云端**可能已经有数据**（换设备登录 / 重装后重绑），
- * 无脑本地优先会污染或覆盖人家的账，所以改成先裁决。
+ * 登录之后的账号分区里，本地会先播一份**基础设施**
+ * （账本 + 默认分类，见 S7-9）。那些文档是适配器直接写进库的，
+ * **没有经过写路径**，所以不在 outbox 里。不把它们入队，一个全新账号
+ * 的默认分类就**永远上不了云** —— 「换设备用手机号登录，分类还是齐的」
+ * 这件事就不成立。
+ *
+ * S5-7 时期这件事由首绑裁决的 `push-local` 分支顺带做了；
+ * S7 删掉裁决之后（匿名身份没了，云端不可能有「别人的」数据要防），
+ * 只留下这个动作本身。
+ *
+ * ⚠️ **幂等由适配器保证**（每个分区只做一次，靠 meta 标记）：
+ *    否则每次登录都把几百条文档重新入队，同步会白跑
+ *    一堆注定被拒的推送。
+ *
+ * @returns {Promise<number>} 本次入队的文档条数（已做过则返回 0）
  */
-export async function ensureCloudFirstBind() {
-  if (!cloud) return { ok: false, skipped: true, reason: 'no-cloud' }
+export async function enqueueLocalForCloud() {
+  if (!cloud) return 0
   const inst = current || (await initDataLayer())
-  return ensureFirstBind({ db: inst.db, cloud })
-}
-
-/**
- * 执行首绑裁决，并立刻同步一次（两条路都得同步才有意义）：
- *   - `'push-local'` → 本地已整体入队，同步把改动推上去；
- *   - `'keep-cloud'` → 本地已清空 + 水位已清，同步全量回拉云端数据。
- */
-export async function resolveFirstBind(choice) {
-  const inst = current || (await initDataLayer())
-  const res = await resolveFirstBindChoice({ choice, db: inst.db })
-  const sync = await syncEngine
-    .sync({
-      reason: choice === 'keep-cloud' ? 'first-bind-cloud' : 'first-bind-local',
-      manual: true
-    })
-    .catch(() => null)
-  return { ...res, sync }
-}
-
-/** 探测云端当前账号是否已有数据（调试/排查用；正式判定在 core/firstBind.js 里） */
-export { cloudHasData }
-
-/** 读「待裁决的首绑」标记（UI 用来决定要不要弹框，见 core/firstBind.js 的说明） */
-export async function pendingFirstBindInfo() {
-  const inst = current || (await initDataLayer())
-  return readPendingFirstBind({ db: inst.db })
+  if (typeof inst.db.enqueueAll !== 'function') return 0
+  return inst.db.enqueueAll()
 }
 
 export { COLLECTIONS, BILL_TYPES, CATEGORY_TYPES, NAME_MAX_LENGTH } from './contract.js'

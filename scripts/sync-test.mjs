@@ -826,4 +826,41 @@ t.group('18. 端到端：idbAdapter 写 → outbox → 引擎 → 云端 → 换
   t.eq('18n 落本地时不带云端元数据', Object.keys(restored[0]).filter((k) => k.startsWith('_')), [])
 }
 
+/* ========================================================== */
+/* 19. 未登录：同步直接跳过（S7-3）                              */
+/* ========================================================== */
+
+t.group('19. 未登录不启动同步，也不再自动创建账号')
+
+{
+  const clock = createClock()
+  const cloud = createFakeCloud({ clock: clock.now })
+  // S7 之后的适配器：没有登录态时 `signedIn === false`，引擎据此拦下整轮同步
+  cloud.signedIn = false
+
+  const dev = await makeDevice({ cloud, now: clock.now })
+  await dev.write('bill', {
+    id: 'bill_gate',
+    amount: 9.9,
+    date: '2026-10-01',
+    updatedAt: clock.now()
+  })
+
+  const r = await dev.engine.sync({ manual: true, reason: 'gate' })
+  t.ok(
+    '19a ★ 未登录：整轮同步直接跳过（一次请求都不发）',
+    r.ok === false && r.skipped === true && r.reason === 'not-signed-in',
+    JSON.stringify(r)
+  )
+  t.eq('19b 队列原地不动（改动没被丢掉，登录后照样会推）', await dev.outbox.pendingCount(), 1)
+  t.eq('19c 云端一条都没有', cloud._dump('bill').length, 0)
+
+  // 对照：登录之后同一台设备立刻能同步 —— 证明 19a 拦的是「未登录」而不是别的原因
+  cloud.signedIn = true
+  const r2 = await dev.engine.sync({ manual: true, reason: 'after-login' })
+  t.ok('19d 登录后同步恢复正常（对照）', r2.ok === true, JSON.stringify({ ok: r2.ok, reason: r2.reason }))
+  t.eq('19e 登录后数据推上去了', cloud._dump('bill').length, 1)
+  t.eq('19f 登录后队列清空', await dev.outbox.pendingCount(), 0)
+}
+
 t.done()

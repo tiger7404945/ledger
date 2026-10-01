@@ -55,8 +55,11 @@ t.ok('1a 去掉非字母数字', accountPrefixOf('kqjV1DcPvon2m-UE0E0XMQ') === '
 t.ok('1b 统一小写', accountPrefixOf('ABCDEF12345') === 'abcdef12')
 t.ok('1c 长度固定 8', accountPrefixOf('kqjV1DcPvon2m-UE0E0XMQ').length === CLOUD_ID_PREFIX_LENGTH)
 t.ok('1d 短 uid 不补齐', accountPrefixOf('abc') === 'abc')
-t.ok('1e 空 uid 兜底为 anon', accountPrefixOf(null) === 'anon' && accountPrefixOf('') === 'anon')
-t.ok('1f 纯符号 uid 也兜底', accountPrefixOf('---___') === 'anon')
+t.ok(
+  '1e 空 uid 兜底为 guest（S7-2：不再是 anon）',
+  accountPrefixOf(null) === 'guest' && accountPrefixOf('') === 'guest'
+)
+t.ok('1f 纯符号 uid 也兜底', accountPrefixOf('---___') === 'guest')
 t.ok(
   '1g 两个真实 uid 的前缀不同（防冲突的根本）',
   accountPrefixOf('hVfpnRlq_AbAFDKrd4sxpw') !== accountPrefixOf('kqjV1DcPvon2m-UE0E0XMQ')

@@ -1,8 +1,9 @@
 import { COLLECTIONS, NAME_MAX_LENGTH, RepositoryError, SCHEMA_VERSION } from '../contract.js'
 import { createOutbox } from '../sync/outbox.js'
 import { createIdbOutboxStore } from '../sync/outboxStore.js'
-import { buildSeed } from '../mock/seed.js'
+import { buildSeed, SEED_MODE } from '../mock/seed.js'
 import { migrateSeedData } from '../core/migrate.js'
+import { IS_DEV } from '../../config/env.js'
 import { partitionRemote } from '../core/merge.js'
 import {
   DB_NAME,
@@ -82,7 +83,23 @@ export function createIdbAdapter(options = {}) {
   const {
     dbName = DB_NAME,
     version = DB_VERSION,
+    /**
+     * 播种档位（S7-9）。**三态**：
+     *   - `true` / `'full'` —— 基础设施（账本 + 分类）**加演示账单**。
+     *     开发构建下的未登录分区用它，方便对着设计稿看页面。
+     *   - `'base'` —— **只播基础设施**（账本 + 分类），一条演示账单都没有。
+     *     登录后的账号分区、以及生产构建下的未登录分区用它 ——
+     *     账号里凭空多出 ¥8720.72 演示账就是这套种子推上去的（见 mock/seed.js）。
+     *   - `false` —— 什么都不播。测试要的空库走这条。
+     */
     seed = true,
+    /**
+     * 播种出来的**分类**专用 `updatedAt`。
+     *
+     * 登录后的账号分区必须传 `0`（见 `mock/seed.js` 的 `buildBase`）：那份默认分类
+     * 只是「本地兜底」，时间戳最新会让它盖掉用户在云端改过的分类名。
+     */
+    seedCategoryUpdatedAt = null,
     /**
      * S5-5：从「未分区的旧库」继承数据（只在分区库里用）。
      *   - `false`（默认）—— 不继承。裸库与测试走这条路。
@@ -101,8 +118,15 @@ export function createIdbAdapter(options = {}) {
     claimant = ''
   } = options
 
+  /** 归一化播种档位：`false` → 不播；`'base'` → 只播基础设施；其余 → 整套 */
+  const seedMode = seed === false ? false : seed === 'base' ? SEED_MODE.BASE : SEED_MODE.FULL
+  /** 是否播了演示账单 —— 决定要不要跑「演示数据迁移」（补种） */
+  const seedWantsDemo = seedMode === SEED_MODE.FULL
+
   let dbPromise = null
   let initPromise = null
+  /** 非 null 时，下一次 `init()` 用它当播种档位（只被 `reset()` 设置，见 init 里的说明） */
+  let pendingResetMode = null
 
   const getDB = () => (dbPromise ||= openDB({ dbName, version }))
 
@@ -159,6 +183,17 @@ export function createIdbAdapter(options = {}) {
     await getDB()
 
     /**
+     * 本次建库用的播种档位。
+     *
+     * ⚠️ 为什么不是直接用实例级的 `seedMode`：`reset()`（「我的 → 重置演示数据」）
+     *    清库后会**重新走一遍 init**，而那一次的意图是「给我一份完整的演示数据」——
+     *    即使这是个只播基础设施的账号分区。所以 reset 会先把这个临时档位设上。
+     *    生产构建下不抬档：那个按钮本来就不该出现（它会连云端一起清）。
+     */
+    const mode = pendingResetMode || seedMode
+    const wantsDemo = mode === SEED_MODE.FULL
+
+    /**
      * S5-5：先继承旧（未分区）库，再走后面的接管/播种判断。
      *
      * 顺序很关键 —— 继承进来的数据要能**挡住播种**：如果先播种再继承，
@@ -199,14 +234,21 @@ export function createIdbAdapter(options = {}) {
         await putMany(STORES.CATEGORY, legacy.categories)
         await putMany(STORES.BILL, legacy.bills)
         await writeMeta({ [META_KEYS.SEED]: legacy.meta, [META_KEYS.IMPORTED]: now() })
-      } else if (seed && !inheritSettled) {
+      } else if (mode && !inheritSettled) {
         // ⚠️ `inheritSettled` 时**不播种**：分区库的内容已由继承判定决定。
         //    再播一份种子会与继承来的数据叠成两套，而且种子 id 固定，
         //    会直接把用户的同名账目覆盖掉。
-        const seedData = buildSeed()
+        //
+        // S7-9：种子分两层 —— `'base'` 只给账本 + 分类（**没有演示账单**），
+        // `'full'` 才带上那 44 条演示账。账号分区用 `'base'`，否则新账号
+        // 一登录就把这份演示数据整批推上云（¥8720.72 凭空出现）。
+        const seedData = buildSeed(Date.now(), {
+          mode,
+          categoryUpdatedAt: seedCategoryUpdatedAt
+        })
         await putMany(STORES.LEDGER, seedData.ledgers)
         await putMany(STORES.CATEGORY, seedData.categories)
-        await putMany(STORES.BILL, seedData.bills)
+        if (seedData.bills.length) await putMany(STORES.BILL, seedData.bills)
         await writeMeta({ [META_KEYS.SEED]: seedData.meta || {} })
       }
       await writeMeta({ [META_KEYS.SCHEMA]: SCHEMA_VERSION })
@@ -216,9 +258,12 @@ export function createIdbAdapter(options = {}) {
     // 幂等标记由 outboxStore 负责
     await outbox.store.prepare?.()
 
-    // 演示数据迁移：seed=false（测试用的空库）时必须跳过，
-    // 否则 migrateSeedData 会把演示账单当成「缺失的补充数据」补进来
-    if (seed && !inheritSettled) await runSeedMigration()
+    // 演示数据迁移（补备注 / 补补充账单）：
+    //   - `seed=false`（测试用的空库）必须跳过，否则会把演示账单当成
+    //     「缺失的补充数据」补进来；
+    //   - S7-9 起还要 **`'base'` 档位也跳过** —— 那个分区里压根没有演示账单，
+    //     跑迁移等于把它们凭空补进一个不该有演示数据的账号分区。
+    if (wantsDemo && !inheritSettled) await runSeedMigration()
     return true
   }
 
@@ -668,6 +713,40 @@ export function createIdbAdapter(options = {}) {
     /** 建库 + 接管/播种 + 迁移（切换数据源后可显式 await，确认一切就绪） */
     ready,
 
+    /**
+     * 把本分区**全部本地文档**整体入队一次（S7-7）。
+     *
+     * ## 什么时候用
+     *
+     * 登录成功、切到账号分区之后。那个分区刚播了基础设施（账本 + 默认分类），
+     * 它们是 `putMany` 直写的，**没进 outbox**。不补这一步，全新账号的默认分类
+     * 就永远上不了云 —— 换设备登录会看到空宫格。
+     *
+     * ## 幂等
+     *
+     * 靠 meta 标记 `localPushedToCloud`：每个分区只跑一次。没有它的话，
+     * 每次登录都要重新入队几百条，同步会白跑一堆注定被云端拒掉的推送
+     * （云端那份更新，LWW 会拒绝）。
+     *
+     * @returns {Promise<number>} 入队的文档条数；已做过则 0
+     */
+    async enqueueAll() {
+      await ready()
+      const meta = await readMeta()
+      if (meta[META_KEYS.LOCAL_PUSHED]) return 0
+
+      let queued = 0
+      for (const [collection, storeName] of Object.entries(STORE_OF)) {
+        const docs = await readAll(storeName)
+        for (const doc of docs) {
+          await enqueue(collection, 'create', doc.id, { ...doc })
+          queued += 1
+        }
+      }
+      await writeMeta({ [META_KEYS.LOCAL_PUSHED]: now() })
+      return queued
+    },
+
     /** 仅调试用：清空 IndexedDB 并重新播种（「我的 → 重置演示数据」） */
     async reset() {
       await getDB()
@@ -687,8 +766,12 @@ export function createIdbAdapter(options = {}) {
       await outbox.clear()
 
       if (Object.keys(kept).length) await writeMeta(kept)
+      // 开发构建下「重置演示数据」要的是**完整的**演示数据，即使当前分区
+      // 平时只播基础设施（`'base'`）。生产构建不抬档 —— 按钮在那里不出现。
+      pendingResetMode = IS_DEV ? SEED_MODE.FULL : seedMode
       initPromise = null
       await ready()
+      pendingResetMode = null
       return true
     },
 

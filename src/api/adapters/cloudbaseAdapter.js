@@ -37,7 +37,7 @@
  *    那个账号和它的云端数据。S5 的「匿名转正」不是体验优化，是数据安全。
  *
  * 账号能力（S5-1，见文件末尾「账号体系」一节）：
- *   sendSmsCode / signInWithSms / prepareUpgrade + confirmUpgrade / signOut / getIdentity。
+ *   sendSmsCode / signInWithSms / signOut / getIdentity。
  *   除转正两步（uid 不变）外，其余会改 uid 的操作都要求调用方
  *   跟着重建本地数据层（库分区 S5-5），否则新账号会读到上一个账号的库。
  */
@@ -192,13 +192,63 @@ export function createCloudBaseAdapter({
   }
 
   /**
-   * 确保已登录（匿名）。所有数据方法的第一句都是它。
-   * 并发调用共享同一个 Promise，不会同时发起两次登录。
+   * 取「可用的正式身份」，**匿名登录态一律视为没有身份**（S7-1）。
    *
-   * ⚠️ 这是**给数据方法兜底**的入口，不是给 UI 用的登录按钮。
-   *    它的语义是「无论如何都要有一个能读写数据的身份」——所以拿不到登录态时
-   *    会**自动创建一个匿名账号**。UI 想要「未登录」这个状态，用 `getIdentity()`，
-   *    那个不会顺手开账号。
+   * ## 为什么要主动把匿名判掉
+   *
+   * 去掉匿名身份这件事，光「不再创建」是不够的 —— **本机可能还留着旧版本
+   * 创建的匿名登录态**（localStorage 里的四把钥匙）。如果照原样读回来当成
+   * 已登录，就会出现两个说不通的结果：
+   *
+   *   1. 用户界面上写着「已登录」，但他其实没有任何能找回数据的凭据
+   *      （清掉浏览器就没了），这正是 S7 要消灭的那种「假安全」；
+   *   2. 数据会落到 `ledger_<匿名uid>` 旧分区 —— 走查清单里明确要求
+   *      「旧匿名分区不再被读取」。
+   *
+   * 所以这里把匿名身份**当作未登录**：用户回到 `ledger_guest` 分区
+   * （账本 + 默认分类齐备、能看能算），想做写操作时门禁会请他登录。
+   * 旧分区里的数据**不动、不删**（留作日后做迁移工具的余地）。
+   */
+  async function resumeFormalUser(auth) {
+    const user = await resumeUser(auth)
+    if (!user?.uid) return null
+    return normalizeIdentity(user).isAnonymous ? null : user
+  }
+
+  /**
+   * 未登录时抛出的错误（S7-1）。
+   *
+   * `code` 参与 `sync/errors.js` 的 `classifyError` 嗅探，归到 `auth-expired`
+   * 一类 —— 但 **S7 之后引擎不再自动替用户登录**（见 S7-3）：
+   * 未登录时同步根本不会启动，这条错误只是「万一走到了」的兜底。
+   */
+  function notSignedInError() {
+    const err = new Error('[ledger] 未登录，无法读写云端数据')
+    err.code = 'NOT_SIGNED_IN'
+    return err
+  }
+
+  /**
+   * 要求「已存在登录态」，拿不到就抛 —— **不再自动创建匿名账号**。
+   *
+   * ## 名字保留，语义变了（重要）
+   *
+   * S5 时期这个函数的语义是「**确保**有一个能读写数据的身份」，所以拿不到
+   * 登录态时它会**自己 `signInAnonymously()` 开一个匿名账号**。S7 去掉了
+   * 匿名身份，理由有三条：
+   *
+   *   1. 匿名身份的唯一钥匙是 localStorage —— 清浏览器数据就永久失联，
+   *      而「登录后数据跟着手机号走」才是用户能理解的承诺；
+   *   2. 它把「未登录」这个状态**藏起来了**：用户以为自己没登录，其实后台
+   *      已经开了一个账号并在往云端写（新账号还会把演示账单一起推上去）；
+   *   3. 首绑裁决（S5-7）整条链路都是为「匿名那份数据要不要推上云」而存在的，
+   *      去掉匿名之后它自然消失。
+   *
+   * 于是现在的行为是：**只复用已持久化的登录态**（刷新/重进页面不该换身份），
+   * 拿不到就抛 `NOT_SIGNED_IN`。谁该登录，由 UI 的门禁决定（见
+   * `composables/useLoginGate.js`）。
+   *
+   * 并发调用共享同一个 Promise，不会同时发起两次身份读取。
    */
   async function ensureSignedIn() {
     if (currentUid) return currentUid
@@ -206,20 +256,14 @@ export function createCloudBaseAdapter({
       signInPromise = (async () => {
         const auth = await getAuth()
 
-        // 先看有没有已持久化的登录态：刷新页面不该换一个新身份
-        const existing = await resumeUser(auth)
-        if (existing?.uid) {
-          setUid(existing.uid)
-          lastError = null
-          emitAuth()
-          return currentUid
-        }
+        // 只认「已持久化的**正式**登录态」：刷新页面不该换一个新身份，
+        // 而旧版本留下的匿名身份不算身份（见 resumeFormalUser）
+        const existing = await resumeFormalUser(auth)
+        if (!existing?.uid) throw notSignedInError()
 
-        const res = await auth.signInAnonymously()
-        setUid(userOf(res)?.uid || auth.currentUser?.uid || null)
+        setUid(existing.uid)
         lastError = null
         emitAuth()
-        if (!currentUid) throw new Error('[ledger] 匿名登录成功但拿不到 uid')
         return currentUid
       })().catch((e) => {
         lastError = { message: (e && e.message) || String(e), at: Date.now() }
@@ -603,7 +647,7 @@ export function createCloudBaseAdapter({
    * 这个 SDK 里 **两类方法的返回形状不一样**（读 `.d.ts` + 反编译 `auth/dist/index.js` 确认）：
    *   - supabase-like 那批（`signUp` / `signInWithOtp` / `signInWithPassword`）：
    *     返回 `{ data, error }`，**error 非空不一定 throw**，必须显式检查；
-   *   - 老 API（`signInWithSms` / `signInAnonymously`）：直接返回 `LoginState`
+   *   - 老 API（`signInWithSms`）：直接返回 `LoginState`
    *     （没有 `data` 包装），失败靠 throw。
    * 与其在每处判断，不如在这里统一：有 `error` 就抛，有 `data` 就剥壳。
    */
@@ -627,16 +671,23 @@ export function createCloudBaseAdapter({
 
   /**
    * 读当前完整身份。没登录时 `uid` 为 null。
-   * ⚠️ 这个方法**不触发登录**（不会顺手开一个匿名账号）——
+   * ⚠️ 这个方法**不触发登录**（不会顺手开一个账号）——
    *    UI 想显示「未登录」就得能真的问到「没登录」。
+   * ⚠️ **匿名身份也返回 `uid: null`**（S7-1）：见 `resumeFormalUser`。
+   *    注意这时 `isAnonymous` 会是 `true`，方便排查「为什么我明明有旧匿名
+   *    登录态却显示未登录」。
    */
   async function getIdentity() {
     try {
       const auth = await getAuth()
       const user = await resumeUser(auth)
       if (!user?.uid) return { uid: null, isAnonymous: false, phone: null, signedIn: false }
+      const identity = normalizeIdentity(user)
+      if (identity.isAnonymous) {
+        return { uid: null, isAnonymous: true, phone: null, signedIn: false }
+      }
       setUid(user.uid)
-      return { ...normalizeIdentity(user), signedIn: true }
+      return { ...identity, signedIn: true }
     } catch (e) {
       lastError = { message: (e && e.message) || String(e), at: Date.now() }
       return { uid: null, isAnonymous: false, phone: null, signedIn: false }
@@ -662,8 +713,6 @@ export function createCloudBaseAdapter({
    * 环境侧前提：控制台已开通手机短信登录，用云开发默认短信通道，
    * **不需要**配短信签名 / 模板 / 自定义 Provider。
    */
-  /** 发手机验证码（**只用于登录模式**。转正的短信由 `prepareUpgrade` 里的 signUp 发出，
-   *  那条才与 verifyOtp 配对 —— 见「为什么拆成两步」的翻车记录） */
   async function sendSmsCode(phone) {
     const p = String(phone || '').trim()
     if (!p) throw new Error('[ledger] 手机号不能为空')
@@ -707,123 +756,37 @@ export function createCloudBaseAdapter({
     })
     const user = userOf(res) || auth.currentUser
     setUid(user?.uid || null)
-    signInPromise = null // 身份变了，缓存的匿名登录 Promise 作废
+    signInPromise = null // 身份变了，缓存的身份读取 Promise 作废
     lastError = null
     emitAuth()
     if (!currentUid) throw new Error('[ledger] 手机号登录成功但拿不到 uid')
     return { ...normalizeIdentity(user), signedIn: true }
   }
 
-  /**
-   * 匿名 → 正式账号（Upgrade Anonymous，S5-1）。
+  /* ---------------- 关于「匿名转正」（S7 已移除，经验保留） ----------------
+
+   * S5 时期这里有 `prepareUpgrade` / `confirmUpgrade` 两个方法，
+   * 把**当前匿名会话的 access_token** 当 `anonymous_token` 传给 `signUp`，
+   * 让服务端把手机号绑到同一个 uid 上（数据原地保留）。
    *
-   * ## 这一步在做什么
+   * S7 去掉匿名身份后它就**没了意义**：没有匿名会话，也就没有
+   * 东西可以“转”。于是两个方法一并删除，登录只剩 `signInWithSms` 一条路。
    *
-   * 把**当前匿名会话的 access_token** 当作 `anonymous_token` 传给 `signUp`，
-   * 服务端据此把手机号**绑到同一个 uid 上**。于是数据不丢：本地库、云端文档
-   * （`_openid` 就是那个 uid）全都原地有效。
+   * 但当初踩出来的两个坑值得留在这里（将来若重新引入第三方身份模式会再撞上）：
    *
-   * 如果换成「先登出、再用手机号登录」，uid 会变 → 云端那份数据在新账号下
-   * 读不到（PRIVATE 权限隔离），看起来就是「账全没了」。**所以只能走这条路。**
+   *   1. **必须传 `phone` 而不是 `phone_number`**。`auth.signUp` 的分支判断是
+   *      “有没有 phone_number / verification_code /…”：传 `phone_number` 会走“直接注册”
+   *      分支，`anonymous_token` 当场失效，用户看到的是“账全没了”。
+   *   2. **不能用独立的 `auth.verifyOtp`**：它额外要 `messageId`，必须用
+   *      `signUp` 返回值上那个闭包住验证会话的回调。
+   *   3. 一台**一只手机号只能有一条短信**：UI 自己发一条、`signUp` 内部又发一条，
+   *      验证码必然对不上，而且同号一分钟内连发两条会撞频控。
    *
-   * ## 为什么这一段看起来绕（读源码确认的调用链）
-   *
-   * `auth.signUp({ phone, anonymous_token })` 的分支判断是：
-   * ```
-   * if (phone_number || verification_code || verification_token || provider_token)
-   *     直接底层注册并返回 LoginState        ← 不带 anonymous_token 的绑定逻辑
-   * else
-   *     调 getVerification({ phone_number })  ← **短信由它发出（唯一一条）**
-   *     返回 { data: { verifyOtp } }
-   * ```
-   * 我们传的是 `phone`（不是 `phone_number`）⇒ **走第二分支**，这正是官方
-   * extended-guide 的写法：先拿 `verifyOtp` 回调，再 `await verifyOtp({ token })`。
-   * 回调内部注册时会把 `anonymous_token` 一起带上 ⇒ **绑定发生在同一 uid 上**。
-   *
-   * ⚠️ 两个写错就炸的点：
-   * 1. **不能用独立的 `auth.verifyOtp({ token })`** —— 它额外要 `messageId`，
-   *    会报 `"messageId is required"`。必须用 `signUp` 返回值上的回调。
-   * 2. **必须传 `phone` 而不是 `phone_number`** —— 传成 `phone_number` 会走第一分支，
-   *    直接注册一个**新**账号，`anonymous_token` 就不起作用了，数据当场「消失」。
-   *    这是本次实现里最隐蔽的一个坑。
-   *
-   * ## 为什么拆成「prepareUpgrade → confirmUpgrade」两步（真实翻车记录）
-   *
-   * 第一版做成一次性 `upgradeAnonymous({ phone, code })`：UI 先调 `sendSmsCode`
-   * 发一条短信，用户输入后再调 `signUp`。**实测绑定必失败**——因为 signUp 的
-   * else 分支内部**又调了一次 getVerification**，服务端按 `verification_id`
-   * 配对验证码：`verifyOtp` 校验的是 **signUp 自己发的那条**（第二条），
-   * 用户手上输入的却是 UI 发的第一条，码必然对不上；而且同一号码一分钟内
-   * 连发两条还会撞短信频控。
-   *
-   * 所以改成与 SDK 语义一致的**单短信两步**：
-   *   ① `prepareUpgrade({ phone })` —— 调 `signUp`，短信只在这里发，
-   *      返回的 `verifyOtp` 回调暂存在适配器里（它闭包住了本次验证会话）；
-   *   ② `confirmUpgrade({ code })` —— 用户输入的码交给暂存的 `verifyOtp`。
-   * 「获取验证码」按钮在转正模式下调 ①，这正好也是用户收到短信的时机；
-   * 与官方文档「signUp → verifyOtp」的两段式完全对应。
-   *
-   * ⚠️ 真机实测（2026-10-01，180****2706）：真 SDK 转正**会换 uid**（4QEhrnqB…→21053329…），
-   *    与 fake SDK 的「uid 不变」前提相反；但服务端仍是**同一账号记录**，云端数据原属主可读。
-   *    因此本地库会按新 uid 重建分区：空源播种 → 水位 0 全量回拉盖过种子 → 数据完好
-   *    （outbox 0，旧分区留盘=备份）。转正本身必须联网，所以在线场景「绑定后数据原地保留」
-   *    成立；刚转正就断网会暂时只见种子数据，等下次同步恢复。这条链路能走通，靠的正是
-   *    S4-7「本地 id 与账号解耦」+ 稳定代理 + rebuildForAccount。
+   * 同样值得记住的一条真机实测结论（2026-10-01）：**真 SDK 的转正会换 uid**
+   * （与 fake SDK “uid 不变”的前提相反），但服务端仍是同一条账号记录、数据原属主可读。
+   * 这正是 S4-7「本地 id 与账号解耦」+ 稳定代理 + `rebuildForAccount`
+   * 这三件事共同保住的：换了 uid，本地分区重建后全量回拉也能把账拿回来。
    */
-
-  /** prepareUpgrade 与 confirmUpgrade 之间暂存的 verifyOtp 回调（闭包住验证会话） */
-  let pendingUpgradeVerify = null
-
-  /** 转正第一步：调 signUp（短信在这条调用里发出），暂存 verifyOtp */
-  async function prepareUpgrade({ phone } = {}) {
-    const p = String(phone || '').trim()
-    if (!/^1[3-9]\d{9}$/.test(p)) throw new Error('[ledger] 手机号格式不正确')
-    const auth = await getAuth()
-
-    // 取当前会话的 access_token —— 它就是「把手机号绑到哪个匿名身份上」的凭据
-    const sessionRes = await auth.getSession()
-    const session = sessionRes?.data?.session || sessionRes?.session
-    const token = session?.access_token || session?.accessToken
-    if (!token) throw new Error('[ledger] 取不到当前会话凭据，无法把手机号绑到现有账号')
-
-    // ⚠️ 传 phone（不是 phone_number），见上方说明
-    const up = await auth.signUp({ phone: p, anonymous_token: token })
-    if (up?.error) throw new Error(up.error.message || String(up.error))
-    const verifyOtp = up?.data?.verifyOtp
-    if (typeof verifyOtp !== 'function') {
-      throw new Error('[ledger] signUp 未返回 verifyOtp 回调，SDK 版本可能不兼容')
-    }
-    // 重复点「重新发送」时会再次 signUp，新回调直接覆盖旧的即可
-    pendingUpgradeVerify = verifyOtp
-    return { sent: true }
-  }
-
-  /** 转正第二步：用户输入的验证码 → verifyOtp 完成绑定（uid 不变） */
-  async function confirmUpgrade({ code } = {}) {
-    const verify = pendingUpgradeVerify
-    if (!verify) throw new Error('[ledger] 请先获取验证码')
-    const c = String(code || '').trim()
-    if (!c) throw new Error('[ledger] 验证码不能为空')
-    pendingUpgradeVerify = null
-
-    // verifyOtp 失败可能 throw（SDK 层），也可能返回 {error}，两边都拦
-    let res = null
-    try {
-      res = await verify({ token: c })
-    } catch (e) {
-      throw new Error((e && (e.message || e.error_description)) || String(e))
-    }
-    if (res?.error) throw new Error(res.error.message || res.error.error_description || String(res.error))
-
-    // 转正不改 uid，但登录态里多了手机号 —— 重新读一次，让缓存与 UI 同步
-    const auth = await getAuth()
-    const user = await resumeUser(auth)
-    if (user?.uid) setUid(user.uid)
-    signInPromise = null
-    lastError = null
-    emitAuth()
-    return { ...normalizeIdentity(user), signedIn: !!currentUid }
-  }
 
   /**
    * 退出登录。
@@ -848,8 +811,6 @@ export function createCloudBaseAdapter({
     }
     setUid(null)
     signInPromise = null
-    // 进行到一半的转正作废：换了身份后旧 verifyOtp 会话不再属于任何有效账号
-    pendingUpgradeVerify = null
     emitAuth()
     return { signedIn: false, error: lastError }
   }
@@ -869,14 +830,10 @@ export function createCloudBaseAdapter({
     ensureSignedIn,
 
     /* ---- 账号体系（S5-1） ---- */
-    /** 发手机验证码（登录模式用；转正模式的短信由 prepareUpgrade 里的 signUp 发） */
+    /** 发手机验证码 */
     sendSmsCode,
-    /** 手机号验证码登录（会换 uid，调用方需重建数据层） */
+    /** 手机号验证码登录 / 注册（会换 uid，调用方需重建数据层） */
     signInWithSms,
-    /** 匿名转正第一步：调 signUp 发短信，暂存 verifyOtp（uid 不变） */
-    prepareUpgrade,
-    /** 匿名转正第二步：验证码完成绑定（uid 不变，数据不丢） */
-    confirmUpgrade,
     /** 退出登录（不动数据） */
     signOut,
     /** 读当前身份，不触发登录 */
@@ -884,6 +841,16 @@ export function createCloudBaseAdapter({
 
     get uid() {
       return currentUid
+    },
+    /**
+     * 是否已登录（S7-3）。
+     *
+     * `false` 是给同步引擎看的硬信号：**别发请求**。它只在「确定没有登录态」
+     * 时为 `false`，所以引擎用 `=== false` 判（适配器没实现时是 `undefined`，
+     * 那种情况下不拦）。
+     */
+    get signedIn() {
+      return Boolean(currentUid)
     },
     /** 当前账号前缀（云端 `_id` 别名用）。未登录时 null */
     get accountPrefix() {

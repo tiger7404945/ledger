@@ -11,7 +11,7 @@
  *   1. 新身份读不到旧身份写的文档（读被隔离）；
  *   2. 但那个 `_id` 已经被旧身份占着（写不隔离）。
  *
- * 于是「清 localStorage / 换设备 / 换浏览器 → 新匿名身份」时：
+ * 于是「清 localStorage / 换设备 / 换浏览器 → 新身份」时：
  * 客户端**看不见** `ledger_default` 已被占用，只管写，服务端直接抛
  * `E11000 duplicate key`（500 / `DATABASE_REQUEST_FAILED`）。
  * 首次绑定因此**永久失败**，outbox 永远排不空。
@@ -51,7 +51,7 @@
  * 把它做成**云端边界的一层映射**，好处是：
  *   - 本地 id 保持设备无关 → 跨设备合并、种子数据、导出都照旧；
  *   - 视图层 / store / 适配器契约**零改动**（别名只在云适配器内部出现）；
- *   - 将来 S5「匿名转正」时，账号前缀可以**重写**成正式账号的，
+ *   - 账号前缀可以随时**重写**（S7 之前是「匿名转正」，现在是「换个账号登录」），
  *     本地 id 一根汗毛都不用动。
  *
  * ## 边界
@@ -62,6 +62,15 @@
 
 /** 账号前缀取多长。8 位是「碰撞概率可接受」与「id 别太长」之间的折中 */
 export const CLOUD_ID_PREFIX_LENGTH = 8
+
+/**
+ * **未登录**时的账号前缀（S7-2）。
+ *
+ * 以前叫 `'anon'`（匿名账号），S7 去掉匿名身份后改叫 `'guest'`：它现在表示的
+ * 是「这台设备上还没登录」，不是「某个匿名账号」。库名与云端别名都跟着变
+ * —— `ledger_guest`。旧分区 `ledger_anon` / `ledger_<匿名uid>` 不再被读取。
+ */
+export const GUEST_ACCOUNT_PREFIX = 'guest'
 
 /** 别名前缀与本地 id 之间的分隔符。用下划线，与本地 id 的 `_` 不冲突（靠位置切分，不靠 split） */
 export const CLOUD_ID_SEPARATOR = '_'
@@ -74,13 +83,14 @@ export const CLOUD_ID_SEPARATOR = '_'
  *   去掉非字母数字 → 截断到 8 位 → 小写。
  *
  * @param {string|null|undefined} uid 登录 uid
- * @returns {string} 账号前缀；取不到 uid 时返回 `'anon'`（调用方本就不该在未登录时调）
+ * @returns {string} 账号前缀；取不到 uid 时返回 {@link GUEST_ACCOUNT_PREFIX}
+ *   （调用方本就不该在未登录时调 —— S7 之后云端读写会直接抛 `NOT_SIGNED_IN`）
  */
 export function accountPrefixOf(uid) {
   const cleaned = String(uid || '')
     .replace(/[^0-9a-zA-Z]/g, '')
     .toLowerCase()
-  if (!cleaned) return 'anon'
+  if (!cleaned) return GUEST_ACCOUNT_PREFIX
   return cleaned.slice(0, CLOUD_ID_PREFIX_LENGTH)
 }
 

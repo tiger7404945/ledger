@@ -351,14 +351,17 @@ export function createSyncEngine({
       /* 同上 */
     }
 
-    // 登录态失效：退避重试永远好不了，必须**先重新登录**再立刻重试一次。
-    // 只重试一次，避免登录本身也坏掉时打成死循环。
+    // 登录态失效（S7-3）：退避重试永远好不了，先试着**复用**一次现有登录态
+    // （token 可能还能被 SDK 刷新），成功就立刻再来一轮。
+    // ⚠️ 这里**只复用、不创建** —— 自动开匿名账号那条路已随 S7 拆掉；
+    //    复用不到就不再重试，把「需要登录」这件事留给 UI 去提示。
+    // 只试一次，避免登录本身也坏掉时打成死循环。
     if (policy.needsReauth && !reauthTried) {
       reauthTried = true
       const ok = await tryReauth()
       if (ok) {
         setState(SYNC_STATE.IDLE)
-        // 重新登录后立刻再来一轮（不排队退避：刚登录完，网和身份都是新的）
+        // 复用成功：立刻再来一轮（不排队退避：身份刚刷新，网大概率也没问题）
         return sync({ reason: `${reason}:reauth`, manual: true })
       }
     }
@@ -381,15 +384,32 @@ export function createSyncEngine({
     }
   }
 
-  /** 尝试重新登录（匿名续期）。适配器有 ensureSignedIn 就用它 */
+  /**
+   * 尝试复用/刷新**已有**的登录态（S7-3）。
+   *
+   * ⚠️ **不再创建账号**。以前它调 `cloud.ensureSignedIn()`，而那个函数当时的语义
+   *    是「拿不到登录态就自己开一个匿名账号」—— 于是「登录失效」被静默地变成了
+   *    「换了个新身份」，用户看到的是数据全没了（其实是新账号的空库），
+   *    本地队列还可能被推到那个新身份名下。
+   *
+   * 现在只用 `getIdentity()`（**不触发登录**）试着读一次：
+   *   - token 还能被 SDK 自动刷新 ⇒ 读到 uid ⇒ 本轮重试有意义；
+   *   - 真的没有登录态 ⇒ 返回 false，由 UI 提示用户「请重新登录」。
+   */
   async function tryReauth() {
     try {
+      if (cloud && typeof cloud.getIdentity === 'function') {
+        const id = await cloud.getIdentity()
+        return Boolean(id?.uid)
+      }
       if (cloud && typeof cloud.ensureSignedIn === 'function') {
+        // 兼容没有 getIdentity 的实现（fakeCloud / 未来的适配器）：
+        // S7 之后 ensureSignedIn 也不创建账号，拿不到就抛
         await cloud.ensureSignedIn()
         return true
       }
     } catch (e) {
-      /* 重新登录也失败：交给下一轮退避 */
+      /* 没有可复用的登录态：交给 UI 提示重新登录 */
     }
     return false
   }
@@ -403,6 +423,20 @@ export function createSyncEngine({
     if (inFlight) return inFlight
 
     if (!cloud) return Promise.resolve({ ok: false, skipped: true, reason: 'no-cloud' })
+
+    /**
+     * S7-3：**未登录不发任何请求**。
+     *
+     * 未登录是一个**正常状态**（用户还没登录），不是错误 —— 所以静默跳过：
+     * 不置 error、不排退避、不打日志。云端读写在 PRIVATE 权限下本来也只会
+     * 拿到空结果或直接被拒，发出去纯属浪费请求。
+     *
+     * ⚠️ 用 `=== false` 判：适配器**没实现** `signedIn` 时（fakeCloud 等替身）
+     *    是 `undefined`，那就沿用旧行为、不拦 —— 免得测试替身被误拦。
+     */
+    if (cloud.signedIn === false) {
+      return Promise.resolve({ ok: false, skipped: true, reason: 'not-signed-in' })
+    }
 
     if (!manual && !isOnline()) {
       setState(SYNC_STATE.OFFLINE)

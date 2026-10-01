@@ -1,10 +1,12 @@
 /**
  * 种子数据与迁移的断言
- * 运行：node .preview/seed-test.mjs
+ * 运行：node scripts/seed-test.mjs
  *
- * 覆盖两件事：
+ * 覆盖三件事：
  * 1. 新种子：本月支出仍是设计稿的 8720.72，补充的收入/往月账单金额对得上
- * 2. 迁移：早期本地库（没有 seedExtra 标记）加载时会补上补充账单，且
+ * 2. **种子分层（S7-9）**：`buildBase()` 只含账本 + 分类、`buildDemoBills()`
+ *    只含演示账单，生产构建下演示账单为空
+ * 3. 迁移：早期本地库（没有 seedExtra 标记）加载时会补上补充账单，且
  *    幂等、不覆盖已有记录、不动用户自己的账
  */
 const store = new Map()
@@ -17,7 +19,8 @@ globalThis.window = globalThis
 
 const SRC = new URL('../src/', import.meta.url).href
 const { createMockAdapter } = await import(`${SRC}api/adapters/mockAdapter.js`)
-const { buildSeed, SEED_EXTRA_VERSION } = await import(`${SRC}api/mock/seed.js`)
+const seedMod = await import(`${SRC}api/mock/seed.js`)
+const { buildSeed, buildBase, buildDemoBills, SEED_EXTRA_VERSION, SEED_MODE } = seedMod
 const { SCHEMA_VERSION } = await import(`${SRC}api/contract.js`)
 const date = await import(`${SRC}utils/date.js`)
 
@@ -63,6 +66,75 @@ const year = Number(month.slice(0, 4))
     seed.bills.filter((b) => date.monthKeyOf(b.date) !== month).map((b) => date.monthKeyOf(b.date))
   )
   t.ok('往月也有账单（按年趋势才有多个点）', pastMonths.size >= 2, `实得 ${[...pastMonths].join(',')}`)
+}
+
+/* ---------------- 1b. 种子分层（S7-9） ---------------- */
+
+{
+  const base = buildBase()
+  t.eq('1b-1 buildBase 只含 1 个账本', base.ledgers.length, 1)
+  t.eq('1b-2 buildBase 含 42 条分类（基础设施齐备）', base.categories.length, 42)
+  t.ok('1b-3 buildBase 压根没有 bills 字段（不是空数组）', base.bills === undefined)
+
+  const demo = buildDemoBills()
+  t.ok('1b-4 buildDemoBills 在开发构建下非空', demo.length > 0, `实得 ${demo.length} 条`)
+  t.ok('1b-5 演示账单都带 ledgerId（不是裸数据）', demo.every((b) => b.id && b.ledgerId))
+
+  // 账号分区的兜底分类：`updatedAt = 0`，语义是「默认值，优先级最低」
+  const zeroed = buildBase(1700000000000, { categoryUpdatedAt: 0 })
+  t.ok(
+    '1b-6 账号分区兜底分类的 updatedAt = 0（云端改过名的分类不会被盖回来）',
+    zeroed.categories.every((c) => c.updatedAt === 0)
+  )
+  t.eq('1b-7 账本本身仍用真实时间戳', zeroed.ledgers[0].updatedAt, 1700000000000)
+  const normal = buildBase(1700000000000)
+  t.eq('1b-8 不传 categoryUpdatedAt 时分类用播种时间', normal.categories[0].updatedAt, 1700000000000)
+
+  // 两档组合
+  const full = buildSeed(1700000000000, { mode: SEED_MODE.FULL })
+  const onlyBase = buildSeed(1700000000000, { mode: SEED_MODE.BASE })
+  t.ok('1b-9 full 档 = 基础设施 + 演示账单', full.bills.length > 0 && full.categories.length === 42)
+  t.eq('1b-10 base 档不含任何演示账单', onlyBase.bills.length, 0)
+  t.eq('1b-11 base 档的分类仍然齐备', onlyBase.categories.length, full.categories.length)
+  t.ok(
+    '1b-12 base 档不写演示数据迁移标记（没播就没得迁移）',
+    onlyBase.meta.seedExtra === undefined && onlyBase.meta.seedNotes === undefined
+  )
+  t.eq('1b-13 演示数据没缩水（仍是 44 条）', full.bills.length, 44)
+
+  /**
+   * 生产构建：**再求值一次同一个模块**（URL 加 query 破坏 ESM 缓存），
+   * 但把 `NODE_ENV` 临时设成 `production`。
+   *
+   * 为什么这样够用：Vite 构建时会把 `import.meta.env.DEV` 静态替换成 `false`；
+   * Node 里没有 `import.meta.env`，`mock/seed.js` 用 `NODE_ENV` 模拟同一个分支。
+   * 于是「换一个模块实例 + 换一个环境」就等价于「换一个构建产物」。
+   *
+   * 这条断言的价值在于：把「**生产环境不播演示账单**」变成可回归的
+   * —— 它是「新账号凭空多出 ¥8720.72」那条污染链的最后一道闸。
+   */
+  const seedUrl = new URL('../src/api/mock/seed.js', import.meta.url).href
+  let prodCounts = '?'
+  try {
+    const prevNodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    let prodMod = null
+    try {
+      prodMod = await import(`${seedUrl}?prod=1`)
+    } finally {
+      if (prevNodeEnv === undefined) delete process.env.NODE_ENV
+      else process.env.NODE_ENV = prevNodeEnv
+    }
+    const ts = 1700000000000
+    prodCounts = [
+      prodMod.buildDemoBills(ts).length,
+      prodMod.buildSeed(ts, { mode: 'full' }).bills.length,
+      prodMod.buildSeed(ts, { mode: 'base' }).categories.length
+    ].join(',')
+  } catch (e) {
+    prodCounts = `ERR:${e?.message || e}`
+  }
+  t.eq('1b-14 生产构建下演示账单为空、分类仍在（0 账单 / 42 分类）', prodCounts, '0,0,42')
 }
 
 /* ---------------- 2. 迁移 ---------------- */

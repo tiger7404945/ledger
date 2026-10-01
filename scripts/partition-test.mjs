@@ -326,4 +326,42 @@ await second.ready()
 const secondBills = await second.bill.list({ from: '2026-06-01', to: '2026-06-30' })
 t.ok('11b ★ 第二个账号既没继承、也没被播种（空库开始）', secondBills.length === 0, JSON.stringify(secondBills.map((b) => b.id)))
 
+/* ---------------- 12. 未登录分区 ledger_guest（S7-2 + S7-9） ---------------- */
+
+t.group('12. 未登录分区只播基础设施（没有演示账单）')
+
+{
+  // `'base'` 档 = 账本 + 分类，一条演示账单都没有
+  const guest = createIdbAdapter({ dbName: nextDb('guest'), seed: 'base', migrateFrom: false })
+  const snap = await guest.snapshot()
+  t.eq('12a guest 分区有账本（ledgerStore.currentId 依赖它）', snap.ledgers.length, 1)
+  t.eq('12b guest 分区的分类齐备（42 条，宫格不会是空的）', snap.categories.length, 42)
+  t.eq('12c ★ guest 分区没有任何演示账单', snap.bills.length, 0)
+  t.ok('12d guest 分区没写演示数据迁移标记', snap.meta.seedExtra === undefined)
+
+  // 开发构建下的未登录分区用 `'full'` 档（对着设计稿看页面方便）
+  const devGuest = createIdbAdapter({ dbName: nextDb('guestfull'), seed: 'full' })
+  t.ok('12e 开发构建的 guest 分区能看到演示数据', (await devGuest.snapshot()).bills.length > 0)
+
+  // 登录后的账号分区：只播基础设施，且兜底分类 updatedAt = 0
+  const acct = createIdbAdapter({
+    dbName: nextDb('account'),
+    seed: 'base',
+    seedCategoryUpdatedAt: 0
+  })
+  const acctSnap = await acct.snapshot()
+  t.eq('12f ★ 账号分区同样没有演示账单（新账号不会凭空多 ¥8720.72）', acctSnap.bills.length, 0)
+  t.eq('12g 账号分区的分类齐备', acctSnap.categories.length, 42)
+  t.ok(
+    '12h ★ 账号分区的兜底分类 updatedAt = 0（不会盖掉云端改过名字的分类）',
+    acctSnap.categories.every((c) => c.updatedAt === 0)
+  )
+
+  // 再进来一次：`'base'` 档是幂等的，不会因为「没有 seedExtra 标记」把演示账单补进来
+  await guest.ready()
+  const snap2 = await guest.snapshot()
+  t.eq('12i 二次加载仍是 0 条账单（base 档不跑演示数据迁移）', snap2.bills.length, 0)
+  t.eq('12j 二次加载分类数不变', snap2.categories.length, 42)
+}
+
 t.done()

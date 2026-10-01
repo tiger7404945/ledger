@@ -30,7 +30,7 @@ export const SYNC_ERROR_KIND = {
   OFFLINE: 'offline',
   /** 网络层失败（fetch 抛错、DNS、超时）。与 offline 的区别是「网是通的但没到」*/
   NETWORK: 'network',
-  /** 登录态失效 / 匿名登录被拒。**必须重新登录**，退避重试无用 */
+  /** 登录态失效 / 未登录。**退避重试无用**，要用户重新登录（S7 起不再自动重登） */
   AUTH_EXPIRED: 'auth-expired',
   /** 服务端 5xx 或云函数异常。退避重试有意义 */
   SERVER: 'server',
@@ -49,9 +49,14 @@ export const SYNC_ERROR_KIND = {
  * 引擎、视图、测试都读这张表，不要各自写 `if (kind === ...)` 的散装逻辑。
  *
  * - `retryable`    —— 自动退避重试是否有意义
- * - `needsReauth`  —— 是否要先重新登录再试
+ * - `needsReauth`  —— 是否属于「光重试没用、得先有登录态」的一类
  * - `silent`       —— 是否不该打扰用户（离线类就是这种）
  * - `label`        —— 给用户看的一句话（视图可直接用）
+ *
+ * ⚠️ **`needsReauth` 的处置方式在 S7 变了**：以前引擎看到它就**自动重新登录**
+ *    （那时自动登录＝开一个匿名账号，总能成功）。去掉匿名身份之后自动重登已经
+ *    不可能 —— 只有用户能登录。所以它现在的含义是「**提示用户去登录**」，
+ *    引擎不再自行发起任何登录（见 `syncEngine.tryReauth`）。
  */
 export const ERROR_POLICY = {
   [SYNC_ERROR_KIND.NOT_CONFIGURED]: {
@@ -77,10 +82,12 @@ export const ERROR_POLICY = {
   },
   [SYNC_ERROR_KIND.AUTH_EXPIRED]: {
     retryable: false,
-    // 关键：靠退避永远好不了，必须重新登录
+    // 关键：靠退避永远好不了。但 S7 之后引擎**不再自动重登** ——
+    // 自动登录＝开匿名账号那条路已经拆掉，只有用户能登录。
+    // 所以这个标记的用途变成了「告诉 UI：请让用户去登录」。
     needsReauth: true,
     silent: false,
-    label: '登录状态已失效，正在重新登录'
+    label: '登录状态已失效，请重新登录'
   },
   [SYNC_ERROR_KIND.SERVER]: {
     retryable: true,
@@ -175,10 +182,11 @@ export function classifyError(err, { online } = {}) {
   }
 
   // —— 登录态 ——
-  // EXCEED_AUTHORITY 是实测遇到的（匿名登录被安全规则拒），
-  // 其余是常见的登录失效码。
+  // `NOT_SIGNED_IN` 是 S7 之后适配器在「没有已持久化登录态」时主动抛的
+  // （它以前会自己开一个匿名账号，现在不会了）。
+  // EXCEED_AUTHORITY 是实测遇到的（安全规则拒绝），其余是常见的登录失效码。
   if (
-    /EXCEED_AUTHORITY|NOT_LOGIN|UNAUTHENTICATED|INVALID_CREDENTIAL|登录态|未登录|signInAnonymously|auth.*expired/i.test(
+    /NOT_SIGNED_IN|EXCEED_AUTHORITY|NOT_LOGIN|UNAUTHENTICATED|INVALID_CREDENTIAL|登录态|未登录|signInAnonymously|auth.*expired/i.test(
       code
     ) ||
     status === 401

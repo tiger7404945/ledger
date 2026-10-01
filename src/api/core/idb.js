@@ -99,7 +99,18 @@ export const META_KEYS = {
    * 接着首次绑定把 A 的数据整批推到 B 名下。裸库因为「不删源」永远还在，
    * 这个洞会一直开着。记下认领者前缀，B 一看「已被 A 认领」就空手进。
    */
-  PARTITION_CLAIMED: 'partitionClaimedBy'
+  PARTITION_CLAIMED: 'partitionClaimedBy',
+  /**
+   * 本分区的「本地文档已整体入队过」（S7-7）。
+   *
+   * 登录后的账号分区里，基础设施（账本 + 默认分类）是适配器**直接写进库**的
+   * —— 不走写路径，所以不在 outbox 里。`enqueueAll()` 把它们入队一次推上云，
+   * 靠这个标记保证幂等（否则每次登录都要把几百条文档重新入队）。
+   *
+   * ⚠️ `clearLocalData()`（退出登录）时**保留它**：同一个分区再登录时本地是
+   *    空的（内容从云端全量回拉），没有东西需要再入队。
+   */
+  LOCAL_PUSHED: 'localPushedToCloud'
 }
 
 /** 见文件头约定 1 */

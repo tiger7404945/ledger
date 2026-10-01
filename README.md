@@ -6,9 +6,9 @@
 - **第二阶段（进行中）**：数据从「只在这台浏览器」变成「本地优先 + 云端同步」。  
   **S1 已完成** —— 本地存储已从 localStorage 切到 IndexedDB，用户无感。  
   **S2 已完成** —— 同步引擎骨架落地：四态状态机、pull/push 收敛、拒收回拉、服务端单调水位线；云端用内存假实现（`fakeCloud.js`）跑通全链路。  
-  **S3 已完成** —— 接入**腾讯云开发 CloudBase**：`@cloudbase/js-sdk` 直连文档型数据库、匿名登录、真实服务端权限隔离；换浏览器可完整恢复数据。  
+  **S3 已完成** —— 接入**腾讯云开发 CloudBase**：`@cloudbase/js-sdk` 直连文档型数据库、真实服务端权限隔离；换浏览器可完整恢复数据。  
   **S4 / S5 已完成** —— 冲突裁决改用服务端刻度；云端 `_id` 加账号前缀别名（防跨账号撞车）；手机号账号体系 + 本地库按账号分区（v0.5.0）。  
-  **⚠️ S7（已裁决、待实施）** —— **移除匿名身份**，改为「写操作登录门禁」：未登录只能浏览，写操作一律先弹手机号登录。见下方运维提醒第 3 条与 `phase2-backend-plan.md` 的 P10 / S7。  
+  **S7 已完成（2026-10-01）** —— **移除匿名身份**，改为「写操作登录门禁」：未登录只能浏览（空账本 + 分类齐备），写操作一律先弹手机号登录；账号态由三态收敛为**两态**（已登录 / 未登录）。见下方运维提醒第 3 条与 `phase2-backend-plan.md` 的 P10 / S7。  
   设计说明见 `phase2-backend-plan.md` 的 S2 / S3 / S4 / S5 / **S7** 小节。
 
 ## 快速开始
@@ -17,7 +17,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id），共 414 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁），共 549 条
 ```
 
 ### 配置云端（可选）
@@ -35,7 +35,7 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
 
 > - `.env.local` 已 gitignore，**绝不会进仓库**（可用 `git check-ignore -v .env.local` 自证）。
 > - 只有 `VITE_` 前缀的变量会被 Vite 注入前端代码；读取统一走 `src/config/env.js`。
-> - 首次带云端启动时会把本地已有数据**一次性推上云**（`ensureCloudFirstBind()`，本地优先）。
+> - **S7 起没有匿名身份**：不登录就只是本地记账，**不会有任何数据被悄悄推上云**。登录成功后，账号分区里「不走写路径」的基础设施文档（账本 + 兜底分类）会入队推上去一次（`db.enqueueAll()`，靠 meta 标记幂等），其余数据走正常写路径。
 
 ## 页面清单（对应 8 张参考图）
 
@@ -66,12 +66,12 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
 - **一级分类**：新建、宫格展示（含「有二级分类」角标）、编辑、删除（级联）。
 - **二级分类**：新建（归属一级分类）、在记账页展开选择、在管理页列表展示、编辑、删除。
 - **分类图标选择器**：左侧分类分组 ↔ 右侧图标区双向联动滚动，内置 10 组约 100 个线性图标（纯本地 SVG，无外部依赖）。
-- **账号体系（S5）**：
-  - 三种登录态：「我的」页顶部账号卡区分**匿名 / 正式 / 未登录**。
-  - **匿名**：云端分配的设备身份，数据能上云，但**清掉浏览器或换设备就找不回**（页面有明确提示）。
-  - **绑定手机号（转正）**：短信验证码验证后绑定到**当前账号**上，`uid` 不变、本地与云端数据原地保留，换设备用手机号即可找回。
-  - **登录 / 退出登录**：退出只清登录态、**不删数据**（产品规则见 S5-4，待定）。登录另一个账号会切到对方的数据分区。
-  - **本地库按账号分区（S5-5）**：库名 `ledger_<账号前缀>`，两个账号的数据与**待同步队列**互不可见——串号风险在本地队列，不在云端。旧库 `ledger` 会被**第一个**登录的账号继承一次（之后登录的账号不会拿到同一份数据）。
+- **账号体系（S5 / S7）**：
+  - **两种登录态**：「我的」页顶部账号卡区分**已登录 / 未登录**（S7 之前还有「匿名」，已随 S7 移除）。
+  - **未登录**：能浏览，但账本是空的（0.00）+ 分类齐备；数据只落在 `ledger_guest` 分区，**写操作（记一笔 / 编辑账单 / 改分类 / 重置演示数据）一律先弹手机号登录**。
+  - **已登录**：数据跟着手机号走，换设备登录即可完整恢复。
+  - **登录 / 退出登录**：退出会清掉本机的账号数据副本（云端保留完整一份），回到未登录分区。⚠️ **换号必须先退出再登录**（`signInWithPhone` 的硬约束）。
+  - **本地库按账号分区（S5-5）**：库名 `ledger_<账号前缀>`，两个账号的数据与**待同步队列**互不可见——串号风险在本地队列，不在云端。旧库 `ledger` 会被**第一个**登录的账号继承一次（之后登录的账号不会拿到同一份数据）；**未登录分区不继承任何旧库**（它不是一个账号，没资格认领）。
 
 ## 目录结构
 
@@ -90,16 +90,16 @@ src/
     core/cloudId.js        云端 id 别名映射（<账号前缀>_<本地 id>）—— 破解 _id 跨账号唯一
     adapters/mockAdapter.js        内存 + localStorage（对照基准，保留）
     adapters/idbAdapter.js         当前启用：IndexedDB 离线缓存
-    adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 匿名/手机号登录），SDK 动态 import
+    adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 手机号登录），SDK 动态 import
     adapters/leancloudAdapter.js   已废弃（LeanCloud 停服），仅保留同步策略注释作参考
     sync/outbox.js         增量同步队列（本地写入即入队，变更通知订阅者）
     sync/outboxStore.js    队列的存储后端（IndexedDB 表 / 内存）+ 旧 localStorage 队列一次性搬迁
     sync/cloudClient.js    云端客户端接口约定（只有形状，无实现）
     sync/fakeCloud.js      内存假云端（与真云端同接口，用于测试与本地调试）
     sync/syncEngine.js     同步调度：四态状态机 + pull/push + 退避重试 + 水位线
-    mock/seed.js           种子数据
+    mock/seed.js           种子数据（S7-9 分两层：账本 + 分类 = 基础设施，演示账单仅开发构建播）
   stores/                  Pinia：ledger / category / bill / account
-  composables/             可复用交互：useRecordDraft（记账草稿）、useSwipeViews（左右滑动切屏）
+  composables/             可复用交互：useRecordDraft（记账草稿）、useSwipeViews（左右滑动切屏）、useLoginSheet（全局登录弹层）、useLoginGate（写操作登录门禁）
   components/              通用组件（含 icons 图标库、PeriodSwitch + PeriodPicker 账期切换器与弹层、TrendChart 趋势折线、RankList 分类排行）
   views/                   页面
   utils/                   日期 / 金额 / id 工具
@@ -116,8 +116,8 @@ cloudfunctions/
 | 适配器                   | 状态                                                  |
 | --------------------- | --------------------------------------------------- |
 | `mockAdapter.js`      | 第一阶段实现（内存 + localStorage）。保留作契约对照基准                 |
-| `idbAdapter.js`       | **当前启用**：IndexedDB，按账号分区（`ledger_<账号前缀>`）、版本 2、5 个 objectStore |
-| `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 匿名/手机号登录 + 文档型数据库） |
+| `idbAdapter.js`       | **当前启用**：IndexedDB，按账号分区（登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`）、版本 2、5 个 objectStore |
+| `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 手机号登录 + 文档型数据库） |
 | `leancloudAdapter.js` | 已废弃（LeanCloud 停服），仅留同步策略注释作参考                       |
 
 业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。**合并规则也只写一份**（`core/merge.js`），mock 与真云端共用。
@@ -128,12 +128,12 @@ cloudfunctions/
 
 原因是 ESM 的 `import` 是静态的：store 里写死的 `import { billRepo } from '@/api'` 在模块求值时就已绑定，没法等异步身份确定后再换成真对象。用代理之后，`rebuildForAccount(uid)` 只替换内部指针，**代理本身永不改变**，视图与 store 零改动，三条纪律（视图不碰 adapter / 后端可替换 / 写操作 local-first）继续成立。
 
-⚠️ **启动顺序固定**：`initDataLayer()` → `ensureCloudFirstBind()` → `mount()` → `syncEngine.start()`。挂载必须在数据层就绪之后——视图的 `onMounted` 会立刻读 repository，代理还没目标时会抛 `xxx is not a function`，且 store 的 `initialized` 已被置真、不会重试。
+⚠️ **启动顺序固定**：`initDataLayer()` → `mount()` → `syncEngine.start()`（**仅已登录时**）。挂载必须在数据层就绪之后——视图的 `onMounted` 会立刻读 repository，代理还没目标时会抛 `xxx is not a function`，且 store 的 `initialized` 已被置真、不会重试。S7 删掉了原来的第 ② 步「首绑裁决」（`ensureCloudFirstBind`），并把「启动同步」收进 `if (cloud?.signedIn)`；未登录时引擎 `sync()` 也会直接短路返回 `{ ok:false, skipped:true, reason:'not-signed-in' }`。
 
 ### 已切到 IndexedDB（S1）
 
 - 首次打开会**接管**第一阶段留在 localStorage 的 `ledger.db.v1`，且**不删除旧库**（可回退）；只接管一次，靠 meta 标记判断。
-- 写入落在 IndexedDB（库 `ledger`，版本 2，5 个 objectStore：`ledger / category / bill / outbox / meta`）。
+- 写入落在 IndexedDB（版本 2，5 个 objectStore：`ledger / category / bill / outbox / meta`）。**库名按账号分区**：登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`（旧版的裸库 `ledger` 只被**第一个**登录的账号认领一次；未登录分区不认领任何旧库）。
 - 切换数据源：改 `src/api/index.js` 的 `DATA_SOURCE`（`'mock' | 'idb'`）。
 
 ### 云函数（S4-2）
@@ -181,7 +181,7 @@ id   = ledger_default                ← 本地 id（业务字段，权威来源
 - **本地 id 始终设备无关**：换设备后 `ledger_default` 还是 `ledger_default`，跨设备合并、种子数据、导出一概照旧。账号前缀只是**云端边界的一层映射**（`src/api/core/cloudId.js`），视图 / store / 契约零改动。
 - **还原方式**：`core/merge.js` 的 `fromRemote()` 从业务字段 `id` 取值恢复本地主键。**不要做别名反解析** —— 格式一改就会错。
 - **契约层面一律用本地 id**：`pull({ ids })` 传本地 id、`push()` 返回的 `upserted` / `rejected[].id` 也是本地 id。别名只在云适配器内部出现。
-- **S5 便利**：将来「匿名转正」只要重写账号前缀，本地 id 不动。
+- **账号前缀是「云端边界的一层映射」**：它只决定这份文档归谁，**不进本地库、不参与合并**。S7 移除匿名身份后，前缀一律来自手机号账号的 uid；未登录时根本没有云端读写，所以也不存在前缀。
 
 ### 同步引擎骨架（S2）
 
@@ -213,9 +213,10 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   否则进 `rejected` 并带 `cloudUpdatedAt`，引擎据此回拉。**两段之间不原子，仍是留给后续收口的已知窗口。**
 - **`pull` 用服务端时间做水位线**：`where({ _serverTs: _.gte(new Date(since)) }).orderBy('_serverTs','asc').skip(n).limit(limit)`。注意 `_serverTs` 是 Date 类型，**用数字比较一条都匹配不到**。
 - **`_openid` 由 SDK 自动注入**（手写会报错），拉回时由 `core/merge.js` 的 `fromRemote()` 剥掉，不落本地库。
-- **匿名登录是懒触发的**：只有真正要读写数据时才 `signInAnonymously()`（否则光是打开「我的」页就会触发 88 次写入）。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）——**清掉这个登录态就找不回那个账号**（指的是清除浏览器数据；**不是**「退出登录」：匿名身份与设备绑定，退出后同一个 uid 会原样回来，且匿名根本没有退出入口）。这是 S5「匿名转正」要解决的问题。
+- **S7 起适配器不再创建账号**：`ensureSignedIn()` 只在**已有持久化登录态**时放行，拿不到就抛 `NOT_SIGNED_IN`（`code` 被 `classifyError` 归入 `AUTH_EXPIRED`）—— 删掉 `signInAnonymously()` 之后，**打开应用不会凭空产生任何云端账号**。登录态存在 localStorage（`user_info_<envId>` / `credentials_<envId>` / `device_id`）。⚠️ 匿名身份的实现已整体移除，但那条教训留着：**光改代码不够，CloudBase 控制台的「匿名登录」开关必须在上线前手动关闭**，否则外部仍可绕过前端直接匿名写库。
+- **`getIdentity()` 把遗留的匿名登录态当成「未登录」**：返回 `{ uid: null, isAnonymous: true }`。这样旧版本留在浏览器里的匿名会话不会伪装成已登录，`dbNameFor()` 也就不会去打开 `ledger_<旧匿名 uid>` 分区（实测踩过：不判空时「我的」页会显示「已登录 · 0OuzUrrt」）。
 - **SDK 走动态 import**，被 Vite 拆成独立 chunk（871 kB / gzip 220.8 kB）；不配云端时这段代码根本不加载。
-- **首次绑定**：`ensureCloudFirstBind()` 把本地三个集合的文档一次性入队推上云（本地优先）。现在是匿名设备身份、云端不可能有别人的数据，所以无覆盖风险；**S5 有真账号后必须改成先问用户**。
+- **登录后的数据上云（取代 S5 的「首绑裁决」）**：`ensureCloudFirstBind()` 与 `core/firstBind.js` 已随 S7 删除。登录成功后做两件事 —— ① `db.enqueueAll()` 把账号分区里**不走写路径**的基础设施文档（账本 + 兜底分类）整体入队一次（靠 meta `localPushedToCloud` 幂等）；② 跑一次 `syncEngine.sync()` **全量回拉**。全新账号的兜底分类因此能被推上云、换设备带得走。
 - **时钟裁决（S4-2 + S4-6）**：`serverTime()` 来自云函数 `ledger-server-time`（真服务端时间，
   `source='cloud-function'`）；跨设备裁决由云函数 `ledger-sync-stamp` 盖的 `serverUpdatedAt` 承担。
   两者都不可用时静默降级：偏移按 0、裁决退回客户端时钟。见上方「云函数」两节。
@@ -308,7 +309,8 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 
 > **验证过程中在云端产生的探针数据已全部清理**，云端为干净的种子状态（44 / 42 / 1）。  
 > **一个工具经验**：用无头浏览器验证时，其 `click` 命令**不一定会触发 Vue 的 `@click` 处理器**；遇到"点了没反应但逻辑明明是对的"时，用 `element.click()` 原生触发同一元素做对照，就能区分是工具问题还是真实 bug（本次即如此）。  
-> **待办**：`serverTime()` 只是水位线下界，冲突裁决仍需 S4 用云函数打真服务端时间；S5 需把匿名身份转成正式账号，否则清掉浏览器数据就找不回那份云端账目。
+> ⚠️ 本节表格里的「匿名身份」是 S3 当时的实现，已在 **S7（2026-10-01）整体移除**；保留原文是为了记录当时的验证口径。  
+> **当时的两条待办，现已全部销项**：① 冲突裁决 → S4-2 / S4-6 用云函数打真服务端时间 + 服务端盖章；② 「清掉浏览器数据就找不回那份云端账目」→ S7 **直接移除了匿名身份**（不是把它转正，而是让它不复存在）—— 未登录状态下根本不会有云端账号，所以也就没有「会丢的云端账目」。
 
 ## 第二阶段 S5 验收结论（账号与库分区）
 
@@ -326,22 +328,62 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 浏览器运行时未捕获异常 | 无（修复 `main.js` 的挂载竞态后） |
 
 > **S5-5 是这一轮的主要加固点**。串号有两个入口：**本地 outbox**（A 的残留条目被推到 B 名下）与**裸库继承**（每个新账号都继承同一份旧库）。前者靠库名分区堵死，后者靠 `partitionClaimedBy` 堵死——两个都要有。
+>
+> ⚠️ **本节记录的是 S5 当时的行为（三态账号：匿名 / 正式 / 未登录）**。「匿名」「转正」「首绑裁决」相关能力已在 **S7（2026-10-01）整体移除**，保留原文是为了留下「为什么当初要围着匿名身份修这么多东西」的来龙去脉。其中**库分区**与**裸库只被认领一次**这两条被 S7 继续沿用（并新增「未登录分区不认领旧库」）。当前行为见下一节。
+
+## 第二阶段 S7 验收结论（移除匿名身份 + 写操作登录门禁）
+
+| 验收项 | 结果 |
+| --- | --- |
+| `npm run build` | 通过（130 modules；主包 257.88 kB / gzip 92.99 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
+| 数据层断言合计 | **549 条全绿**。改造前 529 条（含 `firstbind-test` 39 条）→ 删 39、`seed` 14→28、`sync` 128→134、`partition` 51→61、新增 `gate-test` 29；`contract` / `period` / `migrate` / `conflict` / `cloudid` 条数不变 |
+| 种子分层（S7-9） | 通过（`buildBase()` = 1 账本 + 42 分类、**0 账单**；`buildDemoBills()` 生产构建返回 `[]`；`buildSeed('full')` 仍是 44 条演示账单，与改造前一致） |
+| 未登录不产生云端账号（S7-1） | 通过（`ensureSignedIn()` 拿不到持久化登录态即抛 `NOT_SIGNED_IN`；`getIdentity()` 把遗留匿名会话判为「未登录」） |
+| 未登录分区（S7-2） | 通过（`indexedDB.databases()` 实测：旧库 `ledger_anon`=46 / `ledger_0ouzurrt`=46 仍在盘上但**不再被读取**；新分区 `ledger_guest`=44，恰为纯种子，说明**没有继承**旧库） |
+| 未登录不启动同步（S7-3） | 通过（`switchPartition(null)` 只 `stop()`；`sync()` 遇 `cloud.signedIn === false` 直接短路返回 `reason:'not-signed-in'`，队列不动、云端 0 条） |
+| 登录弹层全局化（S7-4） | 通过（`LoginSheet.vue` + `useLoginSheet` 挂到 `App.vue`，登录 / 退出流程与改造前等价） |
+| 写操作门禁（S7-5） | 通过（见下方浏览器走查表） |
+| 账号态两态化（S7-6） | 通过（`ACCOUNT_PHASE` 只剩 `FORMAL` / `SIGNED_OUT`；匿名、转正相关 action 与 getter 全删） |
+| 删除首绑裁决（S7-7） | 通过（`core/firstBind.js` 与 `firstbind-test.mjs` 已删；`main.js` 启动链去掉第 ② 步；改由 `db.enqueueAll()` + 全量回拉承接） |
+| 生产构建预览（未登录） | 通过（首页 **0.00** + 「今天还没有记账」空态、账本存在、分类齐备；「重置演示数据」按钮**不出现**；「我的」页显示 `IndexedDB（ledger_guest）`） |
+| 浏览器运行时未捕获异常 | 无 |
+
+### 端到端走查（浏览器实测）
+
+| 走查项 | 结果 |
+| --- | --- |
+| 未登录能进首页 / 账单 / 统计，**不弹**登录框 | 通过（开发构建下看到演示账本；生产构建下是空账本 0.00） |
+| 未登录点 TabBar「+」 | 通过（停在原页 + 弹登录框「记账需要先登录…」） |
+| 未登录在账单页点某笔账单 | 通过（停在 `#/bills`，**没有**先跳进记账页再弹） |
+| 未登录进「分类管理」 | 通过（停在原页 + 弹登录框「分类管理需要先登录…」） |
+| 直接访问 `#/record` | 通过（重定向到首页 + 弹登录框；顺带修掉了「守卫 `return false` 导致白屏」） |
+| 未配 `.env.local` | 通过（`cloud === null` → **不做任何拦截**，点「+」直达记账页、分类宫格齐备、首页照常） |
+| 旧分区不被读取 | 通过（见上表 `indexedDB.databases()` 实测） |
+
+> **这轮走查用了「对照实验」而不是单点观察**：为了验「未配 `.env.local` 时不拦截」，把 `.env.local` 临时改名后**在独立端口**起了一个实例，从模块里直接读出 `cloud === null`（`import('/src/api/index.js')`）再点「+」；恢复 `.env.local` 后在同一端口复验 `{ hasCloud: true, signedIn: false }` → 点「+」被拦。两个场景同端口、同 origin，结论才站得住。
+>
+> **未做真实云端往返**：「全新账号登录 → 兜底分类推上云」与「登录后记一笔 → 待同步归零」需要**真实短信验证码**（会往手机发短信），本轮由 `partition-test` 的 61 条断言提供等价覆盖，**真机手动验证仍待做**。
+>
+> **一个诚实的遗留**：生产包的应用 chunk 里仍能找到 `地铁通勤` / `星巴克` 等演示文案。**这不是摇树失败** —— `SEED_BILL_NOTES`（导出常量）与 `buildExtraBills`（导出函数）是为**开发期遗留本地库做历史回填**的公开 API，它们依赖 `BILL_TEMPLATES` / `EXTRA_BILL_TEMPLATES` 两个模板数组，一经导出即不可摇。功能上生产环境**不会写入**任何演示账单（`buildDemoBills()` 返回 `[]`，且「重置演示数据」按钮有 `IS_DEV` 守卫），代价只是多几 KB 文本。要根治得把整块改成 dev-only 的动态 `import()`。
 
 ## 说明
 
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
-- 数据当前持久化在 **IndexedDB**（按账号分区，库名 `ledger_<账号前缀>`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」会清本地与云端、再重新灌种子并推上云。
+- 数据当前持久化在 **IndexedDB**（按账号分区：登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。「我的 → 重置演示数据」会清本地与云端、再重新灌种子并推上云（**该按钮只在开发构建出现**：生产环境没有演示数据可重置，而它会清云端）。
 - 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
-- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`
+- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **549 条**）
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
-  - `period-test.mjs`（22 条）/ `seed-test.mjs`（14 条）/ `migrate-test.mjs`（11 条）
-  - `sync-test.mjs` —— 同步引擎 18 组场景（128 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等
+  - `period-test.mjs`（22 条）/ `seed-test.mjs`（28 条）/ `migrate-test.mjs`（11 条）
+    - `seed-test` 含 S7-9 的分层断言：`buildBase()` 只含账本 + 分类（**0 条账单**）、`buildDemoBills()` 在生产构建下返回空、`buildSeed()` 的组合结果与改造前一致（演示数据不缩水）
+  - `sync-test.mjs` —— 同步引擎 19 组场景（134 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等；S7 新增「未登录短路（`reason === 'not-signed-in'`）」的用例
   - `conflict-test.mjs` —— 并发与边界 13 组场景（135 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
-  - `partition-test.mjs` —— 库分区与旧库继承（51 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种
+  - `partition-test.mjs` —— 库分区与旧库继承（61 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种；**S7 新增**未登录分区只播基础设施 / 不继承旧库、账号分区兜底分类 `updatedAt = 0`、二次加载仍是 0 条账单
+  - `gate-test.mjs` —— 写操作登录门禁（29 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）
+  - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
   1. **免费环境要手动续期**：单次 6 个月、不支持自动续费 —— **续期提醒已设，环境到期 2027-03-30**。
   2. **临时域名已就绪**：`<环境ID>-<随机段>.ap-shanghai.app.tcloudbase.com`（平台自带，无需自助加安全域名，当前 404 是因为静态托管还没部署内容）。正式域名待开发测试结束后申请。
-  3. **⚠️ 匿名登录已裁决移除（2026-10-01）**：改为「**写操作登录门禁**」—— 未登录只能浏览（空账本 0.00 + 分类齐备），记一笔 / 编辑账单 / 改分类等写操作一律先弹手机号登录。五条设计规则见 `phase2-backend-plan.md` 第 3 节 **P10**，实施任务见第 4 节 **S7**（含 **S7-9 种子分层**：账本 / 分类是基础设施、任何分区都播；~44 条演示账单只在开发构建播）。**代码尚未实施**——本文档中凡是描述「匿名 / 转正 / 首绑裁决」的段落，描述的都是**改动前**的行为，实施时一并更新。上线前还需在 CloudBase 控制台**关闭「匿名登录」开关**（只改代码不够）。
+  3. **✅ 匿名登录已移除、写操作门禁已上线（S7，2026-10-01）**：未登录只能浏览（**空账本 0.00 + 分类齐备**），记一笔 / 编辑账单 / 改分类等写操作一律先弹手机号登录。五条设计规则见 `phase2-backend-plan.md` 第 3 节 **P10**，实施记录见第 4 节 **S7**（含 **S7-9 种子分层**：账本 / 分类是基础设施、任何分区都播；演示账单只在开发构建播，所以生产构建的未登录分区是 **0 账单**）。**⚠️ 上线前仍需在 CloudBase 控制台关闭「匿名登录」开关** —— 代码里删掉了 `signInAnonymously()`，但开关不关，外部依旧可以绕开前端直接匿名写库。
