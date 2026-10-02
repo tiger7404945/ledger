@@ -12,11 +12,10 @@ const props = defineProps({
   remarkSuggestions: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['key', 'action'])
+const emit = defineEmits(['key'])
 
 const remark = defineModel('remark', { type: String, default: '' })
 const dateKey = defineModel('dateKey', { type: String, default: todayKey() })
-const noReimburse = defineModel('noReimburse', { type: Boolean, default: false })
 
 const dateInput = ref(null)
 const remarkInput = ref(null)
@@ -98,6 +97,9 @@ function onDateChange(e) {
       </div>
     </div>
 
+    <!-- 标签组只留「日期」与「账本」两个真实可用的开关。
+         原设计里的「资产账户 / 图片 / 不报销」在第二阶段已按产品决定砍掉
+         （点了只会弹「后续版本支持」的空胶囊，留着反而是噪声）。 -->
     <div class="chips">
       <button class="chip is-on" type="button" @click="openDatePicker">
         <IconBase name="clock" :size="13" :stroke-width="1.8" />
@@ -115,24 +117,6 @@ function onDateChange(e) {
         <IconBase name="checkbox-on" :size="12" :stroke-width="1.4" />
         {{ ledgerName }}
       </span>
-
-      <button class="chip" type="button" @click="emit('action', 'account')">
-        <IconBase name="checkbox-off" :size="12" :stroke-width="1.4" />
-        资产账户
-      </button>
-      <button class="chip" type="button" @click="emit('action', 'image')">
-        <IconBase name="checkbox-off" :size="12" :stroke-width="1.4" />
-        图片
-      </button>
-      <button
-        class="chip"
-        :class="{ 'is-on': noReimburse }"
-        type="button"
-        @click="noReimburse = !noReimburse"
-      >
-        <IconBase :name="noReimburse ? 'checkbox-on' : 'checkbox-off'" :size="12" :stroke-width="1.4" />
-        不报销
-      </button>
     </div>
 
     <NumericKeypad @key="(k) => emit('key', k)" />

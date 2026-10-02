@@ -26,11 +26,16 @@ const billStore = useBillStore()
 const ledgerStore = useLedgerStore()
 const toast = useToast()
 
+/**
+ * 记账类型只留**支出 / 收入**。
+ *
+ * 「转账」「借贷」已在第二阶段按产品决定砍掉：它们从未真正建模
+ * （提交时被折叠成 `expense`，见下面的 payload），也没有独立的分类体系，
+ * 留着就是两个「点了会记成支出的」假入口。
+ */
 const TYPES = [
   { key: 'expense', label: '支出' },
-  { key: 'income', label: '收入' },
-  { key: 'transfer', label: '转账' },
-  { key: 'lending', label: '借贷' }
+  { key: 'income', label: '收入' }
 ]
 
 const MANAGE_ENTRY = { id: '__manage__', name: '分类管理', icon: 'settings' }
@@ -42,7 +47,6 @@ const subId = ref('')
 const expandedId = ref('')
 const remark = ref('')
 const dateKey = ref(todayKey())
-const noReimburse = ref(false)
 const editingId = ref('')
 const confirmOpen = ref(false)
 const loading = ref(false)
@@ -100,7 +104,7 @@ function selectFirstPrimary() {
   }
 }
 
-/** 切换支出/收入/转账/借贷：分类体系不同，必须清掉上一个类型的选择后重选 */
+/** 切换支出 / 收入：分类体系不同，必须清掉上一个类型的选择后重选 */
 function switchType(key) {
   if (type.value === key) return
   type.value = key
@@ -216,11 +220,6 @@ function onKey(key) {
   if (key === 'done') submit(false)
 }
 
-function onAction(name) {
-  if (name === 'account') toast.show('资产账户将在后续版本支持')
-  if (name === 'image') toast.show('图片附件将在后续版本支持')
-}
-
 /* ---------------- 草稿：离开页面不丢编辑内容 ---------------- */
 
 /** 把当前表单状态落盘（任一字段变化即写入，刷新/误关页面也能恢复） */
@@ -232,7 +231,6 @@ function persistDraft() {
     expandedId: expandedId.value,
     remark: remark.value,
     dateKey: dateKey.value,
-    noReimburse: noReimburse.value,
     acc: acc.value,
     op: op.value || '',
     cur: cur.value,
@@ -248,7 +246,6 @@ function applyDraft(draft) {
   expandedId.value = draft.expandedId || ''
   remark.value = draft.remark || ''
   dateKey.value = draft.dateKey || todayKey()
-  noReimburse.value = !!draft.noReimburse
   acc.value = Number(draft.acc) || 0
   op.value = draft.op || null
   cur.value = draft.cur || ''
@@ -285,12 +282,17 @@ async function submit(again) {
 
   try {
     const payload = {
-      type: type.value === 'transfer' || type.value === 'lending' ? 'expense' : type.value,
+      type: type.value,
       amount,
       categoryId,
       remark: remark.value,
       date: dateKey.value,
-      noReimburse: noReimburse.value
+      /**
+       * `noReimburse`（不报销）已随记账页精简下线（第二阶段的决定）：
+       * 字段仍留在数据契约里以兼容历史文档，但 UI 不再提供入口，
+       * 读写一律归一为 `false` —— 否则编辑一笔老账会把旧值「隐形」带下去。
+       */
+      noReimburse: false
     }
     if (editingId.value) {
       await billStore.updateBill(editingId.value, payload)
@@ -367,7 +369,6 @@ onMounted(async () => {
       op.value = null
       remark.value = bill.remark || ''
       dateKey.value = bill.date || todayKey()
-      noReimburse.value = !!bill.noReimburse
       // 这笔账引用的分类可能已被删除（悬空 id），兜底回退
       normalizeSelection()
     } else {
@@ -385,7 +386,7 @@ onMounted(async () => {
 
 /* 表单任一字段变化立即落盘，保证切页面 / 刷新 / 误关都不丢编辑内容 */
 watch(
-  [type, primaryId, subId, expandedId, remark, dateKey, noReimburse, acc, op, cur, editingId],
+  [type, primaryId, subId, expandedId, remark, dateKey, acc, op, cur, editingId],
   () => {
     if (loading.value) return
     persistDraft()
@@ -460,12 +461,10 @@ watch(primaries, () => {
     <RecordPanel
       v-model:remark="remark"
       v-model:date-key="dateKey"
-      v-model:no-reimburse="noReimburse"
       :amount-text="amountText"
       :ledger-name="ledgerStore.currentName"
       :remark-suggestions="remarkSuggestions"
       @key="onKey"
-      @action="onAction"
     >
     </RecordPanel>
 

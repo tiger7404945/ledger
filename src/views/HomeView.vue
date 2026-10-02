@@ -30,11 +30,15 @@ const rangeLabel = computed(() => {
 })
 
 /**
- * 净资产 = 各资产账户余额之和。
- * 第一阶段不建模「资产账户」，因此固定为 0（与参考设计一致）；
- * 接入账户体系后改为从 accountRepository 汇总。
+ * 总览区底部的三个统计口径。放在一处算，模板只负责渲染 ——
+ * 「本月结余」= 本月收入 − 本月支出（口径由数据层 `summarizeBills` 定，
+ * 见 `api/core/query.js`，前端不自己减一遍）。
  */
-const netAsset = computed(() => 0)
+const heroStats = computed(() => [
+  { key: 'income', label: '本月收入', value: summary.value.income },
+  { key: 'balance', label: '本月结余', value: summary.value.balance },
+  { key: 'dailyAvg', label: '日均支出', value: summary.value.dailyAvg }
+])
 
 onMounted(async () => {
   await Promise.all([ledgerStore.ensureLoaded(), categoryStore.ensureLoaded()])
@@ -69,8 +73,10 @@ function openBill(bill) {
           <AmountText :value="summary.expense" :size="36" :weight="700" space />
         </div>
         <div class="hero-foot">
-          <span>本月收入 ¥ {{ summary.income.toFixed(2) }}</span>
-          <span>日均支出 ¥ {{ summary.dailyAvg.toFixed(2) }}</span>
+          <div v-for="stat in heroStats" :key="stat.key" class="hero-stat">
+            <em>{{ stat.label }}</em>
+            <b>¥ {{ stat.value.toFixed(2) }}</b>
+          </div>
         </div>
       </section>
 
@@ -95,32 +101,11 @@ function openBill(bill) {
         </button>
       </section>
 
-      <!-- 自动记账 / 净资产 -->
-      <div class="mini-row">
-        <section class="card mini">
-          <div class="mini-head">
-            <i class="bar" />
-            <span>自动记账</span>
-          </div>
-          <span class="mini-pill">未开启</span>
-        </section>
-        <section class="card mini">
-          <div class="mini-head">
-            <i class="bar" />
-            <span>净资产</span>
-          </div>
-          <AmountText class="mini-amount" :value="netAsset" :size="22" :weight="600" />
-        </section>
-      </div>
-
+      <!-- 分类入口（原「添加卡片 / 编辑首页」两个入口已按产品决定合并） -->
       <div class="quick-row">
         <button class="quick" type="button" @click="router.push('/category')">
-          <IconBase name="plus" :size="15" />
-          添加卡片
-        </button>
-        <button class="quick" type="button" @click="router.push('/category')">
           <IconBase name="edit" :size="15" />
-          编辑首页
+          编辑分类
         </button>
       </div>
     </div>
@@ -204,11 +189,38 @@ function openBill(bill) {
   font-weight: 700;
 }
 
+/* 总览底部统计：三列等宽，标签在上、金额在下。
+   原来是「本月收入 / 日均支出」挤在一行 —— 加上「本月结余」后一行
+   装不下三个「¥ 12,000.00」（会溢出/换行），所以改成三列 + 顶部细分隔线。 */
 .hero-foot {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.hero-stat {
   display: flex;
-  gap: 18px;
-  font-size: 12.5px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hero-stat em {
+  font-style: normal;
+  font-size: 11.5px;
   color: var(--on-brand-dim);
+}
+
+.hero-stat b {
+  font-family: var(--font-num);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  letter-spacing: -0.2px;
 }
 
 /* ---------- 今日账单 ---------- */
@@ -263,55 +275,11 @@ function openBill(bill) {
   font-size: 12.5px;
 }
 
-/* ---------- 小卡片 ---------- */
-.mini-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.mini {
-  padding: 14px 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 92px;
-}
-
-.mini-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13.5px;
-  color: var(--ink);
-}
-
-.bar {
-  width: 3px;
-  height: 12px;
-  border-radius: 2px;
-  background: var(--brand);
-}
-
-.mini-pill {
-  align-self: flex-start;
-  padding: 3px 10px;
-  border-radius: var(--r-pill);
-  background: var(--surface-3);
-  color: var(--ink-3);
-  font-size: 11.5px;
-}
-
-.mini-amount {
-  margin-top: auto;
-}
-
+/* ---------- 次要入口 ---------- */
 .quick-row {
   display: flex;
   justify-content: center;
-  gap: 40px;
-  padding: 22px 0 8px;
+  padding: 20px 0 8px;
 }
 
 .quick {

@@ -28,13 +28,12 @@ const DRAFT_VERSION = 1
 /**
  * @typedef {Object} RecordDraft
  * @property {number}  v            草稿结构版本
- * @property {string}  type         expense | income | transfer | lending
+ * @property {string}  type         expense | income
  * @property {string}  primaryId    一级分类 id
  * @property {string}  subId        二级分类 id，无则 ''
  * @property {string}  expandedId   当前展开二级面板的一级分类 id
  * @property {string}  remark       备注
  * @property {string}  dateKey      YYYY-MM-DD
- * @property {boolean} noReimburse  不报销
  * @property {number}  acc          计算器：累加值
  * @property {string}  op           计算器：待执行运算符 '' | '+' | '-'
  * @property {string}  cur          计算器：正在输入的数字串

@@ -17,7 +17,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁），共 549 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁），共 576 条
 ```
 
 ### 配置云端（可选）
@@ -41,9 +41,9 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
 
 | 路由                                            | 页面                     | 对应截图    |
 | --------------------------------------------- | ---------------------- | ------- |
-| `/`                                           | 首页（本月总览 / 今日账单 / 净资产）  | 图 11    |
+| `/`                                           | 首页（本月总览含结余 / 今日账单）  | 图 11    |
 | `/bills`                                      | 账单（流水 + 日历，按月切换）       | 图 12    |
-| `/record`                                     | 记账（支出 / 收入 / 转账 / 借贷）  | 图 13、14 |
+| `/record`                                     | 记账（支出 / 收入）  | 图 13、14 |
 | `/record?id=xxx`                              | 修改账单（带入原数据，可删除）        | —       |
 | `/category`                                   | 分类管理 · 一级              | 图 18    |
 | `/category/:parentId/sub`                     | 分类管理 · 二级（底部弹层）        | 图 15    |
@@ -336,7 +336,9 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 验收项 | 结果 |
 | --- | --- |
 | `npm run build` | 通过（130 modules；主包 257.88 kB / gzip 92.99 kB + SDK 独立 chunk 871.46 kB / gzip 220.81 kB） |
-| 数据层断言合计 | **549 条全绿**。改造前 529 条（含 `firstbind-test` 39 条）→ 删 39、`seed` 14→28、`sync` 128→134、`partition` 51→61、新增 `gate-test` 29；`contract` / `period` / `migrate` / `conflict` / `cloudid` 条数不变 |
+| 数据层断言合计 | **549 条全绿**。改造前 529 条（含 `firstbind-test` 39 条）→ 删 39、`seed` 14→28、`sync` 128→134、`partition` 51→61、新增 `gate-test` 29；`contract` / `period` / `migrate` / `conflict` / `cloudid` 条数不变。（S7-10 追加后累计 **576 条**：partition 74→77，sync 134→143、gate 29→31 为 10-02 当天前置修复所加） |
+| 裸库继承关闭（S7-10） | 通过（装配层 `migrateFrom` 恒 `false`、`claimant` 下线；`partition-test` 第 15 节源码扫描守卫。真机正反实证与决策记录见 `phase2-backend-plan.md` 坑 10 与 S7-10 小节） |
+| 功能裁剪（S7-10） | 通过（记账页只留「支出 / 收入」两个 Tab 与「今天 / 账本」两个胶囊；首页总览加「本月结余」、删「自动记账 / 净资产」两卡、「添加卡片 + 编辑首页」合并为「编辑分类」。无云端实例浏览器走查：记一笔 / 改一笔正常、console 无报错；`npm run build` 通过） |
 | 种子分层（S7-9） | 通过（`buildBase()` = 1 账本 + 42 分类、**0 账单**；`buildDemoBills()` 生产构建返回 `[]`；`buildSeed('full')` 仍是 44 条演示账单，与改造前一致） |
 | 未登录不产生云端账号（S7-1） | 通过（`ensureSignedIn()` 拿不到持久化登录态即抛 `NOT_SIGNED_IN`；`getIdentity()` 把遗留匿名会话判为「未登录」） |
 | 未登录分区（S7-2） | 通过（`indexedDB.databases()` 实测：旧库 `ledger_anon`=46 / `ledger_0ouzurrt`=46 仍在盘上但**不再被读取**；新分区 `ledger_guest`=44，恰为纯种子，说明**没有继承**旧库） |
@@ -362,7 +364,9 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 
 > **这轮走查用了「对照实验」而不是单点观察**：为了验「未配 `.env.local` 时不拦截」，把 `.env.local` 临时改名后**在独立端口**起了一个实例，从模块里直接读出 `cloud === null`（`import('/src/api/index.js')`）再点「+」；恢复 `.env.local` 后在同一端口复验 `{ hasCloud: true, signedIn: false }` → 点「+」被拦。两个场景同端口、同 origin，结论才站得住。
 >
-> **未做真实云端往返**：「全新账号登录 → 兜底分类推上云」与「登录后记一笔 → 待同步归零」需要**真实短信验证码**（会往手机发短信），本轮由 `partition-test` 的 61 条断言提供等价覆盖，**真机手动验证仍待做**。
+> **真实云端往返**：「全新账号登录 → 兜底分类推上云」「登录后记一笔 → 待同步归零」「退出 / 重新登录回拉」
+> 已于 **2026-10-02 真机验证通过**（无痕窗口 + CloudBase 控制台独立核对：云端恰为 `1 账本 / 42 分类 / 0 账单`，
+> 记一笔 ¥168 后云端 1 条、退出清空、重登回拉）。当时由 `partition-test` 的 61 条断言提供等价覆盖（现已 77 条）。
 >
 > **一个诚实的遗留**：生产包的应用 chunk 里仍能找到 `地铁通勤` / `星巴克` 等演示文案。**这不是摇树失败** —— `SEED_BILL_NOTES`（导出常量）与 `buildExtraBills`（导出函数）是为**开发期遗留本地库做历史回填**的公开 API，它们依赖 `BILL_TEMPLATES` / `EXTRA_BILL_TEMPLATES` 两个模板数组，一经导出即不可摇。功能上**没有任何路径会写入**演示账单（`buildDemoBills()` 生产返回 `[]`，2026-10-02 起「重置演示数据」按钮已删除、演示数据没有任何 UI 入口），代价只是多几 KB 文本。要根治得把整块改成 dev-only 的动态 `import()`。
 
@@ -371,15 +375,15 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
 - 数据当前持久化在 **IndexedDB**（按账号分区：登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。~~「我的 → 重置演示数据」~~（**该按钮已于 2026-10-02 删除**：演示数据不再播发，没有可重置的东西；演示种子只剩测试在用）。
 - 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
-- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **549 条**）
+- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **576 条**）
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（28 条）/ `migrate-test.mjs`（11 条）
     - `seed-test` 含 S7-9 的分层断言：`buildBase()` 只含账本 + 分类（**0 条账单**）、`buildDemoBills()` 在生产构建下返回空、`buildSeed()` 的组合结果与改造前一致（演示数据不缩水）
-  - `sync-test.mjs` —— 同步引擎 19 组场景（134 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等；S7 新增「未登录短路（`reason === 'not-signed-in'`）」的用例
+  - `sync-test.mjs` —— 同步引擎 20 组场景（143 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等；S7 新增「未登录短路（`reason === 'not-signed-in'`）」与「退出后重新登录全量回拉」的用例
   - `conflict-test.mjs` —— 并发与边界 13 组场景（135 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
-  - `partition-test.mjs` —— 库分区与旧库继承（61 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种；**S7 新增**未登录分区只播基础设施 / 不继承旧库、账号分区兜底分类 `updatedAt = 0`、二次加载仍是 0 条账单
-  - `gate-test.mjs` —— 写操作登录门禁（29 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）
+  - `partition-test.mjs` —— 库分区与旧库继承（77 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种、连接层自愈；**S7 新增**未登录分区只播基础设施 / 演示账单一次性清理、账号分区兜底分类 `updatedAt = 0`、**S7-10 装配层恒不继承裸库（源码扫描回归守卫）**
+  - `gate-test.mjs` —— 写操作登录门禁（31 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）、身份切换后的 store 刷新时序
   - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。

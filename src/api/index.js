@@ -34,7 +34,7 @@ import { createIdbAdapter } from './adapters/idbAdapter.js'
 import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
 import { GUEST_ACCOUNT_PREFIX, accountPrefixOf } from './core/cloudId.js'
-import { DB_NAME, DB_PARTITION_PREFIX, isPartitionedDbName, partitionedDbName } from './core/idb.js'
+import { DB_NAME, partitionedDbName } from './core/idb.js'
 import { cloudEnvId, isCloudConfigured } from '../config/env.js'
 
 const ADAPTERS = {
@@ -101,14 +101,30 @@ function dbNameFor(uid) {
  *
  * | | `ledger_guest`（未登录） | `ledger_<账号前缀>`（已登录） |
  * | --- | --- | --- |
- * | 播种 | 开发构建整套（含演示账单）/ 生产构建只播基础设施 | **只播基础设施** |
+ * | 播种 | **只播基础设施**（`'base'`） | **只播基础设施** |
  * | 分类时间戳 | 正常 | **0**（默认值，永远输给云端真实数据） |
- * | 继承旧裸库 | **不继承** | 继承（且裸库只能被认领一次） |
+ * | 继承旧裸库 | **不继承** | **不继承**（S7-10 起，见下） |
+ *
+ * ## S7-10：账号分区也不继承裸库
+ *
+ * 原设计（S5-5）让**第一个**登录的账号认领裸库 `ledger`，把第一阶段的老数据
+ * 顺过来。真机实测（2026-10-02）发现这条路会**击穿 S7**：
+ *
+ *   裸库 `ledger` 是 S5 之前的「未分区老家」，里面躺着一整套**演示账单**
+ *   （44 条，¥8720.72）。账号分区一旦继承它，`enqueueLocalForCloud()` 会把
+ *   继承来的文档**整体入队**，下一轮同步就推到真实账号名下 ——
+ *   新账号凭空多出演示账，正是 S7「全新账号 0 账单」要防的事。
+ *
+ * 于是这里传 `false`：**登录后只信云端**（拉取覆盖本地），放弃老库自动迁移。
+ * 代价是「第一阶段的老用户不会自动带走老数据」—— 但那条路径从来没有真实
+ * 用户走过，而污染路径是**真机上复现过的**，两害相权取轻。
+ *
+ * ⚠️ 适配器仍保留 `migrateFrom` / `claimant` 能力（`partition-test` 第 7/10/11
+ *    节照旧覆盖），只是**装配层不再使用**——将来若要恢复迁移，改这一行即可。
  */
 function buildInstance(dbName) {
   if (bucketCache.has(dbName)) return bucketCache.get(dbName)
 
-  const partitioned = isPartitionedDbName(dbName)
   const isGuest = dbName === partitionedDbName(GUEST_ACCOUNT_PREFIX)
 
   const options =
@@ -141,14 +157,17 @@ function buildInstance(dbName) {
            */
           purgeSeedBills: isGuest,
           /**
-           * 继承旧裸库（S5-5）：**只有账号分区才认领**。
-           * 未登录分区传 false —— 它不是一个「账号」，没有资格把旧库据为己有
-           * （裸库只能被认领一次，被 guest 占了，用户第一次登录的那个账号
-           * 就再也继承不到旧数据）。
+           * 继承旧裸库（S5-5）：**装配层一律关闭**（S7-10）。
+           *
+           * 曾经只有账号分区认领裸库（`partitioned && !isGuest`）。真机实测
+           * 证实那条路会把裸库里遗留的**演示账单**整批入队推上真实账号
+           * （详见文件头「S7-10」）。现在登录后只信云端：新分区只播
+           * 基础设施，数据由同步引擎从云端拉齐。
+           *
+           * ⚠️ 想恢复老库迁移只需把它改回 `partitioned && !isGuest ? DB_NAME : false`
+           *    （并同时把 `claimant` 传回去）。
            */
-          migrateFrom: partitioned && !isGuest ? DB_NAME : false,
-          // 认领标识 = 库名去掉前缀，与库名一一对应
-          claimant: partitioned ? dbName.slice(DB_PARTITION_PREFIX.length) : ''
+          migrateFrom: false
         }
 
   const db = ADAPTERS[DATA_SOURCE](options)

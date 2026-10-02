@@ -58,6 +58,7 @@ const { createIdbAdapter } = await import(`${SRC}api/adapters/idbAdapter.js`)
 
 /* 断言与汇总统一走 scripts/_harness.mjs（输出格式见该文件顶部说明） */
 import { createSuite } from './_harness.mjs'
+import { readFileSync } from 'node:fs'
 
 const t = createSuite('partition-test')
 
@@ -485,6 +486,40 @@ t.group('14. ★ createIdbConnection：连接被浏览器关掉后自动重连')
     const db = await conn.acquire()
     t.ok('14g ★ 失败后下一次 acquire 会重开（拒绝不被缓存）', db === healthy && opens === 2)
   }
+}
+
+/* ---------------- 15. ★ 装配层不再继承裸库（S7-10 堵死污染路径） ---------------- */
+
+/**
+ * 真机实测（2026-10-02）：账号分区从裸库 `ledger` 继承了遗留的**演示账单**
+ * （44 条种子里的 30 条），`enqueueLocalForCloud()` 把它们整体入队，
+ * 下一轮同步就推到了真实账号名下 —— 直接击穿 S7「全新账号 0 账单」。
+ *
+ * 这一条用**源码扫描**防回归：`migrateFrom` 被写回「按分区打开」的表达式时，
+ * 所有单测照样全绿（适配器能力本身没被删），只有真机上才会看到
+ * 「新账号凭空多出演示账」。扫描前先剥掉注释，避免被文档里的示例代码误伤。
+ */
+t.group('15. ★ api/index.js：装配层不给任何分区开 migrateFrom')
+
+{
+  const indexSrc = readFileSync(new URL('../src/api/index.js', import.meta.url), 'utf8')
+  const code = indexSrc
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+
+  /**
+   * ⚠️ 不能用 `/migrateFrom:\s*(?!false)/` 判反例 —— `\s*` 会回溯到「零个空格」，
+   *    让 `migrateFrom: false` 也被判成命中（实测误报）。改成**把值取出来看**。
+   */
+  const migrateValues = [...code.matchAll(/migrateFrom:\s*([^,\n}]*)/g)].map((m) => m[1].trim())
+
+  t.ok('15a ★ 装配层确实传了 migrateFrom', migrateValues.length > 0, migrateValues.join(' | '))
+  t.ok(
+    '15b ★ 值只能是 false（没有任何「按分区条件」打开继承的写法）',
+    migrateValues.length > 0 && migrateValues.every((v) => v === 'false'),
+    migrateValues.join(' | ')
+  )
+  t.ok('15c 认领标识（claimant）随继承一起下线', !/claimant:/.test(code))
 }
 
 t.done()

@@ -7,6 +7,7 @@
 Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。v0.2.0 前端完成；
 **S0–S5、S7 全部完成**，云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
 **S7 = 去掉匿名身份 + 写操作登录门禁**（2026-10-01 裁决、2026-10-02 凌晨实施完毕，见下）。
+**S7-10（2026-10-02）= 关闭裸库继承 + 记账/首页功能裁剪**（见「功能裁剪」节）。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
@@ -55,7 +56,7 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **九脚本 573 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+- `npm run test:data` **九脚本 576 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
   cloudid42/partition74/**gate**31）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
@@ -94,11 +95,11 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   `ledger_anon`，而身上还挂着那个匿名 uid → 身份/库名错位、莫名弹首绑框）；S7 去匿名后 uid 真为
   `null`，禁令才反过来成立。**别再照 S5 的注释把 `switchPartition(null)` 禁掉。**
 - `migratePartitionData` 只搬 `SCHEMA/SEED/IMPORTED/OUTBOX_IMPORTED`，**刻意不搬 WATERMARK**。
-  ⚠️ **账号分区仍会从裸库 `ledger` 继承**（`index.js`：`migrateFrom: partitioned && !isGuest ? DB_NAME : false`）。
-  真机实测撞到（2026-10-02）：手机裸库里的**旧版演示种子**（`bill_seed_001~029` + `gap`，**无 extra** ⇒ EXTRA 特性之前的老版本）
-  在登录建 `ledger_<uid>` 时被搬进来（reason `migrated`），再被 `enqueueLocalForCloud()` 整体入队推上云
-  ⇒ 新账号凭空多出 30 条演示账单，**击穿 S7「全新账号 0 账单」这条线**。
-  S7 之后未登录写不了 ⇒ 裸库/旧分区里的账单只可能是旧的演示或匿名数据，**继承它没有正当收益**（关不关待用户决策）。
+  ⚠️ **账号分区的裸库继承已关闭（S7-10，2026-10-02 拍板）**：`api/index.js` 恒传 `migrateFrom: false`、
+  `claimant` 下线 —— 真机实证裸库里的旧演示种子会被搬进账号分区再推上云（击穿「全新账号 0 账单」），
+  继承没有正当收益 ⇒ **登录后只信云端**。适配器的迁移能力保留（partition-test 7/10/11 节），
+  恢复迁移=改回一行；**回归守卫 = partition-test 第 15 节源码扫描**（剥注释后断言值只能是 false），
+  别删。
 - ⚠️ **真机验证必须换干净环境**：同一浏览器里残留的 `ledger_guest`/裸库会在登录时被搬进账号分区并推上云。
   用**无痕窗口**打开，或先清掉该站点数据，否则验证结果必然被污染（看起来像「种子又灌进来了」）。
 - 首绑裁决（`core/firstBind.js` / `firstBindPending` / `firstBindDone`）**已整体删除**，别再加回来。
@@ -140,6 +141,15 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - **真机已验（2026-10-02，无痕窗口 + 控制台独立核对）**：全新账号登录云端恰为 1/42/0（兜底分类推云、0 账单）；
   换机登录回拉 ¥168 账单；记一笔待同步归零、云端 1 条（`_id` 带账号前缀）；退出清本地不弹裁决框。
   仍待验：多设备并发写；退出→换号登录的完整矩阵。
+
+## 功能裁剪（S7-10，2026-10-02 用户拍板，别「顺手加回来」）
+- **记账页**：类型 Tab 只留**支出/收入**（转账/借贷从未真正建模，提交时折叠成 expense）；
+  胶囊只留「今天 / 账本」（资产账户、图片、不报销已删）。`noReimburse` 契约字段**保留**但读写恒 `false`
+  （否则编辑老账会把旧值隐形带下去）；草稿里也没有它了。
+- **首页**：总览三列 = 本月收入 / **本月结余**（`summary.balance`，前端不自算）/ 日均支出；
+  「自动记账」「净资产」两卡已删；「添加卡片 + 编辑首页」合并为单个「编辑分类」（都跳 `/category`）。
+- `BILL_TYPES` 枚举保留 transfer/lending（历史文档要能过同步），只在 JSDoc 标注「不再产出」。
+- `page-structure.md` 已同步标注「原稿 XX 已裁」，设计稿本身没改。
 
 ## 运行 / 版本 / 选型
 - `npm run dev` → 127.0.0.1:5173。不配 `.env.local` 退纯本地（`ledger_guest` 分区，**门禁不生效**）。

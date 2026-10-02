@@ -29,7 +29,14 @@ export const COLLECTIONS = {
   BILL: 'bill'
 }
 
-/** 账单类型 */
+/**
+ * 账单类型。
+ *
+ * ⚠️ 记账页只产出 `expense` / `income`（第二阶段的决定：「转账」「借贷」
+ *    在 UI 上已下线）。枚举仍保留全部取值，是为了让**历史文档**（早期构建
+ *    或直接调 API 写入的）照常通过同步进出，不至于因为读到未知取值就把
+ *    文档判成脏数据丢掉。
+ */
 export const BILL_TYPES = {
   EXPENSE: 'expense',
   INCOME: 'income',
@@ -72,13 +79,13 @@ export const NAME_MAX_LENGTH = 8
  * @typedef {Object} Bill 账单
  * @property {string}  id
  * @property {string}  ledgerId
- * @property {'expense'|'income'|'transfer'|'lending'} type
+ * @property {'expense'|'income'|'transfer'|'lending'} type  实际只会写入 expense / income（见 BILL_TYPES）
  * @property {number}  amount                正数，单位元
  * @property {string?} categoryId            二级分类 id（无二级时为一级分类 id）
  * @property {string?} primaryCategoryId     一级分类 id
  * @property {string}  remark
  * @property {string}  date                  YYYY-MM-DD
- * @property {boolean} noReimburse
+ * @property {boolean} noReimburse           保留字段：记账页已不再提供该开关，写入恒为 false
  * @property {number}  createdAt
  * @property {number}  updatedAt
  * @property {0|1}     [deleted]

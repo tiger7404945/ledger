@@ -875,12 +875,13 @@ t.group('20. 重新登录：退出清本地后，同分区重建能全量回拉�
   if (cloud.as) cloud.as('1000000000000000001')
 
   // 与 api/index.js 的 buildInstance 对账号分区的传参保持一致（S7-9）
+  // （S7-10 起装配层不再继承裸库 —— migrateFrom 恒 false、claimant 已下线，
+  //   回归守卫见 partition-test 第 15 节）
   const OPTS = {
     dbName: 'ledger_sync_relogin',
     seed: 'base',
     seedCategoryUpdatedAt: 0,
-    migrateFrom: false,
-    claimant: '21053329'
+    migrateFrom: false
   }
 
   // ① 首次登录：播种 base → enqueueAll 把兜底数据推上云
