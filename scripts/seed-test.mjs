@@ -73,7 +73,7 @@ const year = Number(month.slice(0, 4))
 {
   const base = buildBase()
   t.eq('1b-1 buildBase 只含 1 个账本', base.ledgers.length, 1)
-  t.eq('1b-2 buildBase 含 42 条分类（基础设施齐备）', base.categories.length, 42)
+  t.eq('1b-2 buildBase 含 41 条分类（基础设施齐备）', base.categories.length, 41)
   t.ok('1b-3 buildBase 压根没有 bills 字段（不是空数组）', base.bills === undefined)
 
   const demo = buildDemoBills()
@@ -93,7 +93,7 @@ const year = Number(month.slice(0, 4))
   // 两档组合
   const full = buildSeed(1700000000000, { mode: SEED_MODE.FULL })
   const onlyBase = buildSeed(1700000000000, { mode: SEED_MODE.BASE })
-  t.ok('1b-9 full 档 = 基础设施 + 演示账单', full.bills.length > 0 && full.categories.length === 42)
+  t.ok('1b-9 full 档 = 基础设施 + 演示账单', full.bills.length > 0 && full.categories.length === 41)
   t.eq('1b-10 base 档不含任何演示账单', onlyBase.bills.length, 0)
   t.eq('1b-11 base 档的分类仍然齐备', onlyBase.categories.length, full.categories.length)
   t.ok(
@@ -134,7 +134,7 @@ const year = Number(month.slice(0, 4))
   } catch (e) {
     prodCounts = `ERR:${e?.message || e}`
   }
-  t.eq('1b-14 生产构建下演示账单为空、分类仍在（0 账单 / 42 分类）', prodCounts, '0,0,42')
+  t.eq('1b-14 生产构建下演示账单为空、分类仍在（0 账单 / 41 分类）', prodCounts, '0,0,41')
 }
 
 /* ---------------- 2. 迁移 ---------------- */

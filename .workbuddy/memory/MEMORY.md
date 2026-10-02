@@ -9,7 +9,8 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 **S7 = 去掉匿名身份 + 写操作登录门禁**（2026-10-01 裁决、2026-10-02 凌晨实施完毕，见下）。
 **S7-10（2026-10-02）= 关闭裸库继承 + 记账/首页功能裁剪**（见「功能裁剪」节）。
 **S8 = 上线收尾**：S8-1 数据备份/导入、S8-2 同步状态补全、S8-3 恢复模式、S8-4「我的」页精简 + 注销账号、
-S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡（见「数据备份」「注销账号」「schema 瘦身」三节）。
+S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡、S8-7 删种子分类「卤鹅」
+（见「数据备份」「注销账号」「schema 瘦身」「种子分类的增删」四节）。
 剩余上线项：正式域名/安全域名白名单（⚠️ 2026-10-02 实测：`*.tcloudbaseapp.com` 测试域名现在会先弹
 一个免责提示页，需点「确定访问」才能进 App —— 正式域名这件事的实际收益又多了一条）、真机系统终验、打 `v1.0.0`。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
@@ -32,6 +33,21 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡（见「数据备
   单张稿孤立色值不可信（`--brand-mint`=#DCFDF6 由 9 张稿交叉验证）。
 - 种子：本月支出 **8720.72** 别动；补数据走 `SEED_EXTRA_VERSION`+`migrate()`（幂等只补），
   **别 bump SCHEMA_VERSION**。统计页：未来日期不画；横轴桶用 store 的 `periodTrend`。
+- **分类总数 41**（支出 16 个一级 / 34 条 + 收入 7 条）。改种子分类数会让一堆断言挂掉：
+  `partition-test` 12b/12g/12j/13c/16a/16f/16j、`seed-test` 1b-2/1b-9/1b-14、
+  `sync-test` 20a/20b/20f/20g 都写死了条数，记得一起改。
+
+## 种子分类的增删（S8-7，改 `CATEGORY_TREE` 前必读）
+- 删一个种子分类 = **三处都要动**：① `CATEGORY_TREE` 删条目 + 加进
+  `REMOVED_SEED_CATEGORY_IDS`（用 `CAT_ID(key)`，**别写名字**）；② 本地由
+  `idbAdapter#purgeRemovedCategories()` 在 `init()` 里清（**排在播种之后、每次都跑、不落标记**）；
+  ③ **云端管理端先删**（`ledger_categories` 里 `_id = <账号前缀>_cat_xxx`）。
+- ⚠️ 顺序不能反：云端没删就发版 ⇒ 新设备首登水位线 0 全量回拉会把它拉回来；清理若是一次性
+  （落标记），它就永远赖在那台设备上。所以这里**刻意不落标记**（跟 `DEPRECATED_FIELDS_PURGED`
+  的写法不同，别「统一」过去）。
+- ⚠️ **只按固定 id 匹配，绝不按名字**：用户自建同名分类（id 是 `uid('cat')`）必须活着。
+- 与 S8-5 同纪律：**不动 `updatedAt`、不入 outbox**（入队会被判「本地更新」推上去顶掉别的设备）。
+- 挂在该分类下的账**一笔记不能删**（那是用户真实支出），`query.js` 兜底显示「未分类」。
 
 ## 数据层 / IndexedDB
 - 库名 `ledger_<账号前缀8位>`（`accountPrefixOf`），**未登录 = `ledger_guest`**（`GUEST_ACCOUNT_PREFIX`）；
@@ -66,8 +82,8 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡（见「数据备
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 726 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition103/**gate**53/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 749 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition118/**gate**61/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
@@ -194,7 +210,7 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡（见「数据备
   （**绝不 `signInAnonymously`**）；未登录分区 `ledger_guest`；`accountPrefixOf(null)` → `'guest'`；
   未登录**不启动** syncEngine，且 `sync()` 直接短路（`cloud.signedIn === false` → `reason:'not-signed-in'`；
   用 `=== false` 是为了别误拦没实现该属性的 fakeCloud）。
-- **种子分层（S7-9）**：`buildBase()`（账本 + 42 分类 = **基础设施**，任何分区都播）与
+- **种子分层（S7-9）**：`buildBase()`（账本 + 41 分类 = **基础设施**，任何分区都播；41 是 S8-7 删「卤鹅」后的数）与
   `buildDemoBills()`（演示账单，**仅 `import.meta.env.DEV`**，生产构建返回 `[]`）。
   `seed` 参数三态 `'base' | 'full' | false`；`runSeedMigration()` **只在播了演示账单时跑**。
   分区取值（**2026-10-02 修订**）：**所有分区常规启动恒 `'base'`** —— guest 开发构建也不播

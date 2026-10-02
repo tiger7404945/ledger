@@ -17,7 +17,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁 + 数据备份），共 726 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁 + 数据备份），共 749 条
 ```
 
 ### 配置云端（可选）
@@ -352,7 +352,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 | 数据层断言合计 | **549 条全绿**。改造前 529 条（含 `firstbind-test` 39 条）→ 删 39、`seed` 14→28、`sync` 128→134、`partition` 51→61、新增 `gate-test` 29；`contract` / `period` / `migrate` / `conflict` / `cloudid` 条数不变。（S7-10 追加后累计 **576 条**：partition 74→77，sync 134→143、gate 29→31 为 10-02 当天前置修复所加） |
 | 裸库继承关闭（S7-10） | 通过（装配层 `migrateFrom` 恒 `false`、`claimant` 下线；`partition-test` 第 15 节源码扫描守卫。真机正反实证与决策记录见 `phase2-backend-plan.md` 坑 10 与 S7-10 小节） |
 | 功能裁剪（S7-10） | 通过（记账页只留「支出 / 收入」两个 Tab 与「今天 / 账本」两个胶囊；首页总览加「本月结余」、删「自动记账 / 净资产」两卡、「添加卡片 + 编辑首页」合并为「编辑分类」。无云端实例浏览器走查：记一笔 / 改一笔正常、console 无报错；`npm run build` 通过） |
-| 种子分层（S7-9） | 通过（`buildBase()` = 1 账本 + 42 分类、**0 账单**；`buildDemoBills()` 生产构建返回 `[]`；`buildSeed('full')` 仍是 44 条演示账单，与改造前一致） |
+| 种子分层（S7-9） | 通过（`buildBase()` = 1 账本 + 41 分类（S8-7 删「卤鹅」后由 42 变 41）、**0 账单**；`buildDemoBills()` 生产构建返回 `[]`；`buildSeed('full')` 仍是 44 条演示账单，与改造前一致） |
 | 未登录不产生云端账号（S7-1） | 通过（`ensureSignedIn()` 拿不到持久化登录态即抛 `NOT_SIGNED_IN`；`getIdentity()` 把遗留匿名会话判为「未登录」） |
 | 未登录分区（S7-2） | 通过（`indexedDB.databases()` 实测：旧库 `ledger_anon`=46 / `ledger_0ouzurrt`=46 仍在盘上但**不再被读取**；新分区 `ledger_guest`=44，恰为纯种子，说明**没有继承**旧库） |
 | 未登录不启动同步（S7-3） | 通过（`switchPartition(null)` 只 `stop()`；`sync()` 遇 `cloud.signedIn === false` 直接短路返回 `reason:'not-signed-in'`，队列不动、云端 0 条） |
@@ -388,15 +388,15 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
 - 数据当前持久化在 **IndexedDB**（按账号分区：登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。~~「我的 → 重置演示数据」~~（**该按钮已于 2026-10-02 删除**：演示数据不再播发，没有可重置的东西；演示种子只剩测试在用）。
 - 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
-- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **726 条**）
+- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **749 条**）
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（28 条）/ `migrate-test.mjs`（11 条）
     - `seed-test` 含 S7-9 的分层断言：`buildBase()` 只含账本 + 分类（**0 条账单**）、`buildDemoBills()` 在生产构建下返回空、`buildSeed()` 的组合结果与改造前一致（演示数据不缩水）
   - `sync-test.mjs` —— 同步引擎 20 组场景（143 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等；S7 新增「未登录短路（`reason === 'not-signed-in'`）」与「退出后重新登录全量回拉」的用例
   - `conflict-test.mjs` —— 并发与边界 13 组场景（135 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
-  - `partition-test.mjs` —— 库分区与旧库继承（103 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种、连接层自愈；**S7 新增**未登录分区只播基础设施 / 演示账单一次性清理、账号分区兜底分类 `updatedAt = 0`、S7-10 装配层恒不继承裸库（源码扫描回归守卫）；**S8-4 新增**注销把分区清回出厂态（同号再登录能重新播种 + 遗留 localStorage 键一并清 + 与 `clearLocalData` 的反例对照）；**S8-5 新增**废弃字段清理（清得掉 + `updatedAt` 原样 + 不入队 + 幂等）与 `month` 死索引（新库不建 / 老库升级后删掉、其它索引与数据不受影响）
-  - `gate-test.mjs` —— 写操作登录门禁（53 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）、身份切换后的 store 刷新时序；**S8-4 新增**注销账号的顺序守卫（先清云端 → 再清本地 → 最后登出切分区）与「注销按钮只能开确认框、不得直绑执行」；**S8-5 新增** schema 清理的写入点守卫（三个已删字段的每一个写入路径，含记账页提交 payload、`DB_VERSION` 与两条索引变更）；**S8-6 新增**「注销文案不解释平台侧记录」反向守卫 + 打赏卡标题与下载按钮
+  - `partition-test.mjs` —— 库分区与旧库继承（118 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种、连接层自愈；**S7 新增**未登录分区只播基础设施 / 演示账单一次性清理、账号分区兜底分类 `updatedAt = 0`、S7-10 装配层恒不继承裸库（源码扫描回归守卫）；**S8-4 新增**注销把分区清回出厂态（同号再登录能重新播种 + 遗留 localStorage 键一并清 + 与 `clearLocalData` 的反例对照）；**S8-5 新增**废弃字段清理（清得掉 + `updatedAt` 原样 + 不入队 + 幂等）与 `month` 死索引（新库不建 / 老库升级后删掉、其它索引与数据不受影响）；**S8-7 新增**废弃种子分类清理（残留被删掉 + 挂在它下面的二级分类一并清 + 挂它的账不连坐且显示「未分类」+ 用户自建的**同名**分类安然无恙 + 不入队 + 被回拉回来还能自愈）
+  - `gate-test.mjs` —— 写操作登录门禁（61 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）、身份切换后的 store 刷新时序；**S8-4 新增**注销账号的顺序守卫（先清云端 → 再清本地 → 最后登出切分区）与「注销按钮只能开确认框、不得直绑执行」；**S8-5 新增** schema 清理的写入点守卫（三个已删字段的每一个写入路径，含记账页提交 payload、`DB_VERSION` 与两条索引变更）；**S8-6 新增**「注销文案不解释平台侧记录」反向守卫 + 打赏卡标题与下载按钮；**S8-7 新增**废弃种子分类的清理守卫（种子不含 `goose`、名单只认固定 id **不按名字匹配**、清理不动 `updatedAt` / 不入队、调用点排在播种之后且不落一次性标记）
   - `backup-test.mjs` —— 数据备份（102 条断言）：导出格式（白名单字段、软删除墓碑与同步元数据不进文件）、解析校验（坏数据逐条跳过不打断整份、版本过新整份拒绝）、合并计划三分支（新增 / 更新 / 跳过）、**「导出 → 空库导入 → 再导一次」往返幂等**、旧备份不覆盖本地新数据、**恢复计划四分支（新增 / 覆盖 / 复活 / 软删清除）+ 「导出 → 误删 → 恢复」端到端 + 恢复两次幂等 + 账本保护 + 「清除只写墓碑不做物理删除」**、导入入同步队列、身份凭据（uid）不泄漏进文件、「导入过门禁 / 导出不过门禁 / 恢复必经二次确认」静态守卫；**S8-5 新增**已删字段（`noReimburse` / `version` / `ownerId`）既不被导出也不被导入
   - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。

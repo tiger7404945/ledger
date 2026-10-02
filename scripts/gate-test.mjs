@@ -288,4 +288,52 @@ const sheet = sheetMod.useLoginSheet()
   )
 }
 
+/* ---------------- 7. 废弃种子分类的回归守卫（S8-7） ---------------- */
+
+/**
+ * S8-7 删掉了种子里的「卤鹅」（`cat_goose`）。
+ *
+ * 与 S8-5 的字段清理同构，但多一个反方向的坑：**用户的分类可以叫任何名字**，
+ * 所以清理只能认**固定 id**。一旦有人图省事改成「按名字删」，用户自己建的
+ * 「卤鹅」会被悄悄删掉 —— 那是一次静默的数据损失，且不会让任何别的测试失败。
+ */
+{
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const seedSrc = read('../src/api/mock/seed.js')
+  const idbSrc = read('../src/api/adapters/idbAdapter.js')
+
+  t.ok('7a ★ 分类树里没有 goose', !/key: 'goose'/.test(seedSrc))
+  t.ok(
+    '7b ★ 废弃名单用的是固定 id（CAT_ID(\'goose\')），不是名字',
+    /REMOVED_SEED_CATEGORY_IDS\s*=\s*\[\s*CAT_ID\('goose'\)\s*\]/.test(seedSrc)
+  )
+
+  const purgeFnAt = idbSrc.indexOf('async function purgeRemovedCategories')
+  const purgeBody = purgeFnAt > 0 ? idbSrc.slice(purgeFnAt, idbSrc.indexOf('async function init', purgeFnAt)) : ''
+  t.ok('7c ★ 适配器里有这个清理函数', purgeFnAt > 0)
+  t.ok(
+    '7d ★★ 只按 id / parentId 匹配 —— 不按 name（按名字会把用户自建的「卤鹅」也删了）',
+    purgeFnAt > 0 && /removed\.has\(c\.id\)/.test(purgeBody) && !/c\.name\s*===|\.name\s*\)\s*\.has/.test(purgeBody)
+  )
+  t.ok(
+    '7e ★★ 清理不动 updatedAt、不入队（同 S8-5：这是产品决定，不是用户改内容）',
+    purgeFnAt > 0 && !/\bupdatedAt\s*:/.test(purgeBody) && !/enqueue/.test(purgeBody)
+  )
+
+  // 调用点必须在 init 里（否则老库永远等不到清理），且排在播种 / 接管之后
+  const initBody = idbSrc.slice(idbSrc.indexOf('async function init'), idbSrc.indexOf('function ready()'))
+  const callAt = initBody.indexOf('await purgeRemovedCategories()')
+  const seedWriteAt = initBody.indexOf('buildSeed(')
+  t.ok('7f ★ init 里调用了清理', callAt > 0)
+  t.ok(
+    '7g ★ 清理排在播种之后（种子已不含它，顺序错了会把刚播的库再过一遍）',
+    callAt > seedWriteAt,
+    `call=${callAt} seed=${seedWriteAt}`
+  )
+  t.ok(
+    '7h ★★ 每次都跑、不落一次性标记（要能自愈「云端残留被全量回拉」）',
+    callAt > 0 && !/REMOVED_SEED_CATEGORIES_PURGED/.test(idbSrc)
+  )
+}
+
 t.done()

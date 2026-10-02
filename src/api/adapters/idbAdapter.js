@@ -1,7 +1,7 @@
 import { COLLECTIONS, NAME_MAX_LENGTH, RepositoryError, SCHEMA_VERSION } from '../contract.js'
 import { createOutbox } from '../sync/outbox.js'
 import { createIdbOutboxStore } from '../sync/outboxStore.js'
-import { buildSeed, SEED_MODE } from '../mock/seed.js'
+import { buildSeed, REMOVED_SEED_CATEGORY_IDS, SEED_MODE } from '../mock/seed.js'
 import { migrateSeedData } from '../core/migrate.js'
 import { IS_DEV } from '../../config/env.js'
 import { partitionRemote } from '../core/merge.js'
@@ -21,6 +21,7 @@ import {
   readAll as idbReadAll,
   readMeta as idbReadMeta,
   readOne as idbReadOne,
+  removeMany,
   toPlain,
   writeMeta as idbWriteMeta
 } from '../core/idb.js'
@@ -248,6 +249,43 @@ export function createIdbAdapter(options = {}) {
     return touched
   }
 
+  /* ---------------- 废弃种子分类清理（S8-7） ---------------- */
+
+  /**
+   * 删掉历史库里残留的**已废弃种子分类**（名单见 `REMOVED_SEED_CATEGORY_IDS`）。
+   *
+   * 与 `purgeDeprecatedFields` 的分工：那个清**字段**，这个整条删**分类**。
+   *
+   * ⚠️ **每次 `init()` 都跑，不落一次性标记** —— 这里的语义是「这个分类不该存在于
+   *    任何库里」，是个不变式，而不是一次性搬迁：
+   *      - 早于本次改动的库：本地已有该分类 ⇒ 这次启动删掉；
+   *      - 云端那份由管理端删（**必须先删云端**）—— 否则新设备首次登录时
+   *        水位线从 0 全量回拉，会把云端还留着的那条重新拉进来；若清理是一次性的
+   *        （标记已落），这条就会永远留在新设备上。每次 init 都跑 ⇒ 即便被拉回来
+   *        也会在下次启动自愈。
+   *    成本是一次分类表的全表读（41 行），可以忽略。
+   *
+   * ⚠️ **刻意不动 `updatedAt`、也不入 outbox**（同 `purgeDeprecatedFields` 的理由）：
+   *    这是产品决定，不是用户改内容。不入队则两端各清各的；真要推一条 tombstone
+   *    上去，反而会因为「本地更新」判定而把别的设备上的新修改顶掉。
+   *
+   * @returns {Promise<number>} 实际删掉的分类条数
+   */
+  async function purgeRemovedCategories() {
+    const removed = new Set(REMOVED_SEED_CATEGORY_IDS)
+    const categories = await readAll(STORES.CATEGORY)
+    // 种子分类都是固定 id；理论上没有二级分类挂在一个已被删的一级分类下，
+    // 但真出现了也要一并清掉（否则宫格里会剩一堆孤儿二级分类）
+    const hits = categories.filter((c) => removed.has(c.id) || removed.has(c.parentId))
+    if (!hits.length) return 0
+    const db = await getDB()
+    return removeMany(
+      db,
+      STORES.CATEGORY,
+      hits.map((c) => c.id)
+    )
+  }
+
   async function init() {
     await getDB()
 
@@ -334,6 +372,16 @@ export function createIdbAdapter(options = {}) {
       await purgeDeprecatedFields()
       await writeMeta({ [META_KEYS.DEPRECATED_FIELDS_PURGED]: DEPRECATED_FIELDS_VERSION })
     }
+
+    /**
+     * S8-7：删掉历史库里残留的**已废弃种子分类**（「卤鹅」）。
+     *
+     * 紧跟在字段清理之后、**每次都跑不落标记** —— 理由见
+     * `purgeRemovedCategories()` 的注释（这是个不变式，且要能自愈
+     * 「云端残留被全量回拉」的时序问题）。播种路径写进来的分类**已经不含**
+     * 废弃项（种子已改），所以这一步对全新库是空操作。
+     */
+    await purgeRemovedCategories()
 
     // 队列搬迁（旧 localStorage → IndexedDB）在这里顺带做完，
     // 幂等标记由 outboxStore 负责

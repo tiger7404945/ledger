@@ -11,8 +11,9 @@ import { round2 } from '../../utils/money.js'
 
 /**
  * Mock 种子数据
- * 参考截图还原：支出 17 个一级分类（含 4 个带二级分类）、收入 7 个一级分类，
+ * 参考截图还原：支出 16 个一级分类（含 5 个带二级分类）、收入 7 个一级分类，
  * 以及 2026 年 9 月的账单流水（本月支出精确为 ¥8720.72）。
+ * 合计 41 条分类（34 支出 + 7 收入）。
  *
  * ## 种子分两层（S7-9）
  *
@@ -126,8 +127,7 @@ const CATEGORY_TREE = [
   { key: 'repair', name: '维修保养', icon: 'car' },
   { key: 'medical', name: '医疗', icon: 'medkit' },
   { key: 'edu', name: '教育', icon: 'cap' },
-  { key: 'insurance', name: '保险', icon: 'membership' },
-  { key: 'goose', name: '卤鹅', icon: 'duck' }
+  { key: 'insurance', name: '保险', icon: 'membership' }
 ]
 
 const INCOME_TREE = [
@@ -142,6 +142,21 @@ const INCOME_TREE = [
 
 export const CAT_ID = (key) => `cat_${key}`
 export const SUB_ID = (key) => `sub_${key}`
+
+/**
+ * 种子**历史上播过、现已废弃**的分类 id 名单（S8-7）。
+ *
+ * 背景：`卤鹅`（`cat_goose`）是早期为了让宫格多一格而加进来的玩笑分类，
+ * 与设计稿还原的其余分类不是一回事，用户要求去掉。从 {@link CATEGORY_TREE}
+ * 删掉只能让**新库**不再有它 —— 已经播种过的库（本地 IndexedDB + 云端集合）
+ * 里那份还在，得由适配器按这份名单清掉。
+ *
+ * ⚠️ 名单只放**固定 id 的种子分类**。用户自己建的分类 id 是 `uid('cat')`
+ *    随机串，绝不会撞上 `cat_goose`，所以这个清理不会误伤用户自建的分类。
+ *    反过来说：**别把这个名单扩大成「按名字匹配」** —— 用户完全可以自己
+ *    建一个叫「卤鹅」的分类，那是他的自由，不该被系统悄悄删掉。
+ */
+export const REMOVED_SEED_CATEGORY_IDS = [CAT_ID('goose')]
 
 /**
  * 账单模板：offset = 距今天数（0 = 今天）

@@ -888,11 +888,11 @@ t.group('20. 重新登录：退出清本地后，同分区重建能全量回拉�
   await a1.ready()
   await a1.enqueueAll()
   const r1 = await e1.sync({ manual: true })
-  t.eq('20a 首登推送 43 条（1 账本 + 42 分类）', r1.pushed, 43)
+  t.eq('20a 首登推送 42 条（1 账本 + 41 分类）', r1.pushed, 42)
   t.eq(
-    '20b 云端：1 账本 / 42 分类 / 0 账单',
+    '20b 云端：1 账本 / 41 分类 / 0 账单',
     `${cloud._dump('ledger').length}/${cloud._dump('category').length}/${cloud._dump('bill').length}`,
-    '1/42/0'
+    '1/41/0'
   )
 
   // ② 记一笔账并推上去（模拟真机的 ¥168）
@@ -920,9 +920,9 @@ t.group('20. 重新登录：退出清本地后，同分区重建能全量回拉�
   t.eq('20e 重登 init 后（sync 前）仍是空库（不重复播种）', `${s1.ledgers.length}/${s1.categories.length}/${s1.bills.length}`, '0/0/0')
 
   const r2 = await e2.sync({ manual: true })
-  t.eq('20f 回拉条数 = 云端全部（44 = 1+42+1）', r2.pulled, 44)
+  t.eq('20f 回拉条数 = 云端全部（43 = 1+41+1）', r2.pulled, 43)
   const s2 = await a2.snapshot()
-  t.eq('20g 分类完整回来（updatedAt=0 也能被 pull 命中）', s2.categories.length, 42)
+  t.eq('20g 分类完整回来（updatedAt=0 也能被 pull 命中）', s2.categories.length, 41)
   t.eq('20h 账单回来', s2.bills.length, 1)
   t.eq('20i 账本回来', s2.ledgers.length, 1)
 }

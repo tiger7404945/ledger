@@ -341,7 +341,7 @@ t.group('12. 未登录分区只播基础设施（没有演示账单）')
   const guest = createIdbAdapter({ dbName: nextDb('guest'), seed: 'base', migrateFrom: false })
   const snap = await guest.snapshot()
   t.eq('12a guest 分区有账本（ledgerStore.currentId 依赖它）', snap.ledgers.length, 1)
-  t.eq('12b guest 分区的分类齐备（42 条，宫格不会是空的）', snap.categories.length, 42)
+  t.eq('12b guest 分区的分类齐备（41 条，宫格不会是空的）', snap.categories.length, 41)
   t.eq('12c ★ guest 分区没有任何演示账单', snap.bills.length, 0)
   t.ok('12d guest 分区没写演示数据迁移标记', snap.meta.seedExtra === undefined)
 
@@ -358,7 +358,7 @@ t.group('12. 未登录分区只播基础设施（没有演示账单）')
   })
   const acctSnap = await acct.snapshot()
   t.eq('12f ★ 账号分区同样没有演示账单（新账号不会凭空多 ¥8720.72）', acctSnap.bills.length, 0)
-  t.eq('12g 账号分区的分类齐备', acctSnap.categories.length, 42)
+  t.eq('12g 账号分区的分类齐备', acctSnap.categories.length, 41)
   t.ok(
     '12h ★ 账号分区的兜底分类 updatedAt = 0（不会盖掉云端改过名字的分类）',
     acctSnap.categories.every((c) => c.updatedAt === 0)
@@ -368,7 +368,7 @@ t.group('12. 未登录分区只播基础设施（没有演示账单）')
   await guest.ready()
   const snap2 = await guest.snapshot()
   t.eq('12i 二次加载仍是 0 条账单（base 档不跑演示数据迁移）', snap2.bills.length, 0)
-  t.eq('12j 二次加载分类数不变', snap2.categories.length, 42)
+  t.eq('12j 二次加载分类数不变', snap2.categories.length, 41)
 }
 
 /* ---------------- 13. 未登录分区的一次性清理（S7-9 补丁） ---------------- */
@@ -390,7 +390,7 @@ t.group('13. ★ purgeSeedBills：老 guest 库里的演示账单清一次')
   // ⚠️ snapshot().meta 只含 seedMeta 子对象，顶层标记要用 readMeta 直读
   const meta1 = await readMeta(await openDB({ dbName: legacyGuest, version: DB_VERSION }))
   t.ok('13b 清理动作落了一次性标记', Boolean(meta1.seedBillsPurged))
-  t.eq('13c 清理不碰基础设施（分类还在）', snap1.categories.length, 42)
+  t.eq('13c 清理不碰基础设施（分类还在）', snap1.categories.length, 41)
 
   // 模拟「重置演示数据」之后的库：标记在、账单也在 ⇒ 二次启动**不清**
   const g2 = createIdbAdapter({ dbName: legacyGuest, seed: 'base', purgeSeedBills: true })
@@ -558,7 +558,7 @@ t.group('16. ★ deleteLocalData：注销把分区清回出厂态')
     remark: '注销前的账'
   })
   const beforeSnap = await delAdapter.snapshot()
-  t.ok('16a 注销前分区里确实有数据', beforeSnap.bills.length === 1 && beforeSnap.categories.length === 42)
+  t.ok('16a 注销前分区里确实有数据', beforeSnap.bills.length === 1 && beforeSnap.categories.length === 41)
 
   // 造一份「第一阶段遗留」的 localStorage 旧库与旧队列（S1 接管后**刻意不删**）
   localStorage.setItem(LEGACY_DB_KEY, JSON.stringify({ schemaVersion: 1, bills: [{ id: 'old' }] }))
@@ -578,14 +578,14 @@ t.group('16. ★ deleteLocalData：注销把分区清回出厂态')
   // 「同一个手机号再登录」= 同一个库名重新建适配器
   const reLogin = createIdbAdapter({ dbName: delName, seed: 'base', seedCategoryUpdatedAt: 0 })
   const snap = await reLogin.snapshot()
-  t.eq('16f ★ 分区重新播种：分类恢复 42 条（不会是一片空宫格）', snap.categories.length, 42)
+  t.eq('16f ★ 分区重新播种：分类恢复 41 条（不会是一片空宫格）', snap.categories.length, 41)
   t.eq('16g ★ 用户账单一条不剩', snap.bills.length, 0)
   t.eq('16h 账本回来了（App 起得来）', snap.ledgers.length, 1)
   t.eq('16i 待推队列也空了（不会把上个账号的改动推给新身份）', await reLogin.outbox.pendingCount(), 0)
 
   // 同一个实例自己也要能恢复（生产里 bucketCache 会把这个实例还回来）
   const selfSnap = await delAdapter.snapshot()
-  t.eq('16j ★ 被清理过的那个实例自身也能重播种（initPromise 被作废）', selfSnap.categories.length, 42)
+  t.eq('16j ★ 被清理过的那个实例自身也能重播种（initPromise 被作废）', selfSnap.categories.length, 41)
 
   /* ---- 16B：反例 —— clearLocalData() 不能拿来当注销 ---- */
 
@@ -746,6 +746,97 @@ t.group('17. ★ S8-5：废弃字段清理与 month 死索引')
   const keptRows = await readAll(asV3, STORES.BILL)
   t.eq('17n 升级不丢数据', keptRows.length, 1)
   asV3.close()
+}
+
+/* ---------------- 18. 废弃种子分类清理（S8-7） ---------------- */
+
+{
+  const { REMOVED_SEED_CATEGORY_IDS, buildSeed } = await import(`${SRC}api/mock/seed.js`)
+
+  /** 从源码里抠出分类树的所有 key —— 顺带证明「种子里真的没有 goose 了」 */
+  const seedSrc = readFileSync(new URL('../src/api/mock/seed.js', import.meta.url), 'utf8')
+  const treeSrc = seedSrc.match(/const CATEGORY_TREE = \[[\s\S]*?\n\]/)[0]
+  const TREE_KEYS = [...treeSrc.matchAll(/key: '([^']+)'/g)].map((m) => m[1])
+
+  t.eq('18a ★ 废弃名单里就是那只鹅', REMOVED_SEED_CATEGORY_IDS, ['cat_goose'])
+  t.ok('18b ★ 种子树里已经没有 goose 了', !TREE_KEYS.includes('goose'))
+
+  /* ---- 18A：老库（播种过含鹅版本的库）里的残留被清掉 ---- */
+  const gooseDb = nextDb('goose')
+
+  // 手工造「老版本播种过」的库：41 条正常分类之外，多一条 cat_goose，
+  // 外加一条挂在它下面的二级分类（种子里没有，但要保证清理不留孤儿）
+  const rawGoose = await openDB({ dbName: gooseDb, version: DB_VERSION })
+  await writeMeta(rawGoose, { [META_KEYS.SCHEMA]: SCHEMA_VERSION })
+  const seedNow = buildSeed(1, { mode: 'base' })
+  await putMany(rawGoose, STORES.CATEGORY, [
+    ...seedNow.categories,
+    { id: 'cat_goose', name: '卤鹅', icon: 'duck', parentId: null, type: 'expense', ledgerId: 'ledger_default', order: 16, createdAt: 1, updatedAt: 1, deleted: 0 },
+    { id: 'sub_goose-leg', name: '鹅腿', icon: 'duck', parentId: 'cat_goose', type: 'expense', ledgerId: 'ledger_default', order: 0, createdAt: 1, updatedAt: 1, deleted: 0 },
+    // 用户自建的「卤鹅」：名字一样，但 id 是随机的 —— 绝不能被误删
+    { id: 'cat_mine_goose', name: '卤鹅', icon: 'duck', parentId: null, type: 'expense', ledgerId: 'ledger_default', order: 17, createdAt: 9, updatedAt: 9, deleted: 0 }
+  ])
+  // 一笔挂在鹅下面的账（历史数据里真有可能存在）
+  await putMany(rawGoose, STORES.BILL, [
+    {
+      id: 'bill_goose_1',
+      ledgerId: 'ledger_default',
+      type: 'expense',
+      amount: 66,
+      categoryId: 'cat_goose',
+      primaryCategoryId: 'cat_goose',
+      remark: '吃鹅',
+      date: '2026-09-20',
+      createdAt: 5,
+      updatedAt: 6,
+      deleted: 0
+    }
+  ])
+  rawGoose.close()
+
+  const before = await readAll(await openDB({ dbName: gooseDb, version: DB_VERSION }), STORES.CATEGORY)
+  t.eq('18c 造好的老库里确实有那只鹅（否则这一组测了个寂寞）', before.length, 41 + 3)
+
+  const gooseAdapter = createIdbAdapter({ dbName: gooseDb, seed: false })
+  await gooseAdapter.ready()
+
+  const dbAfter = await openDB({ dbName: gooseDb, version: DB_VERSION })
+  const catsAfter = await readAll(dbAfter, STORES.CATEGORY)
+  const idsAfter = catsAfter.map((c) => c.id)
+
+  t.ok('18d ★ cat_goose 被删掉了', !idsAfter.includes('cat_goose'))
+  t.ok('18e ★ 挂在它下面的二级分类一并清掉（不留孤儿）', !idsAfter.includes('sub_goose-leg'))
+  t.eq('18f ★ 只少了那两条（41 条种子 + 1 条用户自建 = 42）', catsAfter.length, 42)
+  t.ok(
+    '18g ★★ 用户自建的「卤鹅」（随机 id）安然无恙 —— 名单只认固定 id，不按名字匹配',
+    idsAfter.includes('cat_mine_goose')
+  )
+  t.ok('18h 其它分类一条不少', seedNow.categories.every((c) => idsAfter.includes(c.id)))
+
+  // 挂在这只鹅下面的账：分类没了，账必须还在（显示「未分类」，不能连账一起删）
+  const gooseBills = await readAll(dbAfter, STORES.BILL)
+  t.eq('18i ★ 账不会被连坐删除', gooseBills.length, 1)
+  const decorated = await gooseAdapter.bill.get('bill_goose_1')
+  t.eq('18j ★ 它显示为「未分类」（分类缺失时的兜底，不是崩掉）', decorated.displayName, '未分类')
+  t.eq(
+    '18k 账上的 categoryId 原样留着（改它等于替用户改内容）',
+    [decorated.categoryId, decorated.updatedAt],
+    ['cat_goose', 6]
+  )
+
+  t.eq('18l ★★ 清理不入队列（入队会被判成「本地更新」而推上去顶掉别的设备）', await gooseAdapter.outbox.pendingCount(), 0)
+
+  /* ---- 18B：每次都跑 ⇒ 云端残留被回拉回来也能自愈 ---- */
+  await putMany(await openDB({ dbName: gooseDb, version: DB_VERSION }), STORES.CATEGORY, [
+    { id: 'cat_goose', name: '卤鹅', icon: 'duck', parentId: null, type: 'expense', ledgerId: 'ledger_default', order: 16, createdAt: 1, updatedAt: 999999, deleted: 0 }
+  ])
+
+  const gooseAgain = createIdbAdapter({ dbName: gooseDb, seed: false })
+  await gooseAgain.ready()
+  const catsAgain = await readAll(await openDB({ dbName: gooseDb, version: DB_VERSION }), STORES.CATEGORY)
+  t.ok('18m ★★ 被回拉回来的那只鹅，下次启动又被清掉（不变式，不靠一次性标记）', !catsAgain.map((c) => c.id).includes('cat_goose'))
+  t.eq('18n 反复启动结果稳定', catsAgain.length, 42)
+  t.eq('18o 队列始终干净', await gooseAgain.outbox.pendingCount(), 0)
 }
 
 t.done()
