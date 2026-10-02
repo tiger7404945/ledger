@@ -7,10 +7,12 @@ import { useAccountStore } from '@/stores/account.js'
 import { db, DATA_SOURCE, cloud, syncEngine } from '@/api'
 import { useToast } from '@/composables/useToast.js'
 import { openLoginSheet } from '@/composables/useLoginSheet.js'
+import { formatClockTime } from '@/utils/date.js'
 import AppHeader from '@/components/AppHeader.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 import TabBar from '@/components/TabBar.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import BackupSheet from '@/components/BackupSheet.vue'
 
 const router = useRouter()
 const categoryStore = useCategoryStore()
@@ -20,11 +22,15 @@ const toast = useToast()
 
 const pending = ref(0)
 const syncState = ref(syncEngine.state)
+/** 上次成功同步的本地时刻（0 = 本次会话还没成功过）。见 syncEngine 的说明 */
+const lastSuccessAt = ref(syncEngine.lastSuccessAt || 0)
+const backupOpen = ref(false)
 let offSync = null
 let offAuth = null
 
 const entries = [
   { icon: 'settings', label: '分类管理', desc: '一级 / 二级分类的增删改', to: '/category' },
+  { icon: 'box', label: '数据备份', desc: '导出为 JSON 文件 / 从备份恢复' },
   { icon: 'piggy', label: '账本管理', desc: '多账本与共享（后续版本）' },
   { icon: 'cloudOff', label: '离线缓存', desc: 'IndexedDB 本地存储（已启用）' },
   { icon: 'sync', label: '云端同步', desc: '腾讯云开发增量同步（已接入）' },
@@ -53,6 +59,34 @@ const cloudLabel = computed(() => {
   if (syncState.value === 'offline') return '离线，联网后自动补推'
   return pending.value ? `待推 ${pending.value} 条` : '已同步'
 })
+
+/**
+ * 上次同步时间（S8-2）。
+ *
+ * ⚠️ 用 `lastSuccessAt`（本地时刻）而**不是** `lastSyncAt`（水位线）：
+ *    后者是服务端时间轴上的值，拿它显示会出现「刚同步完却说上次是昨天」。
+ *    两者的区别写在 `syncEngine` 的字段注释里。
+ *
+ * ⚠️ 未登录时直接说「未登录」而不显示时间：引擎在未登录时压根不启动，
+ *    显示「本次尚未同步」会让人以为是坏了。
+ */
+const lastSyncLabel = computed(() => {
+  if (!cloud) return '不支持（纯本地）'
+  if (!account.signedIn) return '未登录'
+  if (syncState.value === 'syncing') return '进行中…'
+  return formatClockTime(lastSuccessAt.value) || '本次尚未同步'
+})
+
+/**
+ * 失败态才给重试入口，且**只在重试有意义时给**。
+ *
+ * 「没意义」= 引擎自己都不会再试的类别（配额用完、权限被拒、主键冲突）——
+ * 那些错误再点一次还是同样的结果，给按钮等于骗人。判据直接复用引擎放在
+ * `lastError.retryable` 上的结论（见 syncEngine 的失败处置）。
+ */
+const canRetry = computed(
+  () => syncState.value === 'error' && syncEngine.lastError?.retryable !== false
+)
 
 /**
  * 账号卡（S7 后只有一种卡，两态 + 无云端兜底）。
@@ -121,6 +155,7 @@ onMounted(async () => {
   offSync = syncEngine.onStateChange((s) => {
     syncState.value = s.state
     pending.value = s.pendingCount
+    lastSuccessAt.value = s.lastSuccessAt || 0
   })
   // 登录态变化时同步刷新 store（账号可能在别处被改，比如登录弹层里刚登录完）
   if (cloud?.onAuthChange) {
@@ -142,6 +177,10 @@ async function handleEntry(entry) {
   if (entry.to) {
     // 写操作入口（分类管理）：由路由守卫统一拦未登录，这里不用重复判断
     router.push(entry.to)
+    return
+  }
+  if (entry.label === '数据备份') {
+    backupOpen.value = true
     return
   }
   if (entry.label === '离线缓存') {
@@ -174,6 +213,9 @@ async function syncNow() {
   else if (r?.skipped) toast.show(`已跳过：${r.reason}`)
   else toast.show(`同步失败：${r?.error?.message || '未知错误'}`)
   pending.value = await db.sync.pendingCount()
+  // 状态广播可能因为「前后都是 idle」而不触发，这里补一次真值同步
+  lastSuccessAt.value = syncEngine.lastSuccessAt || 0
+  syncState.value = syncEngine.state
   return r
 }
 </script>
@@ -248,15 +290,22 @@ async function syncNow() {
           <li><em>待同步队列</em><span>{{ pending }} 条</span></li>
           <li><em>离线缓存</em><span>{{ cacheLabel }}</span></li>
           <li><em>云端</em><span>{{ cloudLabel }}</span></li>
+          <li><em>上次同步</em><span>{{ lastSyncLabel }}</span></li>
           <li><em>云端账号</em><span>{{ account.label }}</span></li>
         </ul>
         <div class="actions">
-          <button class="ghost" type="button" @click="syncNow">立即同步</button>
+          <!-- 失败态才把按钮换成主题色并改叫「重试」；不可重试的失败保持灰色 -->
+          <button :class="canRetry ? 'primary' : 'ghost'" type="button" @click="syncNow">
+            {{ canRetry ? '重试同步' : '立即同步' }}
+          </button>
         </div>
       </section>
     </div>
 
     <TabBar />
+
+    <!-- 数据备份（S8-1）：导出 / 从 JSON 恢复 -->
+    <BackupSheet v-model="backupOpen" />
 
     <!-- 退出登录确认（S5-4）：本地副本会被清掉 -->
     <ConfirmDialog

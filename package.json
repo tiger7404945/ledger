@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 4173",
-    "test:data": "node scripts/contract-test.mjs && node scripts/period-test.mjs && node scripts/seed-test.mjs && node scripts/migrate-test.mjs && node scripts/sync-test.mjs && node scripts/conflict-test.mjs && node scripts/cloudid-test.mjs && node scripts/partition-test.mjs && node scripts/gate-test.mjs"
+    "test:data": "node scripts/contract-test.mjs && node scripts/period-test.mjs && node scripts/seed-test.mjs && node scripts/migrate-test.mjs && node scripts/sync-test.mjs && node scripts/conflict-test.mjs && node scripts/cloudid-test.mjs && node scripts/partition-test.mjs && node scripts/gate-test.mjs && node scripts/backup-test.mjs"
   },
   "dependencies": {
     "@cloudbase/js-sdk": "^3.10.1",

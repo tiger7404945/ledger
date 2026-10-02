@@ -35,6 +35,8 @@ import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
 import { GUEST_ACCOUNT_PREFIX, accountPrefixOf } from './core/cloudId.js'
 import { DB_NAME, partitionedDbName } from './core/idb.js'
+import { BACKUP_COLLECTIONS, buildBackup, parseBackup, planImport } from './core/backup.js'
+import { RepositoryError } from './contract.js'
 import { cloudEnvId, isCloudConfigured } from '../config/env.js'
 
 const ADAPTERS = {
@@ -350,6 +352,81 @@ export async function enqueueLocalForCloud() {
   return inst.db.enqueueAll()
 }
 
+/* ---------------- 数据备份（S8-1） ---------------- */
+
+/**
+ * 导出：把当前分区**用户可见的全部数据**打包成一个可 JSON 序列化的对象。
+ *
+ * ## 为什么它放在装配层而不是视图里
+ *
+ * 「导出」= 一次读全量 + 一次按格式打包。读全量要知道**当前分区**是谁
+ * （`current` 指针在装配层维护），而打包规则属于业务（在 `core/backup.js`）。
+ * 装配层的作用就是把这两件事接起来 —— 视图只负责「把返回的对象存成文件」。
+ *
+ * ⚠️ **导出是读操作，不设登录门禁**。未登录时导出拿到的是本机 guest 分区
+ *   （只有账本与分类、没有账单），调用方据此提示「暂无可导出的记录」即可，
+ *   不必拦 —— 拦了反而说不通（数据本来就在用户自己的设备上）。
+ *
+ * @param {{account?: {label?:string, signedIn?:boolean}|null, exportedAt?: number}} [input]
+ * @returns {Promise<Object>} 备份对象（交给 `JSON.stringify`）
+ */
+export async function exportBackup({ account = null, exportedAt = Date.now() } = {}) {
+  const inst = current || (await initDataLayer())
+  if (!inst?.db?.backup) throw new RepositoryError('NO_BACKUP', '当前数据源不支持数据导出')
+  const dump = await inst.db.backup.dump()
+  return buildBackup({ data: dump, account, exportedAt, dataSource: DATA_SOURCE })
+}
+
+/**
+ * 预览导入：解析文件 + 与本地比对，**不写任何东西**。
+ *
+ * 中间隔一层预览不是仪式感 —— 导入是**批量写**，且会入队推上云。
+ * 先让用户看到「新增 42 条、更新 3 条、跳过 156 条」再确认，是这类操作的底线。
+ *
+ * @param {string|Object} text 备份文件文本（或已解析对象）
+ * @returns {Promise<{ok:false, error:string} | {ok:true, backup:Object, invalid:Object, plan:Object}>}
+ */
+export async function previewImport(text) {
+  const parsed = parseBackup(text)
+  if (!parsed.ok) return { ok: false, error: parsed.error }
+
+  const inst = current || (await initDataLayer())
+  if (!inst?.db?.backup) return { ok: false, error: '当前数据源不支持数据导入' }
+
+  const local = await inst.db.backup.dump()
+  const plan = planImport({ local, incoming: parsed.backup.data })
+  return { ok: true, backup: parsed.backup, invalid: parsed.invalid, plan }
+}
+
+/**
+ * 落盘导入计划。
+ *
+ * ⚠️ **写前用最新本地副本再裁决一次**：预览与确认之间隔着用户点击，
+ * 期间同步引擎可能已经把云端更新的版本拉了回来。若照原计划直写，
+ * 就会用备份里的旧版本盖掉刚拉回来的新数据 —— 这正是「新者胜」要防的事。
+ *
+ * 复用 `planImport` 而不是新写一套「再检查」逻辑：合并规则只有一份实现，
+ * 才不会出现「预览时说会更新、落盘时又按另一套规则」这种漂移。
+ *
+ * @param {Object} plan `previewImport` 返回的 plan
+ * @returns {Promise<{created:number, updated:number, skipped:number}>}
+ */
+export async function applyImport(plan) {
+  const inst = current || (await initDataLayer())
+  if (!inst?.db?.backup) throw new RepositoryError('NO_BACKUP', '当前数据源不支持数据导入')
+
+  const incoming = {}
+  for (const kind of BACKUP_COLLECTIONS) {
+    incoming[kind] = [...(plan?.create?.[kind] || []), ...(plan?.update?.[kind] || [])]
+  }
+
+  const fresh = await inst.db.backup.dump()
+  const safe = planImport({ local: fresh, incoming })
+  const result = await inst.db.backup.apply(safe)
+  return { ...result, skipped: safe.counts.skip }
+}
+
 export { COLLECTIONS, BILL_TYPES, CATEGORY_TYPES, NAME_MAX_LENGTH } from './contract.js'
+export { backupFileName, BACKUP_FORMAT, BACKUP_VERSION } from './core/backup.js'
 export { NotImplementedError, RepositoryError, SCHEMA_VERSION } from './contract.js'
 export { accountPrefixOf } from './core/cloudId.js'

@@ -63,6 +63,16 @@ export function createSyncEngine({
   let state = SYNC_STATE.IDLE
   let lastError = null
   let lastSyncAt = 0
+  /**
+   * 上一次**成功同步的本地时刻**（S8-2）。
+   *
+   * ⚠️ 别和 `lastSyncAt` 混用：那是**水位线**（拉取到的最大 `_serverTs`），
+   *    是服务端时间轴上的一个值。若拿它当「上次同步时间」显示，
+   *    会出现「刚刚手动同步过，界面却写着上次同步是昨天」—— 因为云端
+   *    最新的那条文档就是昨天的。用户看不懂，也确实是错的。
+   *    所以单独记一个本地时刻，专供 UI 展示。
+   */
+  let lastSuccessAt = 0
   let pendingCache = 0
   let retryCount = 0
   /**
@@ -88,6 +98,7 @@ export function createSyncEngine({
       state,
       pendingCount: pendingCache,
       lastSyncAt,
+      lastSuccessAt,
       lastError,
       retry: retryCount,
       consecutiveFailures,
@@ -303,6 +314,7 @@ export function createSyncEngine({
 
       // ⑤ 落水位、广播
       lastSyncAt = pulled.watermark
+      lastSuccessAt = now()
       if (meta) await meta.set(watermarkKey, lastSyncAt)
       retryCount = 0
       lastError = null
@@ -332,7 +344,21 @@ export function createSyncEngine({
   async function handleSyncFailure(e, reason) {
     const err = toSyncError(e, { online: isOnline() })
     const policy = err.policy
-    lastError = { message: err.message, kind: err.kind, at: now(), reason, label: policy.label }
+    lastError = {
+      message: err.message,
+      kind: err.kind,
+      at: now(),
+      reason,
+      label: policy.label,
+      /**
+       * 这次失败**重试有没有意义**（S8-2）。
+       *
+       * UI 拿它决定要不要给「重试」按钮：配额用完、权限被拒这类再点也是白点，
+       * 给了按钮只会让用户反复戳、以为是网络问题。逻辑与引擎内部的
+       * `scheduleRetry()` 判断共用同一个 `policy.retryable`，不会两边打架。
+       */
+      retryable: Boolean(policy.retryable)
+    }
     consecutiveFailures += 1
 
     // 队列的重试计数只在「重试有意义」时才加。
@@ -556,6 +582,16 @@ export function createSyncEngine({
     },
     get lastSyncAt() {
       return lastSyncAt
+    },
+    /**
+     * 上次成功同步的**本地时刻**（0 = 本次会话还没成功同步过）。
+     *
+     * ⚠️ 只在内存里，不落盘：重启页面后是 0，UI 显示「尚未同步」。
+     *    （要跨会话保留就得写 meta，但那会让「这一轮到底同步过没有」
+     *    的语义变得含糊 —— 「上次同步」本质上是**这次使用**的事实。）
+     */
+    get lastSuccessAt() {
+      return lastSuccessAt
     },
     get lastError() {
       return lastError

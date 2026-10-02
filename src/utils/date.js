@@ -101,3 +101,29 @@ export function monthGrid(monthKey) {
 export function weekdayLabels() {
   return ['一', '二', '三', '四', '五', '六', '日']
 }
+
+/**
+ * 「上次同步」这类时间戳的展示文案（S8-2）。
+ *
+ * 分级理由：**刚发生的事用相对量，久一点的事用绝对时刻**。
+ * 「刚刚 / 12 分钟前」回答的是「我刚才那次同步生效了吗」——这是用户真正在问的；
+ * 而「3 小时前」既不如相对量精确，也不如「今天 09:14」好对表，所以 1 小时
+ * 之后就换成绝对时刻。
+ *
+ * @param {number} ts  毫秒时间戳（<=0 或非法返回空串，调用方据此显示兜底文案）
+ * @param {number} [now] 参照时刻，**测试注入点**
+ */
+export function formatClockTime(ts, now = Date.now()) {
+  const t = Number(ts)
+  if (!Number.isFinite(t) || t <= 0) return ''
+
+  const diff = now - t
+  // 未来时刻（设备时钟偏差）不当成「负几分钟前」显示
+  if (diff < 60 * 1000) return '刚刚'
+  if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`
+
+  const d = new Date(t)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const sameDay = new Date(now).toDateString() === d.toDateString()
+  return sameDay ? `今天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`
+}

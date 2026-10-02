@@ -20,6 +20,7 @@ import {
   readAll as idbReadAll,
   readMeta as idbReadMeta,
   readOne as idbReadOne,
+  toPlain,
   writeMeta as idbWriteMeta
 } from '../core/idb.js'
 import { now, uid } from '../../utils/id.js'
@@ -632,6 +633,90 @@ export function createIdbAdapter(options = {}) {
     }
   }
 
+  /* ---------------- 数据备份（S8-1） ---------------- */
+
+  /**
+   * 备份用的存储读写口。
+   *
+   * 业务规则（字段白名单、坏数据判定、导入合并与幂等）**全在 `core/backup.js`**，
+   * 这里只做两件与存储有关的事：把三类文档**原样**读出来、把定稿的文档写回去
+   * 并补进同步队列。于是「导出/导入怎么合并」与「数据存在哪」互不牵连。
+   */
+  const backupApi = {
+    /**
+     * 三类文档的原始快照（**含软删除墓碑**）。
+     *
+     * 这里不过滤：过滤是「备份语义」的一部分（只导活文档），属于 core 的职责；
+     * 适配器只回答「库里现在有什么」。`planImport` 也需要带墓碑的本地副本，
+     * 才能正确判断「备份比本地删得晚 ⇒ 该恢复」。
+     */
+    async dump() {
+      await ready()
+      const [ledgers, categories, bills] = await Promise.all([
+        readAll(STORES.LEDGER),
+        readAll(STORES.CATEGORY),
+        readAll(STORES.BILL)
+      ])
+      return { ledgers, categories, bills }
+    },
+
+    /**
+     * 落盘导入计划（`planImport` 的产物）。
+     *
+     * ⚠️ **直写底层，不走 `create()` / `update()`**，两个理由：
+     *   1. `create()` 会重造 id（`uid('bill')`）—— 备份里的 id 就丢了，
+     *      「同一份文件导两次」会变成两批不同的账单，**幂等当场破功**；
+     *   2. 两个写方法都会把 `createdAt` / `updatedAt` 改成当前时刻，
+     *      备份里的历史时间轴被抹平，同样破坏幂等（见 core/backup.js 决定 ③）。
+     *
+     * 所以这里像 `enqueueAll()` 一样直写，再补一次批量入队让下一轮同步带上云。
+     * 入队的 `op` 用 `'update'`：推送时引擎推的是**当前本地文档**（不看 op），
+     * 语义上「把这条并进来」也更接近 update 而非 create。
+     *
+     * ⚠️ `deleted` 统一补 0：incoming 全是活文档，写回要覆盖本地可能存在的墓碑
+     *    （备份比本地墓碑新 ⇒ 这条账是被恢复的）。
+     *
+     * @param {{create?: Object, update?: Object}} plan
+     * @returns {Promise<{created: number, updated: number}>}
+     */
+    async apply({ create = {}, update = {} } = {}) {
+      await ready()
+      const result = { created: 0, updated: 0 }
+      const entries = []
+
+      for (const [collection, storeName] of Object.entries(STORE_OF)) {
+        const key = BACKUP_KEY_OF[collection]
+        const created = create[key] || []
+        const updated = update[key] || []
+        const docs = [...created, ...updated].map((doc) => toPlain({ ...doc, deleted: 0 }))
+        if (!docs.length) continue
+
+        await putMany(storeName, docs)
+        for (const doc of docs) {
+          entries.push({
+            id: uid('ob'),
+            collection,
+            op: 'update',
+            docId: doc.id,
+            payload: { ...doc },
+            ts: now()
+          })
+        }
+        result.created += created.length
+        result.updated += updated.length
+      }
+
+      // 合成一次写、一次通知（理由见 outbox.enqueueMany 的注释）
+      try {
+        await outbox.enqueueMany(entries)
+      } catch (e) {
+        // 与 enqueue() 同一条底线：数据已经落库了，队列晚一轮是小事，丢数据是大事
+        console.error('[ledger] 导入数据的同步队列写入失败，这批改动本轮不会上云', e)
+      }
+      return result
+    }
+  }
+
   /* ---------------- 同步 ---------------- */
 
   /**
@@ -654,6 +739,20 @@ export function createIdbAdapter(options = {}) {
     [COLLECTIONS.LEDGER]: STORES.LEDGER,
     [COLLECTIONS.CATEGORY]: STORES.CATEGORY,
     [COLLECTIONS.BILL]: STORES.BILL
+  }
+
+  /**
+   * 集合名 → 备份文件里的键名。
+   *
+   * ⚠️ 备份格式用**复数**（`ledgers` / `categories` / `bills`）而集合名是单数：
+   *    备份是给人看、可能被转发与二次处理的文件，「三个账单数组」比
+   *    「bill / category / ledger 混排」更自然；也避免与集合名耦合成
+   *    「改集合名就换备份格式」。
+   */
+  const BACKUP_KEY_OF = {
+    [COLLECTIONS.LEDGER]: 'ledgers',
+    [COLLECTIONS.CATEGORY]: 'categories',
+    [COLLECTIONS.BILL]: 'bills'
   }
 
   /**
@@ -736,6 +835,8 @@ export function createIdbAdapter(options = {}) {
     category: categoryApi,
     bill: billApi,
     sync: syncApi,
+    /** 数据备份读写口（S8-1）：dump 原始快照 / apply 落盘导入计划 */
+    backup: backupApi,
     /** 同步队列实例（syncEngine 与调试面板用） */
     outbox,
     /** 给 syncEngine 的本地读写口 */
