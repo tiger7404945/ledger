@@ -44,10 +44,19 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - 装配唯一（api/index.js），启动在 main.js；适配器→outbox←引擎，适配器绝不 import 引擎。
 - **防重入必须 return 同一个 in-flight Promise**；顺序固定 **pull→push→回拉被拒→compact**。
 - 水位线只认 `_serverTs` 且**严格单调**、pull 左闭；**推送被拒必须回拉**（否则两端静默分叉）。
+  pull 按 `_serverTs` 过滤 ⇒ **本地种子的 `updatedAt=0` 不影响回拉**（sync-test 20 段回归锁死）。
 - fakeCloud 必须带身份（`as('openid')`）；测试注入 `createClock()`+`createFakeTimer()`
   （记得把 `now: clock.now` 传进 makeDevice）。
-- `npm run test:data` **九脚本 555 条**（contract87/period22/seed28/migrate11/sync134/conflict135/
-  cloudid42/partition67/**gate**29）。输出格式由 `scripts/_harness.mjs` 统一
+- **IndexedDB 连接会 被 Chromium 单方面杀掉**（清数据/长会话/无痕高发）：连接层必须探活+自动重连
+  （`createIdbConnection()`，adapter/outboxStore/kv 三处共用），且**打开失败的拒绝不能被缓存**。
+  任何「句柄一次性缓存」在浏览器环境都要假定它可能被宿主杀死。
+- **身份切换后 store 必须刷两次**：`runIdentityChange` 里 sync **之前**那次 resetLoadedStores 读到的是
+  「登录瞬间的空库」；回拉写库后**没人通知 store**（`initialized` 已置真，页面切换全是 no-op）——
+  真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
+  且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
+  gate-test 第 4 段用源码扫描锁死这条时序。
+- `npm run test:data` **九脚本 573 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition74/**gate**31）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
@@ -128,7 +137,9 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   `SEED_BILL_NOTES`（导出常量）与 `buildExtraBills`（导出函数）是给**开发期遗留本地库做历史回填**的
   公开 API，依赖模板数组，一经导出即**不可摇**。功能上生产**不会写入**演示账单；要根治得把整块
   改成 dev-only 的动态 `import()`。
-- **未验**：真实云端登录往返（需真机短信）—— `partition-test` 67 条提供等价覆盖。
+- **真机已验（2026-10-02，无痕窗口 + 控制台独立核对）**：全新账号登录云端恰为 1/42/0（兜底分类推云、0 账单）；
+  换机登录回拉 ¥168 账单；记一笔待同步归零、云端 1 条（`_id` 带账号前缀）；退出清本地不弹裁决框。
+  仍待验：多设备并发写；退出→换号登录的完整矩阵。
 
 ## 运行 / 版本 / 选型
 - `npm run dev` → 127.0.0.1:5173。不配 `.env.local` 退纯本地（`ledger_guest` 分区，**门禁不生效**）。

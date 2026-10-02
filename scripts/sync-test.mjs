@@ -863,4 +863,69 @@ t.group('19. 未登录不启动同步，也不再自动创建账号')
   t.eq('19f 登录后队列清空', await dev.outbox.pendingCount(), 0)
 }
 
+/* ========================================================== */
+/* 20. 重新登录：清本地 → 同分区重建 → 全量回拉（真机踩坑回归）  */
+/* ========================================================== */
+
+t.group('20. 重新登录：退出清本地后，同分区重建能全量回拉（含 updatedAt=0 的兜底分类）')
+
+{
+  const clock = createClock()
+  const cloud = createFakeCloud({ clock: clock.now })
+  if (cloud.as) cloud.as('1000000000000000001')
+
+  // 与 api/index.js 的 buildInstance 对账号分区的传参保持一致（S7-9）
+  const OPTS = {
+    dbName: 'ledger_sync_relogin',
+    seed: 'base',
+    seedCategoryUpdatedAt: 0,
+    migrateFrom: false,
+    claimant: '21053329'
+  }
+
+  // ① 首次登录：播种 base → enqueueAll 把兜底数据推上云
+  const a1 = createIdbAdapter(OPTS)
+  const e1 = createSyncEngine({ outbox: a1.outbox, store: a1.syncStore, meta: a1.kv, cloud })
+  await a1.ready()
+  await a1.enqueueAll()
+  const r1 = await e1.sync({ manual: true })
+  t.eq('20a 首登推送 43 条（1 账本 + 42 分类）', r1.pushed, 43)
+  t.eq(
+    '20b 云端：1 账本 / 42 分类 / 0 账单',
+    `${cloud._dump('ledger').length}/${cloud._dump('category').length}/${cloud._dump('bill').length}`,
+    '1/42/0'
+  )
+
+  // ② 记一笔账并推上去（模拟真机的 ¥168）
+  await a1.bill.create({
+    ledgerId: 'ledger_default',
+    type: 'expense',
+    amount: 168,
+    remark: '',
+    date: '2026-10-02'
+  })
+  await e1.sync({ manual: true })
+  t.eq('20c 云端有这笔账单', cloud._dump('bill').length, 1)
+
+  // ③ 退出登录：清本地（watermark 以外的 meta 保留，见 clearLocalData 的说明）
+  await a1.clearLocalData()
+  e1.stop()
+  const s0 = await a1.snapshot()
+  t.eq('20d 退出后本地为空', `${s0.ledgers.length}/${s0.categories.length}/${s0.bills.length}`, '0/0/0')
+
+  // ④ 重新登录：同分区重建（新适配器实例，等价于 rebuildForAccount）+ 全量回拉
+  const a2 = createIdbAdapter(OPTS)
+  const e2 = createSyncEngine({ outbox: a2.outbox, store: a2.syncStore, meta: a2.kv, cloud })
+  await a2.ready()
+  const s1 = await a2.snapshot()
+  t.eq('20e 重登 init 后（sync 前）仍是空库（不重复播种）', `${s1.ledgers.length}/${s1.categories.length}/${s1.bills.length}`, '0/0/0')
+
+  const r2 = await e2.sync({ manual: true })
+  t.eq('20f 回拉条数 = 云端全部（44 = 1+42+1）', r2.pulled, 44)
+  const s2 = await a2.snapshot()
+  t.eq('20g 分类完整回来（updatedAt=0 也能被 pull 命中）', s2.categories.length, 42)
+  t.eq('20h 账单回来', s2.bills.length, 1)
+  t.eq('20i 账本回来', s2.ledgers.length, 1)
+}
+
 t.done()

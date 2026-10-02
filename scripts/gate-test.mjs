@@ -138,4 +138,24 @@ const sheet = sheetMod.useLoginSheet()
   t.ok('3k 无挂起动作时 resolve 安全返回', sheet.state.open === false)
 }
 
+/* ---------------- 4. 身份切换后的 store 刷新（真机踩坑回归） ---------------- */
+
+/**
+ * 真机实测（2026-10-02）：退出 → 重新登录后分类宫格空白。根因是
+ * `runIdentityChange` 里 `resetLoadedStores()` 在 sync **之前**跑 —— 它读到的是
+ * 「登录瞬间的空库」，而回拉完成后没有任何东西通知 store 重读。这两条用
+ * **源码扫描**防住回归（删掉重刷调用不会报错，只会让 UI 静默停在空库快照）。
+ */
+{
+  const accountSrc = readFileSync(new URL('../src/stores/account.js', import.meta.url), 'utf8')
+
+  // period 切片有独立的守卫标志，漏了它账单页 / 统计页会一直显示上个分区的数据
+  t.ok('4a resetLoadedStores 会重置 periodInitialized', /periodInitialized\s*=\s*false/.test(accountSrc))
+
+  // sync（account-change）完成之后必须再刷一次 store，回拉结果才能进 UI
+  const syncAt = accountSrc.indexOf("reason: 'account-change'")
+  const reloadAfterSync = syncAt >= 0 && accountSrc.slice(syncAt).indexOf('this.resetLoadedStores()') > 0
+  t.ok('4b account-change 同步完成后会再刷一次 store', reloadAfterSync)
+}
+
 t.done()

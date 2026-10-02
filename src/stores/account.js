@@ -213,6 +213,14 @@ export const useAccountStore = defineStore('account', {
         // 用 manual 跳过「离线就不发请求」，因为这是用户主动要的结果
         await syncEngine.sync({ reason: 'account-change', manual: true }).catch(() => {})
 
+        // ⚠️ 上面这轮 sync 的 pull 可能把云端数据写进了新分区（**重新登录必然如此**
+        //    —— 退出时清过本地）。而上面的 resetLoadedStores 是在 sync **之前**跑的，
+        //    它读到的是「登录瞬间的空库」，且各 store 的 initialized 已被置真，
+        //    之后页面再怎么切都不会重读（真机实测：重登后分类宫格空白，账单只是
+        //    恰好踩中 period 切片的一次性加载才回来）。所以这里必须再刷一次，
+        //    让 store 吃到回拉结果。失败也不阻塞登录流程（下次进页面还有兜底）。
+        await this.resetLoadedStores().catch(() => {})
+
         await this.refreshIdentity()
         return res
       } catch (e) {
@@ -255,6 +263,9 @@ export const useAccountStore = defineStore('account', {
       ledger.initialized = false
       category.initialized = false
       bill.initialized = false
+      // ⚠️ period 切片有**独立的**守卫标志，漏了它的话账单页 / 统计页会一直显示
+      //    上一个分区（乃至上一个账号）的区间数据 —— ensurePeriodLoaded 会直接 no-op
+      bill.periodInitialized = false
       bill.resetPeriod()
       await Promise.all([ledger.ensureLoaded(), category.ensureLoaded(true), bill.ensureLoaded()])
     }
