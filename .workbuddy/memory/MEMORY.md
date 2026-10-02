@@ -22,6 +22,11 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡、S8-7 删种子�
 - 云端资源一律 `ledger` 前缀（集合/云函数/网关），出口 `src/config/cloud.js`，不手写资源名。
 - 设计变量只在 `tokens.css`；图标只用 `components/icons`；手机框宽 `--frame-w`，
   fixed 元素依赖 `.app-frame` 的 transform 包含块。
+- **图标两套风格共用 24×24 画布**（S8-8）：旧线性 = 描边 `stroke=currentColor`；
+  吃喝组填充风在 `icons/foodFill.js`（用户手绘内联，`<g stroke="none" transform="scale(24/512)">`
+  外壳 —— stroke=none 压画布描边、scale 把 512 坐标系映射进 24）。**别手改 foodFill 的路径**，
+  重生成跑 `node scripts/convert-food-icons.mjs`。图标大小调 `CATEGORY_ICON_RATIO`
+  （icons/index.js，现 0.62），CategoryIcon 默认取它。
 
 ## 高频陷阱
 - **账单 store 两份切片勿合并**：首页只用 `month/bills/summary`；账单页+统计页共用 `period*`
@@ -48,6 +53,12 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡、S8-7 删种子�
 - ⚠️ **只按固定 id 匹配，绝不按名字**：用户自建同名分类（id 是 `uid('cat')`）必须活着。
 - 与 S8-5 同纪律：**不动 `updatedAt`、不入 outbox**（入队会被判「本地更新」推上去顶掉别的设备）。
 - 挂在该分类下的账**一笔记不能删**（那是用户真实支出），`query.js` 兜底显示「未分类」。
+- **改种子分类的图标**同理：`CATEGORY_TREE` 改 + `CATEGORY_ICON_REFRESH`（S8-8，奶茶
+  `lollipop→bubbleTea`）+ `refreshSeedCategoryIcons()` 每次 init 刷旧库（**守卫 `icon === from`
+  才动**，用户自己改过的图标不覆盖）；云端用管理端 `$set` 同步改。
+- ⚠️ **云端可能同时存在多个账号的数据**（S8-8 时发现 `21059746…` 第二个 uid，旧种子推的、
+  带着已废弃的 goose）——管理端清理废弃数据时 `isMulti` 查询**别带 `_openid` 条件**，
+  一次清干净所有账号；本地侧靠「每次 init 都跑」的自愈兜底。
 
 ## 数据层 / IndexedDB
 - 库名 `ledger_<账号前缀8位>`（`accountPrefixOf`），**未登录 = `ledger_guest`**（`GUEST_ACCOUNT_PREFIX`）；
@@ -82,8 +93,8 @@ S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡、S8-7 删种子�
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 749 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition118/**gate**61/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 766 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition124/**gate**72/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。

@@ -71,7 +71,7 @@ const CATEGORY_TREE = [
     icon: 'can',
     subs: [
       { key: 'snack-fruit', name: '水果', icon: 'apple' },
-      { key: 'snack-milktea', name: '奶茶', icon: 'lollipop' },
+      { key: 'snack-milktea', name: '奶茶', icon: 'bubbleTea' },
       { key: 'snack-dessert', name: '甜品', icon: 'cake' }
     ]
   },
@@ -157,6 +157,18 @@ export const SUB_ID = (key) => `sub_${key}`
  *    建一个叫「卤鹅」的分类，那是他的自由，不该被系统悄悄删掉。
  */
 export const REMOVED_SEED_CATEGORY_IDS = [CAT_ID('goose')]
+
+/**
+ * 种子分类的**图标换新**名单（S8-8）：吃喝组换用户手绘的填充风图标时，
+ * `奶茶` 的最佳对应从 `lollipop`（线性棒棒糖）换成了 `bubbleTea`（珍珠奶茶）。
+ * 从 {@link CATEGORY_TREE} 改只能管**新库** —— 已播种的库里那份 icon 还留着旧值，
+ * 由 idbAdapter 在每次 init 时按这份名单刷新（幂等不变式，同 `REMOVED_SEED_CATEGORY_IDS` 的思路）。
+ *
+ * ⚠️ 守卫是「当前 icon === from 才动」：用户要是早就自己把图标改成了别的，
+ *    说明他有偏好，我们不覆盖。同样刻意不动 `updatedAt`、不入 outbox
+ *    （改图标是视觉刷新，不是数据变更，抬时间戳会把它判成「本地更新」推上云端）。
+ */
+export const CATEGORY_ICON_REFRESH = [{ id: SUB_ID('snack-milktea'), from: 'lollipop', to: 'bubbleTea' }]
 
 /**
  * 账单模板：offset = 距今天数（0 = 今天）

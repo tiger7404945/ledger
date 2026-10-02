@@ -336,4 +336,66 @@ const sheet = sheetMod.useLoginSheet()
   )
 }
 
+/* ==========================================================================
+ * 第 8 节（S8-8）：吃喝组填充风图标 + 尺寸可配参数
+ * ========================================================================== */
+{
+  const foodSrc = readFileSync(new URL('../src/components/icons/foodFill.js', import.meta.url), 'utf8')
+  const iconSrc = readFileSync(new URL('../src/components/icons/index.js', import.meta.url), 'utf8')
+  const catIconSrc = readFileSync(new URL('../src/components/CategoryIcon.vue', import.meta.url), 'utf8')
+  const seedSrc2 = readFileSync(new URL('../src/api/mock/seed.js', import.meta.url), 'utf8')
+  const idbSrc2 = readFileSync(new URL('../src/api/adapters/idbAdapter.js', import.meta.url), 'utf8')
+
+  const FOOD_KEYS = [
+    'apple', 'carrot', 'cocktail', 'burger', 'cutlery', 'bowl', 'cake', 'candy',
+    'beer', 'bubbleTea', 'coffeeCup', 'friedEgg', 'honeyJar', 'iceCream', 'popsicle', 'springRoll'
+  ]
+  const entriesOk = FOOD_KEYS.every((k) => new RegExp(`\\b${k}:\\s*'`).test(foodSrc))
+
+  t.ok('8a ★ 16 张用户手绘图标全部内联进 foodFill.js（8 个覆盖旧 key + 8 个新 key）', entriesOk)
+  t.ok(
+    '8b ★★ 填充风图标零硬编码颜色 —— 全靠 fill=currentColor 走主题联动（绿底白字的选中态靠它）',
+    !/#[0-9a-fA-F]{3,8}\b/.test(foodSrc.slice(foodSrc.indexOf('FOOD_FILL_ICONS')))
+  )
+  t.ok(
+    '8c ★★ 每张都有 stroke="none" 外壳 —— 压掉 IconBase 画布级描边，否则轮廓加粗一圈',
+    FOOD_KEYS.every((k) => {
+      const at = foodSrc.indexOf(`${k}: '`)
+      const seg = foodSrc.slice(at, at + 120)
+      return seg.includes(`'<g stroke="none"`)
+    })
+  )
+  t.ok('8d ★ ICONS 以「后展开覆盖」吃进 FOOD_FILL_ICONS（放前面会被同 key 旧定义盖回去）', /\.\.\.FOOD_FILL_ICONS\s*\n?\}/.test(iconSrc))
+
+  const eatGroup = iconSrc.slice(iconSrc.indexOf("key: 'eat'"), iconSrc.indexOf("key: 'shop'"))
+  t.ok('8e ★ 8 个新 key 全部进了吃喝选择器组', ['beer', 'bubbleTea', 'coffeeCup', 'friedEgg', 'honeyJar', 'iceCream', 'popsicle', 'springRoll'].every((k) => eatGroup.includes(`'${k}'`)))
+
+  t.ok(
+    '8f ★★ 尺寸可配参数存在且有注释档位（用户自己调大小就改这一个数）',
+    /export const CATEGORY_ICON_RATIO = 0\.\d+/.test(iconSrc) && iconSrc.includes('0.50')
+  )
+  t.ok(
+    '8g ★★ CategoryIcon 的 iconRatio 默认值取自 CATEGORY_ICON_RATIO（不是写死的 0.5）',
+    catIconSrc.includes('import { CATEGORY_ICON_RATIO }') && /default: CATEGORY_ICON_RATIO/.test(catIconSrc)
+  )
+  t.ok(
+    '8h ★ 种子「奶茶」已换 bubbleTea（新库直接是新图标）',
+    seedSrc2.includes("{ key: 'snack-milktea', name: '奶茶', icon: 'bubbleTea' }")
+  )
+  const refreshCallAt = idbSrc2.indexOf('await refreshSeedCategoryIcons()')
+  t.ok(
+    '8i ★ 旧库的图标刷新也挂在 init 里、排在播种之后（同 7g 的顺序理由）',
+    refreshCallAt > 0 && refreshCallAt > idbSrc2.indexOf('buildSeed(')
+  )
+  const refreshBody = idbSrc2.slice(idbSrc2.indexOf('async function refreshSeedCategoryIcons'), refreshCallAt > 0 ? refreshCallAt : undefined)
+  t.ok(
+    '8j ★★ 图标刷新有「=== from 才动」守卫（用户自己改过图标就不覆盖）',
+    refreshBody.includes('doc.icon === item.from')
+  )
+  t.ok(
+    '8k ★★ 图标刷新不动 updatedAt、不入队（视觉刷新不是数据变更）',
+    refreshBody.length > 0 && !/updatedAt/.test(refreshBody) && !/enqueue/.test(refreshBody)
+  )
+}
+
 t.done()

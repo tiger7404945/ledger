@@ -1,7 +1,7 @@
 import { COLLECTIONS, NAME_MAX_LENGTH, RepositoryError, SCHEMA_VERSION } from '../contract.js'
 import { createOutbox } from '../sync/outbox.js'
 import { createIdbOutboxStore } from '../sync/outboxStore.js'
-import { buildSeed, REMOVED_SEED_CATEGORY_IDS, SEED_MODE } from '../mock/seed.js'
+import { buildSeed, CATEGORY_ICON_REFRESH, REMOVED_SEED_CATEGORY_IDS, SEED_MODE } from '../mock/seed.js'
 import { migrateSeedData } from '../core/migrate.js'
 import { IS_DEV } from '../../config/env.js'
 import { partitionRemote } from '../core/merge.js'
@@ -286,6 +286,28 @@ export function createIdbAdapter(options = {}) {
     )
   }
 
+  /**
+   * S8-8：刷新种子分类的**图标 key**（名单见 `CATEGORY_ICON_REFRESH`）。
+   *
+   * 吃喝组换填充风图标时「奶茶」的最优对应从 `lollipop` 换成了 `bubbleTea`。
+   * 语义与 `purgeRemovedCategories` 同款：幂等不变式、**每次 init 都跑**、
+   * 守卫是「当前 icon === from 才动」（用户自己改过图标就不碰），
+   * **不动 `updatedAt`、不入 outbox** —— 改图标是视觉刷新不是数据变更。
+   *
+   * @returns {Promise<number>} 实际刷新的分类条数
+   */
+  async function refreshSeedCategoryIcons() {
+    let changed = 0
+    for (const item of CATEGORY_ICON_REFRESH) {
+      const doc = await readOne(STORES.CATEGORY, item.id)
+      if (doc && doc.icon === item.from && item.to !== item.from) {
+        await putMany(STORES.CATEGORY, [{ ...doc, icon: item.to }])
+        changed += 1
+      }
+    }
+    return changed
+  }
+
   async function init() {
     await getDB()
 
@@ -382,6 +404,10 @@ export function createIdbAdapter(options = {}) {
      * 废弃项（种子已改），所以这一步对全新库是空操作。
      */
     await purgeRemovedCategories()
+
+    // S8-8：种子分类图标换新（奶茶 lollipop → bubbleTea），幂等不变式，
+    // 理由见 refreshSeedCategoryIcons() 的注释
+    await refreshSeedCategoryIcons()
 
     // 队列搬迁（旧 localStorage → IndexedDB）在这里顺带做完，
     // 幂等标记由 outboxStore 负责

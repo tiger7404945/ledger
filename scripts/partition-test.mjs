@@ -839,4 +839,48 @@ t.group('17. ★ S8-5：废弃字段清理与 month 死索引')
   t.eq('18o 队列始终干净', await gooseAgain.outbox.pendingCount(), 0)
 }
 
+/* ==========================================================================
+ * 第 19 节（S8-8）：种子分类图标换新（CATEGORY_ICON_REFRESH 不变式）
+ * ========================================================================== */
+{
+  const { buildSeed, CATEGORY_ICON_REFRESH } = await import(`${SRC}api/mock/seed.js`)
+
+  t.eq('19a ★ 换新名单就一条：奶茶 lollipop → bubbleTea', CATEGORY_ICON_REFRESH, [
+    { id: 'sub_snack-milktea', from: 'lollipop', to: 'bubbleTea' }
+  ])
+
+  const iconDb = nextDb('icon')
+  const rawIcon = await openDB({ dbName: iconDb, version: DB_VERSION })
+  await writeMeta(rawIcon, { [META_KEYS.SCHEMA]: SCHEMA_VERSION })
+  const seedBase = buildSeed(1, { mode: 'base' })
+  await putMany(rawIcon, STORES.CATEGORY, seedBase.categories)
+  rawIcon.close()
+
+  const iconAdapter = createIdbAdapter({ dbName: iconDb, seed: false })
+  await iconAdapter.ready()
+
+  const cats = await readAll(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY)
+  const milktea = cats.find((c) => c.id === 'sub_snack-milktea')
+  t.eq('19b ★ 已播种过的库里，奶茶的图标被刷成 bubbleTea', milktea?.icon, 'bubbleTea')
+  t.ok(
+    '19c ★ 其它分类的图标一个都没动（名单外零波及）',
+    cats.filter((c) => c.id !== 'sub_snack-milktea' && !seedBase.categories.find((s) => s.id === c.id && s.icon === c.icon)).length === 0
+  )
+  t.eq('19d 刷新不动 updatedAt（视觉刷新不是数据变更）', milktea?.updatedAt, seedBase.categories.find((c) => c.id === 'sub_snack-milktea').updatedAt)
+  t.eq('19e 队列干净（不入 outbox）', await iconAdapter.outbox.pendingCount(), 0)
+
+  /* ---- 19B：守卫生效 —— 用户自己改过图标的分类不被覆盖 ---- */
+  const appleDoc = cats.find((c) => c.id === 'sub_snack-fruit')
+  await putMany(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY, [
+    { ...appleDoc, icon: 'diamond' } // 用户把「水果」的图标改成了钻石
+  ])
+  const againAdapter = createIdbAdapter({ dbName: iconDb, seed: false })
+  await againAdapter.ready()
+  const catsAgain = await readAll(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY)
+  t.ok(
+    '19f ★★ 用户改过的图标（diamond）原样保留 —— 守卫是「=== from 才动」',
+    catsAgain.find((c) => c.id === 'sub_snack-fruit')?.icon === 'diamond'
+  )
+}
+
 t.done()

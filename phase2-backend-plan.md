@@ -1548,6 +1548,49 @@ gate 41 → 52：新增第 6 节写入点源码守卫；backup 101 → 102：新
   8 条；分类总数相关的断言同步 42 → 41）。真机浏览器实测：往 `ledger_guest` 里手工注入一条
   `cat_goose` → 重载 → 库里回到 41 条且那条消失、控制台零错误。
 
+### S8-8（2026-10-03 凌晨）：吃喝组换用户手绘的填充风图标
+
+用户提供了 16 张 512×512 的手绘填充风 SVG（`apple / beer-mug / bubble-tea / candy / carrot /
+cocktail / coffee-cup / cupcake / fried-egg / hamburger / honey-jar / ice-cream-cup / popsicle /
+soup-bowl / spoon-fork / spring-roll`），要求替换「吃喝」分类的内置图标，并给一个可调图标大小的参数。
+
+**映射策略（key 是数据契约，能不动就不动）**：
+
+- **8 张直接覆盖旧 key**（历史库零迁移自动换新）：`apple`←apple、`carrot`←carrot、
+  `cocktail`←cocktail、`burger`←hamburger、`cutlery`←spoon-fork、`bowl`←soup-bowl、
+  `cake`←cupcake、`candy`←candy（人情组同名 key 顺带升级）。
+- **8 张新 key 进选择器**：`beer / bubbleTea / coffeeCup / friedEgg / honeyJar / iceCream /
+  popsicle / springRoll`。吃喝组选择器清单重排，填充风排前面。
+- **种子重映射 + 旧库刷新**：奶茶 `lollipop`（棒棒糖）换 `bubbleTea`（珍珠奶茶）。
+  新库靠 `CATEGORY_TREE`；已播种的库靠 `CATEGORY_ICON_REFRESH` 名单 +
+  `idbAdapter#refreshSeedCategoryIcons()`（幂等不变式、每次 init 都跑、
+  **守卫是「当前 icon === from 才动」**——用户自己改过图标就不覆盖；
+  同 S8-5/8-7 纪律：不动 `updatedAt`、不入 outbox）。云端那份用管理端 `$set` 同步改掉。
+
+**转换管线**（`scripts/convert-food-icons.mjs`，可重跑）：提取每张 SVG 唯一的顶层
+`<g fill="currentColor">`，坐标数字降到 2 位小数（512 坐标系下误差 < 0.01px@24px，
+180KB → 原稿 ~170KB 基本没降，点太密是自动描图固有属性），折叠空白成单行，
+外层套 `<g stroke="none" transform="scale(24/512)">`——**两个属性各管一件事**：
+`stroke="none"` 压掉 IconBase 画布级的 `stroke="currentColor" + stroke-width`
+（填充风不吃描边，否则轮廓加粗一圈）；`scale(24/512)` 把 512 坐标系整体映射进
+24×24 viewBox。颜色仍走 `fill="currentColor"`，muted/mint/active 三态主题联动与旧图标一致。
+
+**尺寸可配参数**：`icons/index.js` 导出 `CATEGORY_ICON_RATIO = 0.62`（原 0.5），
+`CategoryIcon` 的 `iconRatio` 默认值改从它取 —— **调图标大小就改这一个数**；
+单处显式传 `:icon-ratio` 仍优先。
+
+**代价与守卫**：`foodFill.js` 180KB 源码（minify 后主包 273KB → 458KB，gzip 约 +45KB），
+`.preview/icon-preview.html` 提供带滑杆的预览页。`test:data` **766 条全绿**
+（partition 118 → 124 新增第 19 节：旧库被刷 / 名单外零波及 / 用户改过不覆盖 /
+不动 `updatedAt` / 不入队；gate 61 → 72 新增第 8 节：16 张全内联 / 零硬编码色 /
+`stroke="none"` 外壳 / 展开覆盖在 ICONS 末尾 / 新 key 进组 / 参数被消费）。
+
+> **部署时的新发现**：云端出现了**第二个账号**（uid 前缀 `21059746…`）的数据 ——
+> 旧种子推上去的，还带着 `cat_goose`（S8-7 只清了 `21053329…` 那份）。已按 S8-7
+> 同款处理：管理端删除该 goose 文档（`deleted: 1`）。这条记录提醒我们：**云端不变式
+> （废弃分类清理）没有「按账号批量执行」的手段**，靠「每次 init 都跑」的本地自愈兜底 ——
+> 新设备只要跑一次新构建就会自愈。
+
 ---
 
 ## 5. 云端数据设计

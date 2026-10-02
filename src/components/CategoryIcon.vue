@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import IconBase from './icons/IconBase.vue'
+import { CATEGORY_ICON_RATIO } from './icons/index.js'
 
 const props = defineProps({
   icon: { type: String, default: 'more' },
@@ -8,7 +9,8 @@ const props = defineProps({
   variant: { type: String, default: 'muted' },
   size: { type: Number, default: 44 },
   badge: { type: Boolean, default: false },
-  iconRatio: { type: Number, default: 0.5 }
+  /** 图标/圆底尺寸比，默认取全局可配参数（icons/index.js 的 CATEGORY_ICON_RATIO） */
+  iconRatio: { type: Number, default: CATEGORY_ICON_RATIO }
 })
 
 const style = computed(() => ({
