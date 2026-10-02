@@ -9,7 +9,7 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 **S7 = 去掉匿名身份 + 写操作登录门禁**（2026-10-01 裁决、2026-10-02 凌晨实施完毕，见下）。
 **S7-10（2026-10-02）= 关闭裸库继承 + 记账/首页功能裁剪**（见「功能裁剪」节）。
 **S8 = 上线收尾**：S8-1 数据备份/导入、S8-2 同步状态补全、S8-3 恢复模式、S8-4「我的」页精简 + 注销账号、
-S8-5 schema 瘦身（见「数据备份」「注销账号」「schema 瘦身」三节）。
+S8-5 schema 瘦身、S8-6 注销文案精简 + 微信打赏卡（见「数据备份」「注销账号」「schema 瘦身」三节）。
 剩余上线项：正式域名/安全域名白名单（⚠️ 2026-10-02 实测：`*.tcloudbaseapp.com` 测试域名现在会先弹
 一个免责提示页，需点「确定访问」才能进 App —— 正式域名这件事的实际收益又多了一条）、真机系统终验、打 `v1.0.0`。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
@@ -66,8 +66,8 @@ S8-5 schema 瘦身（见「数据备份」「注销账号」「schema 瘦身」�
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 725 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition103/**gate**52/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 726 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition103/**gate**53/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
@@ -181,7 +181,8 @@ S8-5 schema 瘦身（见「数据备份」「注销账号」「schema 瘦身」�
 - **平台侧的账号记录删不掉**（如实告知用户）：`auth.deleteUser(DeleteMeReq)` 内部强制
   `validateParams({password:{required:true}})` → `sudo({password})` 换 `sudo_token`；短信登录账号从无密码，
   另一条路（`verification_token`）要用户当场再收一次短信，得不偿失 ⇒ 注销落地为「云端数据清空 + 本机数据清空 + 登出」。
-  确认文案必须写明「平台侧的账号记录会保留」。
+  ⚠️ **S8-6 用户裁决反转**：确认文案**不得**再写「平台侧的账号记录会保留」—— 只讲代价本身，
+  gate-test 5j 是反向断言（`!/账号记录/.test(mineSrc)`），注意 MineView 注释里也别出现这四个字。
 - **二次确认**：`ConfirmDialog` 的 `mask-closable=false`（不可逆操作不让手滑点遮罩定夺）、正文 `white-space: pre-line`
   （让 `\n\n` 分段生效）、确认键写「永久注销」/取消键「再想想」。「注销账号」按钮**只负责开确认框**，
   绝不可直绑 `doDeleteAccount(`；gate-test 第 5 节（5a~5j）源码扫描锁死这几点 + 三步顺序。

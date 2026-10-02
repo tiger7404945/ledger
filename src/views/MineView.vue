@@ -13,6 +13,7 @@ import IconBase from '@/components/icons/IconBase.vue'
 import TabBar from '@/components/TabBar.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import BackupSheet from '@/components/BackupSheet.vue'
+import donateQrUrl from '@/assets/donate-qr.jpg'
 
 const router = useRouter()
 const categoryStore = useCategoryStore()
@@ -146,16 +147,14 @@ const signOutMessage = '退出后会清空本机的账目数据（云端已保�
  * ⚠️ **不可点遮罩取消**（`mask-closable="false"`）：这是本 App 里唯一一个
  *    真正不可逆的破坏性操作，手滑点到遮罩就替用户做了决定是不能接受的。
  *
- * ⚠️ 文案里必须**如实交代平台侧账号记录会保留**。只说「永久删除」会让人以为
- *    手机号也一并注销了，之后拿同一个号登录发现还能进（虽然是个空账号），
- *    会觉得「注销没生效」。宁可多说一句，也不要让用户对不可逆操作产生误解。
+ * 文案只讲代价本身（删什么、不可恢复）。服务端还会留一条手机号注册记录这件事
+ * 不再写进弹层 —— 用户反馈这行是多余的：真到那一步，「同号再登录是空账本」
+ * 自然可感知，提前解释反而稀释了「永久删除」的警示分量。（S8-6 起删去）
  */
 const deleteAccountOpen = ref(false)
 const deleteAccountTitle = '注销账号'
-const deleteAccountMessage = [
-  '注销会永久删除这个账号在云端与本机的全部账单、分类与账本，且无法恢复。',
-  '平台侧的账号记录会保留。之后用同一手机号登录，会得到一份全新的空账本。'
-].join('\n\n')
+const deleteAccountMessage =
+  '注销会永久删除这个账号在云端与本机的全部账单、分类与账本，且无法恢复。'
 
 function openLogin() {
   openLoginSheet({ reason: '登录后可在多台设备之间同步账目。' })
@@ -359,6 +358,19 @@ async function syncNow() {
             </button>
           </div>
         </template>
+      </section>
+
+      <!--
+        微信打赏（S8-6）：放页面最底部 —— 既不打扰功能入口，也符合
+        「内容看完、顺手支持」的常见位置惯例。下载按钮用原生 `<a download>`：
+        图片与页面同源（Vite 打包进 dist），无需 Blob 中转。
+      -->
+      <section class="card donate">
+        <span class="section-title">微信扫码打赏鼓励作者</span>
+        <img class="qr" :src="donateQrUrl" alt="微信打赏二维码" loading="lazy" />
+        <a class="dl" type="button" :href="donateQrUrl" download="微信扫码打赏二维码.jpg">
+          下载二维码
+        </a>
       </section>
     </div>
 
@@ -599,5 +611,37 @@ async function syncNow() {
 
 .ghost:disabled {
   opacity: 0.45;
+}
+
+/* 微信打赏卡（S8-6）：居中竖排，二维码本体给足点击面积 */
+.donate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.donate .qr {
+  width: 180px;
+  height: 180px;
+  border-radius: 8px;
+  /* 扫码图自带白底，加一圈极浅描边防止「白图贴白卡」看不出边界 */
+  outline: 1px solid var(--line, rgba(0, 0, 0, 0.06));
+  outline-offset: -1px;
+}
+
+.donate .dl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 132px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 13px;
+  text-decoration: none;
 }
 </style>

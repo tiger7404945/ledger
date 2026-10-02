@@ -208,8 +208,17 @@ const sheet = sheetMod.useLoginSheet()
   const dlg = dlgAt > 0 ? mineSrc.slice(dlgAt, dlgAt + 500) : ''
   t.ok('5i ★ 二次确认：遮罩不可关闭 + 执行绑在 confirm 上', /:mask-closable="false"/.test(dlg) && /@confirm="doDeleteAccount"/.test(dlg))
 
-  // 文案必须如实交代「平台账号记录保留」—— 只说「永久删除」会让人以为手机号也注销了
-  t.ok('5j 确认文案交代了平台侧账号记录的处理', /账号记录/.test(mineSrc))
+  // S8-6 用户裁决：文案只讲代价本身（删什么、不可恢复），不再解释「平台侧
+  // 账号记录会保留」—— 那行稀释了「永久删除」的警示分量。守卫反过来锁住这个决定。
+  t.ok('5j 确认文案不再解释平台侧账号记录（S8-6 起删去）', !/账号记录/.test(mineSrc))
+
+  // S8-6：打赏卡必须在「我的」页最底部，且下载按钮是原生 <a download>（同源，无需 Blob 中转）
+  const donateAt = mineSrc.indexOf('class="card donate"')
+  const donate = donateAt > 0 ? mineSrc.slice(donateAt, donateAt + 600) : ''
+  t.ok(
+    '5k 打赏卡含扫码标题与下载二维码按钮',
+    /微信扫码打赏鼓励作者/.test(donate) && /download="微信扫码打赏二维码\.jpg"/.test(donate)
+  )
 }
 
 /* ---------------- 6. schema 清理的回归守卫（S8-5） ---------------- */
