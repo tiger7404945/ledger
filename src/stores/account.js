@@ -182,6 +182,53 @@ export const useAccountStore = defineStore('account', {
     },
 
     /**
+     * 注销账号（S8-4）：**不可逆**地清掉这个账号在云端与本机的全部数据。
+     *
+     * ## 顺序（错一步就清不干净，且都是静默出错）
+     *
+     *   ① **先清云端** —— 登出后没有身份，`wipe()` 会抛 `NOT_SIGNED_IN`，
+     *      一条都删不掉；用户以为注销了，数据其实完整留在云上；
+     *   ② **再删本机分区** —— 必须在切分区**之前**，因为「删哪个库」取决于
+     *      当前指针指向哪个分区；切到 guest 之后再删就把 guest 库删了；
+     *   ③ **最后登出 + 切回未登录分区**。
+     *
+     * ## 与 `signOut()` 的取舍正好相反
+     *
+     * `signOut()` 是「先保数据再清」：有没推上去的改动就**取消退出**（宁可退不出去，
+     * 不可丢账）。注销不能这么做 —— 用户的意图就是「这些数据我不要了」，
+     * 为了「保住」它们而拦住注销是南辕北辙。云端那份反正马上要被清掉，
+     * 先推一轮毫无意义还多写一遍。
+     *
+     * ## 注销后本机与云端各剩什么
+     *
+     *   - 本机：该账号的分区被清回**出厂态**（业务表全清、建库标记与水位线一并
+     *     抹掉、旧版遗留的 localStorage 键也清掉），落到 `ledger_guest` ——
+     *     那里有账本 + 42 条分类，能看能算不能写；
+     *   - 云端：三个集合里属于本账号的文档全部删除；
+     *   - **平台侧的账号记录会保留**（Web SDK 的 `auth.deleteUser` 要求密码，
+     *     而短信登录的账号从来没有密码，客户端删不掉）。之后再拿同一个手机号
+     *     登录会得到一个**全新的空账本** —— 所以对用户而言数据确实不可恢复。
+     *
+     * @returns {Promise<{wiped: Object}>} `wiped` = 各云端集合实际删掉的条数，
+     *   形如 `{ ledger_ledgers: 1, ledger_categories: 42, ledger_bills: 17 }`
+     */
+    async deleteAccount() {
+      if (!cloud) throw new Error('未配置云端，没有可注销的账号')
+      if (!this.signedIn) throw new Error('当前未登录，没有可注销的账号')
+
+      return this.runIdentityChange(async () => {
+        // ① 云端：清空本账号的全部文档（必须在登出之前，见方法头）
+        const wiped = (await cloud.deleteAccount?.()) || {}
+        // ② 本机：分区清回出厂态（必须在切分区之前 —— 切完指针就指向 guest 了）
+        await db.deleteLocalData?.()
+        // ③ 身份：登出 → 落到未登录分区
+        await cloud.signOut()
+        await this.switchPartition(null)
+        return { wiped }
+      })
+    },
+
+    /**
      * 身份变动后的统一收尾。把「切分区 → 本地入队 → 同步 → 刷新 store 状态」
      * 收敛成一处，免得两个入口各写一遍、漏掉其中一步。
      *

@@ -158,4 +158,58 @@ const sheet = sheetMod.useLoginSheet()
   t.ok('4b account-change 同步完成后会再刷一次 store', reloadAfterSync)
 }
 
+/* ---------------- 5. 注销账号：顺序与二次确认（S8-4） ---------------- */
+
+/**
+ * 注销是本 App 里唯一**不可逆**的破坏性操作，两个地方错了都不会报错、
+ * 只会静默出错，所以用源码扫描盯住：
+ *
+ *   1. **顺序**：必须先清云端再登出。登出后 `currentUid` 归零，`wipe()` 第一步
+ *      `ensureSignedIn()` 就抛 `NOT_SIGNED_IN` —— 用户以为注销了，云端数据其实
+ *      一条没删。同理本地清理必须在 `switchPartition(null)` **之前**，否则
+ *      「当前分区」已经指向 guest，删的是 guest 的库。
+ *   2. **二次确认**：注销按钮只能打开确认框。直接绑到执行函数上就是「一键
+ *      不可逆删除」，而按钮和「退出登录」紧挨着，误触代价极大。
+ */
+{
+  const accountSrc = readFileSync(new URL('../src/stores/account.js', import.meta.url), 'utf8')
+  const mineSrc = readFileSync(new URL('../src/views/MineView.vue', import.meta.url), 'utf8')
+
+  // 只看 deleteAccount 这个 action 的实现体
+  const at = accountSrc.indexOf('async deleteAccount()')
+  t.ok('5a 账号 store 有 deleteAccount 动作', at > 0)
+  const body = at > 0 ? accountSrc.slice(at, at + 1200) : ''
+
+  const cloudWipeAt = body.indexOf('cloud.deleteAccount')
+  const localPurgeAt = body.indexOf('deleteLocalData')
+  const signOutAt = body.indexOf('cloud.signOut')
+  const switchAt = body.indexOf('switchPartition')
+
+  t.ok('5b ★ 先清云端', cloudWipeAt > 0)
+  t.ok('5c ★ 云端清理排在登出之前（登出后就删不掉了）', cloudWipeAt > 0 && cloudWipeAt < signOutAt, `${cloudWipeAt} < ${signOutAt}`)
+  t.ok(
+    '5d ★ 本地清理也排在登出 / 切分区之前（切完指针就指向 guest 了）',
+    localPurgeAt > 0 && localPurgeAt < switchAt,
+    `${localPurgeAt} < ${switchAt}`
+  )
+  t.ok('5e 最后才切回未登录分区', signOutAt > 0 && signOutAt < switchAt, `${signOutAt} < ${switchAt}`)
+  t.ok(
+    '5f 走 runIdentityChange 统一收尾（否则水位线 / store 刷新会漏）',
+    /return this\.runIdentityChange\(/.test(body)
+  )
+
+  // —— 界面：注销只能由确认框触发 ——
+  const dangerBtnAt = mineSrc.indexOf('class="ghost danger"')
+  const dangerBtn = dangerBtnAt > 0 ? mineSrc.slice(dangerBtnAt, dangerBtnAt + 400) : ''
+  t.ok('5g ★ 注销按钮只负责打开确认框', /deleteAccountOpen\s*=\s*true/.test(dangerBtn), dangerBtn.slice(0, 120))
+  t.ok('5h ★ 注销按钮没有直接绑执行函数（那样就是一键不可逆删除）', dangerBtnAt > 0 && !/doDeleteAccount\s*\(/.test(dangerBtn))
+
+  const dlgAt = mineSrc.indexOf('v-model="deleteAccountOpen"')
+  const dlg = dlgAt > 0 ? mineSrc.slice(dlgAt, dlgAt + 500) : ''
+  t.ok('5i ★ 二次确认：遮罩不可关闭 + 执行绑在 confirm 上', /:mask-closable="false"/.test(dlg) && /@confirm="doDeleteAccount"/.test(dlg))
+
+  // 文案必须如实交代「平台账号记录保留」—— 只说「永久删除」会让人以为手机号也注销了
+  t.ok('5j 确认文案交代了平台侧账号记录的处理', /账号记录/.test(mineSrc))
+}
+
 t.done()

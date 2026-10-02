@@ -11,6 +11,7 @@ import {
   LEGACY_DB_KEY,
   META_KEYS,
   STORES,
+  clearLegacyLocalKeys as idbClearLegacyLocalKeys,
   clearStore as idbClearStore,
   createIdbConnection,
   createIdbKeyValue,
@@ -976,6 +977,56 @@ export function createIdbAdapter(options = {}) {
       await outbox.clear()
       if (Object.keys(kept).length) await writeMeta(kept)
       // ⚠️ 不碰 initPromise：这里要的是「空库保持空」，不是重新走一遍建库播种
+      return true
+    },
+
+    /**
+     * 注销账号时的本地清除（**不可逆**）：把这个分区清回「从未使用过」。
+     *
+     * ## 与 `clearLocalData()`（退出登录用）的区别
+     *
+     * | | `clearLocalData()` | `deleteLocalData()` |
+     * | --- | --- | --- |
+     * | 清四个业务表 + 队列 | ✅ | ✅ |
+     * | 抹掉 meta（建库标记 / 水位线 / 导入标记） | ❌（只清水位线） | ✅ |
+     * | 清第一阶段遗留的 localStorage 键 | ❌ | ✅ |
+     * | 谁用 | 退出登录（分区稍后会被同一账号复用） | 注销账号（分区要回到出厂态） |
+     *
+     * 注销必须比退出更彻底：库里留着 `schemaVersion` 的话，同一个手机号再登录时
+     * `init()` 会认为「这个库已经初始化过」而**跳过播种**，用户看到一片空宫格
+     * （S7 真机踩过的同款症状；`partition-test` 第 16 节把这对差别钉死了）。
+     *
+     * ## 为什么是「清空 + 抹标记」而不是 `indexedDB.deleteDatabase`
+     *
+     * 删库看着更干净，实测行不通（2026-10-02，fake-indexeddb 复现，与规范一致）：
+     * 还有别的连接（另一个标签页）开着时，`deleteDatabase()` 不会失败，而是进入
+     * `blocked` 被**永久挂起**；此后连 `open()` 同一个库都会排到那个挂起的删除
+     * 请求**后面** —— 「删不掉就退回去清表」这条兜底路径会自己把自己锁死。
+     * 而「清空表 + 抹掉 meta + 清遗留键」在行为上与删库**完全等价**：
+     * 数据没了、标记没了、`init()` 会重新播种，且不会留下任何挂起请求。
+     *
+     * ## 三步缺一不可
+     *
+     *   ① 清四个业务表 + 队列；
+     *   ② 清第一阶段遗留的两个 localStorage 键 —— 抹掉 meta 之后 `init()` 会
+     *      重新走 `readLegacy()`，不清这两个键等于**注销完数据又复活**；
+     *   ③ `initPromise = null` —— 让下一次 `ready()` 真的重跑 `init()`。
+     *      少了这一步，这个实例在本会话里永远停在「已初始化」，同号再登录时
+     *      不会再播种（`bucketCache` 会把同一个实例还回来）。
+     *
+     * @returns {Promise<boolean>} 恒为 true
+     */
+    async deleteLocalData() {
+      await getDB()
+      for (const storeName of [STORES.LEDGER, STORES.CATEGORY, STORES.BILL, STORES.META]) {
+        await clearStore(storeName)
+      }
+      await outbox.clear()
+
+      idbClearLegacyLocalKeys()
+
+      initPromise = null
+      pendingResetMode = null
       return true
     },
 

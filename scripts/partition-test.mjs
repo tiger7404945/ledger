@@ -40,6 +40,8 @@ const {
   DB_NAME,
   DB_VERSION,
   DB_PARTITION_PREFIX,
+  LEGACY_DB_KEY,
+  LEGACY_OUTBOX_KEY,
   META_KEYS,
   STORES,
   createIdbConnection,
@@ -520,6 +522,85 @@ t.group('15. ★ api/index.js：装配层不给任何分区开 migrateFrom')
     migrateValues.join(' | ')
   )
   t.ok('15c 认领标识（claimant）随继承一起下线', !/claimant:/.test(code))
+}
+
+/* ---------------- 16. ★ 注销账号：本地分区清回出厂态（S8-4） ---------------- */
+
+/**
+ * 「注销账号」要求这个分区**回到从未使用过的状态**，而 `clearLocalData()`
+ * （退出登录用）做不到这件事：它清表但**保留** `schemaVersion`，于是同一个
+ * 手机号再登录时 `init()` 认为「这个库初始化过」而**跳过播种** ——
+ * 用户看到一片空宫格（S7 真机踩过的同款症状）。
+ *
+ * ⚠️ 实现上**刻意不走 `indexedDB.deleteDatabase`**：还有别的连接（另一个标签页）
+ *    开着时，删除请求会被永久挂起，而且此后连 `open()` 同一库都要排到它后面
+ *    —— 「删不掉就退回去清表」的兜底会自己把自己锁死（fake-indexeddb 复现，
+ *    与规范一致）。等价做法是「清空全部表 + 抹掉 meta + 清遗留 localStorage 键」，
+ *    这一节同时钉住这三步，任何一步漏掉都会让同号回来时看到空宫格或旧数据复活。
+ */
+t.group('16. ★ deleteLocalData：注销把分区清回出厂态')
+
+{
+  /* ---- 16A：注销后「同号再登录」必须能重新播种 ---- */
+
+  const delName = nextDb('delaccount')
+
+  // 模拟「登录后用过一阵」的分区：基础设施 + 用户账单 + 待推队列
+  const delAdapter = createIdbAdapter({ dbName: delName, seed: 'base', seedCategoryUpdatedAt: 0 })
+  await delAdapter.ready()
+  await delAdapter.bill.create({
+    ledgerId: 'ledger_default',
+    categoryId: null,
+    type: 'expense',
+    amount: 168,
+    date: '2026-10-02',
+    remark: '注销前的账'
+  })
+  const beforeSnap = await delAdapter.snapshot()
+  t.ok('16a 注销前分区里确实有数据', beforeSnap.bills.length === 1 && beforeSnap.categories.length === 42)
+
+  // 造一份「第一阶段遗留」的 localStorage 旧库与旧队列（S1 接管后**刻意不删**）
+  localStorage.setItem(LEGACY_DB_KEY, JSON.stringify({ schemaVersion: 1, bills: [{ id: 'old' }] }))
+  localStorage.setItem(LEGACY_OUTBOX_KEY, JSON.stringify([{ id: 'ob_old' }]))
+
+  t.ok('16b 清理返回 true', (await delAdapter.deleteLocalData()) === true)
+  t.ok('16c ★ 遗留 DB 键一并清掉（否则下次 init 会把旧库重新导入）', localStorage.getItem(LEGACY_DB_KEY) === null)
+  t.ok('16d 遗留 outbox 键同理', localStorage.getItem(LEGACY_OUTBOX_KEY) === null)
+
+  const clearedMeta = await readMeta(await openDB({ dbName: delName, version: DB_VERSION }))
+  t.ok(
+    '16e ★ 建库标记被抹掉（这是「能重新播种」的前提）',
+    clearedMeta[META_KEYS.SCHEMA] === undefined,
+    JSON.stringify(clearedMeta)
+  )
+
+  // 「同一个手机号再登录」= 同一个库名重新建适配器
+  const reLogin = createIdbAdapter({ dbName: delName, seed: 'base', seedCategoryUpdatedAt: 0 })
+  const snap = await reLogin.snapshot()
+  t.eq('16f ★ 分区重新播种：分类恢复 42 条（不会是一片空宫格）', snap.categories.length, 42)
+  t.eq('16g ★ 用户账单一条不剩', snap.bills.length, 0)
+  t.eq('16h 账本回来了（App 起得来）', snap.ledgers.length, 1)
+  t.eq('16i 待推队列也空了（不会把上个账号的改动推给新身份）', await reLogin.outbox.pendingCount(), 0)
+
+  // 同一个实例自己也要能恢复（生产里 bucketCache 会把这个实例还回来）
+  const selfSnap = await delAdapter.snapshot()
+  t.eq('16j ★ 被清理过的那个实例自身也能重播种（initPromise 被作废）', selfSnap.categories.length, 42)
+
+  /* ---- 16B：反例 —— clearLocalData() 不能拿来当注销 ---- */
+
+  const clearName = nextDb('clearaccount')
+  const clearAdapter = createIdbAdapter({ dbName: clearName, seed: 'base', seedCategoryUpdatedAt: 0 })
+  await clearAdapter.ready()
+  await clearAdapter.clearLocalData()
+
+  const afterClear = createIdbAdapter({ dbName: clearName, seed: 'base', seedCategoryUpdatedAt: 0 })
+  const clearSnap = await afterClear.snapshot()
+  t.eq(
+    '16k ★ 反例：clearLocalData 保留 schemaVersion ⇒ 同号回来**不播种**，分类是 0 条',
+    clearSnap.categories.length,
+    0
+  )
+  t.eq('16l 反例：库里也不剩账单（数据确实被清了，问题只在「回不来」）', clearSnap.bills.length, 0)
 }
 
 t.done()

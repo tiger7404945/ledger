@@ -243,6 +243,28 @@ export function createIdbConnection({ dbName, version, open } = {}) {
   return { acquire }
 }
 
+/**
+ * 清掉第一阶段遗留在 localStorage 的两个键（业务库 + 同步队列）。
+ *
+ * 注销账号时必须一起清：`init()` 是否重新播种、是否重新导入旧数据，都看
+ * **库里的 meta 标记**。注销把 meta 抹掉了，于是下一次 `init()` 会重新走
+ * `readLegacy()` / `readLegacyOutbox()` —— 如果这两个键还在，用户刚注销完，
+ * 第一阶段的旧数据就又回来了。
+ *
+ * ⚠️ 平时（非注销）**绝不能碰**它们：它们是「旧版本数据还能找回」的退路，
+ *    而且正常启动时 `IMPORTED` / `OUTBOX_IMPORTED` 标记会挡住重复导入。
+ */
+export function clearLegacyLocalKeys() {
+  if (typeof localStorage === 'undefined') return false
+  try {
+    localStorage.removeItem(LEGACY_DB_KEY)
+    localStorage.removeItem(LEGACY_OUTBOX_KEY)
+  } catch (e) {
+    return false
+  }
+  return true
+}
+
 /* ---------------- 基础读写原语 ---------------- */
 
 export function readAll(db, storeName) {

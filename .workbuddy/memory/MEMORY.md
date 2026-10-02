@@ -5,9 +5,11 @@
 
 ## 阶段
 Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。v0.2.0 前端完成；
-**S0–S5、S7 全部完成**，云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
+**S0–S5、S7、S8 全部完成**，云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
 **S7 = 去掉匿名身份 + 写操作登录门禁**（2026-10-01 裁决、2026-10-02 凌晨实施完毕，见下）。
 **S7-10（2026-10-02）= 关闭裸库继承 + 记账/首页功能裁剪**（见「功能裁剪」节）。
+**S8 = 上线收尾**：S8-1 数据备份/导入、S8-2 同步状态补全、S8-3 恢复模式、S8-4「我的」页精简 + 注销账号
+（见「数据备份」「注销账号」两节）。剩余上线项：正式域名/安全域名白名单、真机系统终验、打 `v1.0.0`。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
@@ -56,8 +58,8 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 677 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition77/**gate**31/**backup**101）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 699 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition89/**gate**41/**backup**101）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
@@ -125,6 +127,29 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 - ⚠️ **真机验证必须换干净环境**：同一浏览器里残留的 `ledger_guest`/裸库会在登录时被搬进账号分区并推上云。
   用**无痕窗口**打开，或先清掉该站点数据，否则验证结果必然被污染（看起来像「种子又灌进来了」）。
 - 首绑裁决（`core/firstBind.js` / `firstBindPending` / `firstBindDone`）**已整体删除**，别再加回来。
+
+## 注销账号（S8-4，2026-10-02，与「退出登录」是两套语义，别互相套用）
+- **语义分野**：退出 = 「先保数据再清」（`pendingCount>0` 推不干净就**取消退出**）；
+  注销 = 「**先清云端 → 再清本地 → 最后登出**」，不可为保数据而阻拦（数据本就要没）。
+- **顺序是硬约束**：① `cloud.deleteAccount()`（内部先 `ensureSignedIn()`；**登出后它会抛 `NOT_SIGNED_IN`，
+  一条都删不掉**）→ ② `db.deleteLocalData()`（**必须在 `switchPartition(null)` 之前**，否则清的是 `ledger_guest`）
+  → ③ `cloud.signOut()` + `switchPartition(null)`。整段包在 `runIdentityChange()` 里。
+- **`deleteLocalData()` vs `clearLocalData()`**：前者 = 清四表（ledger/category/bill/meta）+ 清 outbox
+  + **抹掉 meta（含 `schemaVersion`）** + 清第一阶段遗留的 localStorage 两键（`clearLegacyLocalKeys()`，
+  即 `LEGACY_DB_KEY`/`LEGACY_OUTBOX_KEY`）⇒ 回到**出厂态**；后者保留 meta（分区会被同账号复用、退出后全量回拉）。
+- **「清回出厂态」三件缺一不可**：清业务表 + **抹 meta** + **清遗留键**。
+  留 `schemaVersion` ⇒ 同号再登录 `init()` 跳过播种 ⇒ 空宫格；抹 meta 却不清遗留键 ⇒ `readLegacy()` 把旧库**重新导入** ⇒ 数据复活。
+- ⚠️ **刻意不走 `indexedDB.deleteDatabase()`**（实测结论）：别的连接（其他标签页）开着时删除请求进 `blocked`
+  被**永久挂起**，且此后 `open()` 同一库会**排到该挂起请求后面** ⇒ 「删不掉就退回去清表」的兜底**自己把自己锁死**
+  （fake-indexeddb 复现，与规范一致；曾让 partition-test 整脚本挂死 exit=124）。
+  等价的「清表 + 抹 meta + 清遗留键」是安全解，**别为「更彻底」把 dropDatabase 加回来**。
+- **平台侧的账号记录删不掉**（如实告知用户）：`auth.deleteUser(DeleteMeReq)` 内部强制
+  `validateParams({password:{required:true}})` → `sudo({password})` 换 `sudo_token`；短信登录账号从无密码，
+  另一条路（`verification_token`）要用户当场再收一次短信，得不偿失 ⇒ 注销落地为「云端数据清空 + 本机数据清空 + 登出」。
+  确认文案必须写明「平台侧的账号记录会保留」。
+- **二次确认**：`ConfirmDialog` 的 `mask-closable=false`（不可逆操作不让手滑点遮罩定夺）、正文 `white-space: pre-line`
+  （让 `\n\n` 分段生效）、确认键写「永久注销」/取消键「再想想」。「注销账号」按钮**只负责开确认框**，
+  绝不可直绑 `doDeleteAccount(`；gate-test 第 5 节（5a~5j）源码扫描锁死这几点 + 三步顺序。
 
 ## S7 去匿名（**已完成 2026-10-02**）
 - 决策（P10，**五条规则**）：**删掉本地默认匿名用户**。未登录只读可浏览（空账本 0.00 + **分类齐备**），

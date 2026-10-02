@@ -586,10 +586,11 @@ export function createCloudBaseAdapter({
   }
 
   /**
-   * 仅调试用：删掉**本账号**在这三个集合里的全部文档。
+   * 删掉**本账号**在这三个集合里的全部文档。
    *
-   * 「我的 → 重置演示数据」必须连云端一起清，否则下一次同步会把刚清掉的
-   * 旧数据原样拉回来，看起来像「重置按钮没生效」。
+   * ⚠️ 这个方法本身就是「注销账号」与（开发期的）「重置演示数据」共用的底层动作，
+   *    调用方用 `deleteAccount()` 而不是直接调它 —— 那层包了「必须先登录」的语义。
+   *
    * 只删自己的（PRIVATE 权限在服务端兜底），也只会碰 `ledger_` 前缀的集合，
    * 不会影响同环境里其它项目的数据。
    *
@@ -616,6 +617,35 @@ export function createCloudBaseAdapter({
       result[name] = total
     }
     return result
+  }
+
+  /**
+   * 注销账号（S8-4）：**不可逆**地清空本账号在云端的全部数据。
+   *
+   * 返回每个集合实际删掉的条数，形如
+   * `{ ledger_ledgers: 1, ledger_categories: 42, ledger_bills: 17 }`，
+   * 调用方可以据此在界面上如实汇报「云端清了 N 条」。
+   *
+   * ## 为什么只清数据、不删平台账号记录
+   *
+   * Web SDK 的 `auth.deleteUser({ password })` **强制要求密码**（内部先
+   * `sudo({ password })` 换 `sudo_token`，再 `deleteMe`）。本项目的账号是
+   * **手机验证码登录**、从来没有设过密码，`sudo` 的第二条路（`verification_token`）
+   * 又要用户当场再收一次短信 —— 把一条不可逆的删除操作挂在一轮新的短信验证上，
+   * 收益（省下一条空壳账号记录）远小于代价（流程长、还可能因频控失败）。
+   *
+   * 于是「注销」在本产品里的落地是：**云端数据清空 + 本机数据清空 + 登出**。
+   * 手机号之后可以重新登录，得到的是一份**全新的空账本**，旧数据不可恢复 ——
+   * 这正是用户对「注销」的实质期待（数据没了），平台侧那条记录本身不含任何
+   * 用户数据。要做到「连账号记录一起删」，只能在 CloudBase 控制台或用
+   * 服务端 Admin SDK 处理，客户端做不到。
+   *
+   * ⚠️ **必须在登出之前调用**：登出后 `currentUid` 归零，`wipe()` 第一步
+   *    `ensureSignedIn()` 就会抛 `NOT_SIGNED_IN`，一条都删不掉。
+   */
+  async function deleteAccount() {
+    await ensureSignedIn()
+    return wipe()
   }
 
   /* ---------------- 账号体系（S5-1） ---------------- */
@@ -836,6 +866,8 @@ export function createCloudBaseAdapter({
     signInWithSms,
     /** 退出登录（不动数据） */
     signOut,
+    /** 注销账号：清空本账号在云端的全部数据（**不可逆**，必须在登出前调） */
+    deleteAccount,
     /** 读当前身份，不触发登录 */
     getIdentity,
 
