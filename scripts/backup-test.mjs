@@ -4,20 +4,27 @@
  * 这一组盯住的是「数据不能只交给一家厂商」这条底线（LeanCloud 停服那一课）。
  * 导出/导入看起来只是两个按钮，但真正的风险全在**合并规则**上：
  *
- *   1. **导入不能弄丢数据** —— 它必须只做增量合并，绝不删本地已有的东西。
- *      反例（设计时否掉的方案）：整库替换。用户「把另一台设备的账并过来」
- *      的期待会被它变成「我本机的账全没了」。
- *   2. **导入必须幂等** —— 同一份文件点两次不能变成两倍账单。
+ *   1. **合并模式不能弄丢数据** —— 它只做增量合并，绝不删本地已有的东西。
+ *      反例（设计时否掉的方案）：把「合并」实现成整库替换。用户「把另一台
+ *      设备的账并过来」的期待会被它变成「我本机的账全没了」。
+ *   2. **两种模式都必须幂等** —— 同一份文件点两次不能变成两倍账单。
  *      第一次点没反应/以为没成功，再点一次是极常见的用户行为；
- *      幂等不是加分项，是合格线。这里断言的是「再导一次全部 skip」。
- *   3. **导入不能复活旧数据** —— 本地那条已经被改到更新，导入一份旧备份
+ *      幂等不是加分项，是合格线。
+ *   3. **合并模式不能复活旧数据** —— 本地那条已经被改到更新，导入一份旧备份
  *      不能把它改回去。「新者胜」必须对**两个方向**都成立。
- *   4. **坏数据不能带崩整份导入** —— 手工编辑过的、或来自早期版本的备份，
+ *   4. **恢复模式要真能找回误删** —— 这正是它存在的理由。本项目的删除是软删
+ *      （留墓碑 + 抬高 `updatedAt`），所以「导出 → 删错 → 再导入」在合并口径下
+ *      会静默失败（第 8 组 8a 就是这个反例的固化）；恢复必须无视 `updatedAt`、
+ *      以备份为准。
+ *   5. **恢复的「清除」只能软删** —— 物理删除会让其他设备的下一次回拉把它当成
+ *      云端还没有的新数据又拉回来。这条只能在真实适配器上断言（第 9 组 9g）。
+ *   6. **坏数据不能带崩整份导入** —— 手工编辑过的、或来自早期版本的备份，
  *      有一条字段不合法就整份拒绝，用户就永远导不进自己的数据了。
  *      所以逐条校验、坏条计数跳过。
  *
- * 这里能测的（纯函数 + fake-indexeddb）：格式构造、解析与校验、合并计划三分支、
- *   「导出 → 空库导入」往返、幂等、同步队列入队、身份凭据不外泄。
+ * 这里能测的（纯函数 + fake-indexeddb）：格式构造、解析与校验、合并与恢复两份
+ *   计划、软删落盘、「导出 → 空库导入」往返、两种模式的幂等、同步队列入队、
+ *   身份凭据不外泄。
  *
  * 这里**测不了**的：真实浏览器的 file 选择与下载（`<input type=file>`、Blob URL），
  *   那靠手工走查；`api/index.js` 的三层编排（exportBackup / previewImport /
@@ -50,6 +57,7 @@ const {
   isPlanEmpty,
   parseBackup,
   planImport,
+  planRestore,
   pickAlive
 } = await import(`${SRC}api/core/backup.js`)
 
@@ -400,7 +408,7 @@ t.group('5. ★ 端到端：往返不丢数据、导两次不翻倍')
   const plan1 = planImport({ local: await b.backup.dump(), incoming: backupA.data })
   t.eq('5b 首次导入全部是新增', plan1.counts, { create: 5, update: 0, skip: 0 })
   const r1 = await b.backup.apply(plan1)
-  t.eq('5c 落盘计数', r1, { created: 5, updated: 0 })
+  t.eq('5c 落盘计数', r1, { created: 5, updated: 0, removed: 0 })
 
   const snapB = await b.snapshot()
   t.eq('5d 账单条数与备份一致', snapB.bills.length, 2)
@@ -421,7 +429,7 @@ t.group('5. ★ 端到端：往返不丢数据、导两次不翻倍')
   const plan2 = planImport({ local: await b.backup.dump(), incoming: backupA.data })
   t.eq('5i ★★ 再导一次：全部跳过，一条都不重复', plan2.counts, { create: 0, update: 0, skip: 5 })
   const r2 = await b.backup.apply(plan2)
-  t.eq('5j 第二次落盘写 0 条', r2, { created: 0, updated: 0 })
+  t.eq('5j 第二次落盘写 0 条', r2, { created: 0, updated: 0, removed: 0 })
   t.eq('5k 库里条数没有翻倍', (await b.snapshot()).bills.length, 2)
 
   // 反方向：本地已经更新过，旧备份不能把它改回去
@@ -442,7 +450,7 @@ t.group('5. ★ 端到端：往返不丢数据、导两次不翻倍')
   const c = createIdbAdapter({ dbName: dbC, seed: false })
   await c.ready()
   const r3 = await c.backup.apply({})
-  t.eq('5n 空计划 + 空入参不炸', r3, { created: 0, updated: 0 })
+  t.eq('5n 空计划 + 空入参不炸', r3, { created: 0, updated: 0, removed: 0 })
   t.eq('5o 也没有因此入队任何东西', await c.sync.pendingCount(), 0)
 }
 
@@ -482,6 +490,230 @@ t.group('7. ★ 静态守卫：漏了门禁 / 泄漏凭据，单测必须能发�
     '7c 导入失败/成功后都会刷新首页与账期两个切片',
     /billStore\.refresh\(\)/.test(sheetSrc) && /billStore\.refreshPeriod\(\)/.test(sheetSrc)
   )
+
+  /**
+   * 恢复是**不可逆**的（它会删本机数据），所以「按钮只负责开确认弹层、
+   * 真正写库在 confirm 回调里」这件事必须锁住。同样只能源码扫描 ——
+   * 确认弹层的交互没有可注入的上下文。
+   */
+  t.ok(
+    '7d ★ 恢复必须经过二次确认（开弹层与写库分成两步）',
+    /function askRestore\(\)[\s\S]{0,400}?restoreAsk\.value = true/.test(sheetSrc) &&
+      /function doRestore\(\)[\s\S]{0,200}?runImport\('restore'\)/.test(sheetSrc)
+  )
+  t.ok('7e 主按钮绑的是 askRestore（不直接写）', /@click="askRestore"/.test(sheetSrc))
+  t.ok('7f 确认弹层接了 confirm → doRestore', /@confirm="doRestore"/.test(sheetSrc))
+  t.ok(
+    '7g ★ 确认正文给出精确到秒的时刻与「不可撤销」',
+    /formatFullTimeCN/.test(sheetSrc) && /不可撤销/.test(sheetSrc)
+  )
+  t.ok('7h 危险抉择不因误点遮罩而替用户决定', /:mask-closable="false"/.test(sheetSrc))
+
+  /**
+   * 适配器侧的硬约束：清除**只能软删**。一旦有人在备份落盘里用上物理删除
+   * （`removeMany` / `clearStore`），其他设备的下一次回拉会把那些记录当成
+   * 「云端还没有的新数据」又拉回来。第 9 组 9g 是行为断言，这里是源码守卫。
+   */
+  const adapterSrc = readFileSync(new URL('../src/api/adapters/idbAdapter.js', import.meta.url), 'utf8')
+  const backupBlock = adapterSrc.slice(
+    adapterSrc.indexOf('const backupApi = {'),
+    adapterSrc.indexOf('/* ---------------- 同步 ---------------- */')
+  )
+  t.ok(
+    '7i ★ 备份落盘只用 putMany（清除写墓碑），不碰物理删除',
+    backupBlock.length > 0 && /putMany\(/.test(backupBlock) && !/removeMany|clearStore/.test(backupBlock)
+  )
+}
+
+/* ---------------- 8. 恢复计划（纯逻辑） ---------------- */
+
+t.group('8. ★ planRestore：删错了能用备份找回来（不可逆，判据必须钉死）')
+
+{
+  const incoming = { ledgers: [L], categories: C, bills: B.slice(0, 2) }
+
+  // 本地删过一笔（墓碑 updatedAt = 9000，比备份里的 1000 新）
+  const localAfterDelete = {
+    ledgers: [L],
+    categories: C,
+    bills: [{ ...B[0], deleted: 1, updatedAt: 9000 }, B[1]]
+  }
+
+  const merge = planImport({ local: localAfterDelete, incoming })
+  t.eq('8a ★ 反例固化：合并口径下「删了再导」一条都找不回来', merge.counts, {
+    create: 0,
+    update: 0,
+    skip: 5
+  })
+
+  const restore = planRestore({ local: localAfterDelete, incoming })
+  t.eq('8b ★ 恢复口径下：那笔被找回，内容一致的其余照旧跳过', restore.counts, {
+    create: 0,
+    update: 1,
+    skip: 4,
+    remove: 0,
+    revive: 1
+  })
+  t.eq('8c 找回的就是备份里那一笔', restore.update.bills.map((d) => d.id), ['bill_1'])
+  t.ok(
+    '8d planner 是纯函数，不改入参（调用方可以直接复用 backup.data）',
+    localAfterDelete.bills[0].deleted === 1 && incoming.bills[0].deleted === 0
+  )
+
+  // 覆盖：恢复不看 updatedAt，只以备份为准
+  const localNewerArgs = {
+    local: { ledgers: [], categories: [], bills: [{ ...B[0], amount: 99, updatedAt: 5000 }] },
+    incoming: { ledgers: [], categories: [], bills: [{ ...B[0], updatedAt: 1000 }] }
+  }
+  t.eq('8e 反例：合并口径下本地改过 ⇒ 旧备份不覆盖', planImport(localNewerArgs).counts, {
+    create: 0,
+    update: 0,
+    skip: 1
+  })
+  const covered = planRestore(localNewerArgs)
+  t.eq('8f ★ 恢复口径下：本地改过的也被备份盖回去', covered.counts, {
+    create: 0,
+    update: 1,
+    skip: 0,
+    remove: 0,
+    revive: 0
+  })
+  t.eq('8g 盖回去用的是备份那份的值', covered.update.bills[0].amount, 12.5)
+
+  // 清除：本机有、备份里没有 ⇒ remove 桶
+  const extra = planRestore({
+    local: { ledgers: [L], categories: [], bills: [{ ...B[1], id: 'bill_extra' }] },
+    incoming: { ledgers: [L], categories: [], bills: [] }
+  })
+  t.eq('8h ★ 本机多出来的记录进 remove 桶（合并口径下则一条都不动）', extra.counts, {
+    create: 0,
+    update: 0,
+    skip: 1,
+    remove: 1,
+    revive: 0
+  })
+  t.eq('8i remove 桶装的是 id', extra.remove.bills, ['bill_extra'])
+
+  const alreadyGone = planRestore({
+    local: { ledgers: [L], categories: [], bills: [{ ...B[1], deleted: 1, updatedAt: 9000 }] },
+    incoming: { ledgers: [L], categories: [], bills: [] }
+  })
+  t.eq('8j ★ 已是墓碑的记录不会再进 remove（幂等的另一半）', alreadyGone.counts.remove, 0)
+
+  // 墓碑 + 备份内容一致 ⇒ 仍要复活（内容比对刻意不看 deleted）
+  const reviveSame = planRestore({
+    local: { ledgers: [], categories: [], bills: [{ ...B[0], deleted: 1 }] },
+    incoming: { ledgers: [], categories: [], bills: [{ ...B[0] }] }
+  })
+  t.eq('8k ★ 墓碑 + 备份内容一致 ⇒ 仍判复活（不能因「内容相同」而漏掉）', reviveSame.counts, {
+    create: 0,
+    update: 1,
+    skip: 0,
+    remove: 0,
+    revive: 1
+  })
+
+  // 账本保护：备份里一个账本都没有时不能把本机账本删空
+  const guard = planRestore({
+    local: { ledgers: [L], categories: C, bills: [] },
+    incoming: { ledgers: [], categories: [], bills: [] }
+  })
+  t.eq('8l ★ 备份里没有账本 ⇒ 不删本机账本（没有账本 App 起不来）', guard.remove.ledgers, [])
+  t.eq('8m 但分类该清就清（只有账本受这层保护）', guard.remove.categories, ['cat_food', 'sub_rice'])
+  t.eq('8n remove 总数 = 被清掉的分类数', guard.counts.remove, 2)
+
+  t.ok(
+    '8o ★ 只清除不新增的计划不算空计划（否则按钮会被误禁用）',
+    isPlanEmpty({ counts: { create: 0, update: 0, remove: 2 } }) === false
+  )
+  t.ok('8p 真正无事可做的计划仍算空', isPlanEmpty({ counts: { create: 0, update: 0, remove: 0 } }) === true)
+
+  t.eq('8q 空入参不炸', planRestore({}).counts, { create: 0, update: 0, skip: 0, remove: 0, revive: 0 })
+  t.eq(
+    '8r 备份为空 ⇒ 只清除，不误判成新增',
+    planRestore({ local: { ledgers: [L], categories: [], bills: [B[0]] }, incoming: {} }).counts.create,
+    0
+  )
+}
+
+/* ---------------- 9. 端到端：导出 → 误删 → 恢复 ---------------- */
+
+t.group('9. ★ 端到端：误删能用备份找回，且「清除」走的是软删')
+
+{
+  const dbD = nextDb('restore')
+  const rawD = await openDB({ dbName: dbD, version: DB_VERSION })
+  await putMany(rawD, STORES.LEDGER, [L])
+  await putMany(rawD, STORES.CATEGORY, C)
+  await putMany(rawD, STORES.BILL, [B[0], B[1]])
+
+  const d = createIdbAdapter({ dbName: dbD, seed: false })
+  await d.ready()
+  await d.sync.clearOutbox()
+
+  const snapshot = buildBackup({ data: await d.backup.dump(), exportedAt: 1700000000000 })
+  t.eq('9a 备份那一天有两条账单', snapshot.counts.bills, 2)
+
+  // 误删一笔（走**真实**写路径，顺便验证它确实是软删）
+  await d.bill.remove('bill_1')
+  const tomb = (await d.backup.dump()).bills.find((x) => x.id === 'bill_1')
+  t.ok(
+    '9b ★ 删除是软删：墓碑留在库里、updatedAt 被抬到删除时刻',
+    tomb && tomb.deleted === 1 && tomb.updatedAt > snapshot.data.bills.find((x) => x.id === 'bill_1').updatedAt
+  )
+
+  // 备份之后又记了一笔（恢复会把它清掉）
+  await putMany(rawD, STORES.BILL, [{ ...B[0], id: 'bill_after', amount: 7, createdAt: 5000, updatedAt: 5000 }])
+  await d.sync.clearOutbox()
+
+  const plan = planRestore({ local: await d.backup.dump(), incoming: snapshot.data })
+  t.eq('9c 恢复计划：找回 1 条、清除 1 条', {
+    create: plan.counts.create,
+    update: plan.counts.update,
+    remove: plan.counts.remove,
+    revive: plan.counts.revive
+  }, { create: 0, update: 1, remove: 1, revive: 1 })
+
+  const r = await d.backup.apply(plan)
+  t.eq('9d 落盘计数', r, { created: 0, updated: 1, removed: 1 })
+
+  const afterRestore = await d.backup.dump()
+  const back = afterRestore.bills.find((x) => x.id === 'bill_1')
+  t.ok('9e ★ 误删的那笔回来了（deleted 归零）', back && !back.deleted)
+  t.eq('9f 恢复保留备份里的 updatedAt（幂等的根据）', back.updatedAt, 1000)
+
+  const cleared = afterRestore.bills.find((x) => x.id === 'bill_after')
+  t.ok('9g ★ 被清除的走的是软删（墓碑还在，没被物理删除）', cleared && cleared.deleted === 1)
+  t.ok(
+    '9h ★ 清除的墓碑时间戳比备份里的都新（否则云端会把这条又复活）',
+    cleared.updatedAt > snapshot.exportedAt
+  )
+
+  t.eq('9i ★ 这批改动进了同步队列（登录后会推上云）', await d.sync.pendingCount(), 2)
+
+  // 幂等：同一份备份再恢复一次
+  const plan2 = planRestore({ local: await d.backup.dump(), incoming: snapshot.data })
+  t.eq('9j ★★ 再恢复一次：写 0 条、清 0 条（恢复两次 = 恢复一次）', {
+    create: plan2.counts.create,
+    update: plan2.counts.update,
+    remove: plan2.counts.remove
+  }, { create: 0, update: 0, remove: 0 })
+  const r2 = await d.backup.apply(plan2)
+  t.eq('9k 第二次落盘什么也没写', r2, { created: 0, updated: 0, removed: 0 })
+
+  const finalLive = (await d.backup.dump()).bills.filter((x) => !x.deleted)
+  t.eq('9l ★ 活账单回到备份那一天的两条', finalLive.map((x) => x.id).sort(), ['bill_1', 'bill_2'])
+  t.eq(
+    '9m 被清的那条只剩墓碑（库里仍是 3 条 = 2 活 + 1 墓碑，没有物理删除）',
+    (await d.backup.dump()).bills.length,
+    3
+  )
+
+  // 恢复一份「空备份」不该把账本删掉（账本保护在真实库上再验一次）
+  const emptyPlan = planRestore({ local: await d.backup.dump(), incoming: {} })
+  await d.backup.apply(emptyPlan)
+  t.eq('9n ★ 用空备份恢复后账本仍在（没账本 App 起不来）', (await d.backup.dump()).ledgers.filter((x) => !x.deleted).length, 1)
+  t.eq('9o 账单则被清空（活文档 0 条）', (await d.backup.dump()).bills.filter((x) => !x.deleted).length, 0)
 }
 
 t.done()

@@ -35,7 +35,7 @@ import { createCloudBaseAdapter } from './adapters/cloudbaseAdapter.js'
 import { createSyncEngine } from './sync/syncEngine.js'
 import { GUEST_ACCOUNT_PREFIX, accountPrefixOf } from './core/cloudId.js'
 import { DB_NAME, partitionedDbName } from './core/idb.js'
-import { BACKUP_COLLECTIONS, buildBackup, parseBackup, planImport } from './core/backup.js'
+import { BACKUP_COLLECTIONS, buildBackup, parseBackup, planImport, planRestore } from './core/backup.js'
 import { RepositoryError } from './contract.js'
 import { cloudEnvId, isCloudConfigured } from '../config/env.js'
 
@@ -378,13 +378,19 @@ export async function exportBackup({ account = null, exportedAt = Date.now() } =
 }
 
 /**
- * 预览导入：解析文件 + 与本地比对，**不写任何东西**。
+ * 预览导入：解析文件 + **同时**算出两份计划，**不写任何东西**。
  *
- * 中间隔一层预览不是仪式感 —— 导入是**批量写**，且会入队推上云。
- * 先让用户看到「新增 42 条、更新 3 条、跳过 156 条」再确认，是这类操作的底线。
+ * 中间隔一层预览不是仪式感 —— 导入是**批量写**，恢复模式下还会删数据，且都会
+ * 入队推上云。先让用户看到「会变成什么样」再确认，是这类操作的底线。
+ *
+ * 返回两份计划，因为它们是两种语义（详见 `core/backup.js` 决定 ②），
+ * 界面上对应两个按钮：
+ *   - `plan`    —— **合并**：只新增 / 覆盖，绝不删本机已有数据。默认、安全。
+ *   - `restore` —— **恢复**：以备份为准完整还原（含删除本机多出的、复活已删的）。
  *
  * @param {string|Object} text 备份文件文本（或已解析对象）
- * @returns {Promise<{ok:false, error:string} | {ok:true, backup:Object, invalid:Object, plan:Object}>}
+ * @returns {Promise<{ok:false, error:string} |
+ *   {ok:true, backup:Object, invalid:Object, plan:Object, restore:Object}>}
  */
 export async function previewImport(text) {
   const parsed = parseBackup(text)
@@ -394,36 +400,51 @@ export async function previewImport(text) {
   if (!inst?.db?.backup) return { ok: false, error: '当前数据源不支持数据导入' }
 
   const local = await inst.db.backup.dump()
-  const plan = planImport({ local, incoming: parsed.backup.data })
-  return { ok: true, backup: parsed.backup, invalid: parsed.invalid, plan }
+  const incoming = parsed.backup.data
+  return {
+    ok: true,
+    backup: parsed.backup,
+    invalid: parsed.invalid,
+    plan: planImport({ local, incoming }),
+    restore: planRestore({ local, incoming })
+  }
 }
 
 /**
- * 落盘导入计划。
+ * 落盘导入。
  *
- * ⚠️ **写前用最新本地副本再裁决一次**：预览与确认之间隔着用户点击，
- * 期间同步引擎可能已经把云端更新的版本拉了回来。若照原计划直写，
- * 就会用备份里的旧版本盖掉刚拉回来的新数据 —— 这正是「新者胜」要防的事。
+ * ⚠️ **写前用最新本地副本重算一次计划**：预览与确认之间隔着用户点击（恢复模式
+ * 还多一层二次确认），期间同步引擎可能已经把云端更新的版本拉了回来。若照预览
+ * 时的计划直写，就会用备份里的旧版本盖掉刚拉回来的新数据。
  *
- * 复用 `planImport` 而不是新写一套「再检查」逻辑：合并规则只有一份实现，
+ * 复用 `core/` 里的两个 planner 而不是新写一套「再检查」逻辑：规则只有一份实现，
  * 才不会出现「预览时说会更新、落盘时又按另一套规则」这种漂移。
  *
- * @param {Object} plan `previewImport` 返回的 plan
- * @returns {Promise<{created:number, updated:number, skipped:number}>}
+ * ⚠️ 入参是**备份数据本身**（`preview.backup.data`），不是预览时的计划 ——
+ * 恢复模式需要看到备份的**全量**（含合并口径下被跳过的那些），
+ * 只传计划会把它们漏掉。
+ *
+ * @param {{mode?: 'merge'|'restore', data?: Object}} input
+ *   `data` 形状为 `{ ledgers, categories, bills }`
+ * @returns {Promise<{created:number, updated:number, removed:number, skipped:number, mode:string}>}
  */
-export async function applyImport(plan) {
+export async function applyImport({ mode = 'merge', data = {} } = {}) {
   const inst = current || (await initDataLayer())
   if (!inst?.db?.backup) throw new RepositoryError('NO_BACKUP', '当前数据源不支持数据导入')
 
   const incoming = {}
   for (const kind of BACKUP_COLLECTIONS) {
-    incoming[kind] = [...(plan?.create?.[kind] || []), ...(plan?.update?.[kind] || [])]
+    incoming[kind] = data?.[kind] || []
   }
 
   const fresh = await inst.db.backup.dump()
-  const safe = planImport({ local: fresh, incoming })
+  const safe =
+    mode === 'restore'
+      ? planRestore({ local: fresh, incoming })
+      : planImport({ local: fresh, incoming })
+
   const result = await inst.db.backup.apply(safe)
-  return { ...result, skipped: safe.counts.skip }
+  return { ...result, skipped: safe.counts.skip, mode }
 }
 
 export { COLLECTIONS, BILL_TYPES, CATEGORY_TYPES, NAME_MAX_LENGTH } from './contract.js'

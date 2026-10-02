@@ -674,36 +674,70 @@ export function createIdbAdapter(options = {}) {
      * 语义上「把这条并进来」也更接近 update 而非 create。
      *
      * ⚠️ `deleted` 统一补 0：incoming 全是活文档，写回要覆盖本地可能存在的墓碑
-     *    （备份比本地墓碑新 ⇒ 这条账是被恢复的）。
+     *    （备份里活着 ⇒ 这条账是被恢复的）。
      *
-     * @param {{create?: Object, update?: Object}} plan
-     * @returns {Promise<{created: number, updated: number}>}
+     * ## `remove` 桶（恢复模式专用）
+     *
+     * 「本机有、备份里没有」的活文档要清掉。**只写墓碑、绝不物理删除**：
+     * 墓碑才是同步机制里「这条被删了」的表达，硬删会让其他设备的下一次回拉
+     * 把它当成「云端还没有的新数据」重新拉回来（或被本地水位的另一端判成冲突）。
+     * 墓碑的 `updatedAt` 取当前时刻 —— 必须比备份里的一切都新，否则云端合并时
+     * 会判本地旧、又把它复活回去。
+     *
+     * @param {{create?: Object, update?: Object, remove?: Object}} plan
+     * @returns {Promise<{created: number, updated: number, removed: number}>}
      */
-    async apply({ create = {}, update = {} } = {}) {
+    async apply({ create = {}, update = {}, remove = {} } = {}) {
       await ready()
-      const result = { created: 0, updated: 0 }
+      const result = { created: 0, updated: 0, removed: 0 }
       const entries = []
+      /** 同一批导入共用一个时刻：队列里这一批改动的时间戳一致，语义更清楚 */
+      const ts = now()
 
       for (const [collection, storeName] of Object.entries(STORE_OF)) {
         const key = BACKUP_KEY_OF[collection]
         const created = create[key] || []
         const updated = update[key] || []
-        const docs = [...created, ...updated].map((doc) => toPlain({ ...doc, deleted: 0 }))
-        if (!docs.length) continue
+        const removeIds = remove[key] || []
 
-        await putMany(storeName, docs)
-        for (const doc of docs) {
-          entries.push({
-            id: uid('ob'),
-            collection,
-            op: 'update',
-            docId: doc.id,
-            payload: { ...doc },
-            ts: now()
-          })
+        const docs = [...created, ...updated].map((doc) => toPlain({ ...doc, deleted: 0 }))
+        if (docs.length) {
+          await putMany(storeName, docs)
+          for (const doc of docs) {
+            entries.push({
+              id: uid('ob'),
+              collection,
+              op: 'update',
+              docId: doc.id,
+              payload: { ...doc },
+              ts
+            })
+          }
+          result.created += created.length
+          result.updated += updated.length
         }
-        result.created += created.length
-        result.updated += updated.length
+
+        if (removeIds.length) {
+          const wanted = new Set(removeIds)
+          const tombstones = (await readAll(storeName))
+            .filter((doc) => wanted.has(doc.id) && alive(doc))
+            .map((doc) => toPlain({ ...doc, deleted: 1, updatedAt: ts }))
+
+          if (tombstones.length) {
+            await putMany(storeName, tombstones)
+            for (const doc of tombstones) {
+              entries.push({
+                id: uid('ob'),
+                collection,
+                op: 'delete',
+                docId: doc.id,
+                payload: { ...doc },
+                ts
+              })
+            }
+            result.removed += tombstones.length
+          }
+        }
       }
 
       // 合成一次写、一次通知（理由见 outbox.enqueueMany 的注释）

@@ -19,20 +19,40 @@
  *   - 将来加内部字段时，备份格式不会被动变化（格式是契约，要稳定）。
  * 代价是加业务字段要同步维护白名单 —— 由 `backup-test` 的往返断言兜底。
  *
- * ### ② 导入是**增量合并**，不是整库替换
- * 「导入备份」最像什么？最像是**换设备恢复**，其次像**把另一台设备的账并过来**。
- * 两种场景都不该删本地已有的数据。所以：
- *   - 只在**本地没有该 id** 时新增；
- *   - 本地有该 id 时比 `updatedAt`，**备份更新才覆盖**（`>` 严格大于）；
- *   - 备份里没有的本地文档，**一条都不动**。
+ * ### ② 导入有两种模式：**合并**（默认）与**恢复**，由用户显式选
+ *
+ * 「导入备份」最像什么？两种答案都真实，而且互相冲突：
+ *
+ *   - **换设备恢复 / 把另一台设备的账并过来** ⇒ 不能删本地已有的数据；
+ *   - **我删错了，想用备份找回来** ⇒ 必须能删掉本机多出来的、复活本机删掉的。
+ *
+ * 一条规则服务不了两个诉求，所以两种模式都实现：
+ *
+ *   - `planImport`（**合并**）—— 只在**本地没有该 id** 时新增；本地有该 id 时
+ *     比 `updatedAt`，**备份更新才覆盖**（`>` 严格大于）；备份里没有的本地文档
+ *     **一条都不动**。
+ *   - `planRestore`（**恢复**）—— 以备份为准，把本机还原到导出那一刻：备份有
+ *     本地没有的 ⇒ 新增；本机删掉的 ⇒ **复活**；两边都有但内容不同 ⇒ 覆盖；
+ *     **本机有而备份里没有的 ⇒ 软删**（`remove` 桶）。不可逆，调用方**必须先
+ *     取得用户确认**（见 `BackupSheet.vue` 的二次确认）。
+ *
+ * ⚠️ 合并模式下「本地墓碑比备份新 ⇒ 跳过」是**有意为之**，不是 bug：
+ *    本项目的删除是软删（留墓碑 + `updatedAt` 抬到删除时刻），而备份里的
+ *    `updatedAt` 是导出时刻，删除必然晚于导出 ⇒ 墓碑永远更新 ⇒ 整条跳过。
+ *    于是「导出 → 删错 → 再导入」在合并口径下**不会**恢复 —— 这个场景由
+ *    `planRestore` 承担，不是靠放宽合并规则（那会同时破坏「旧备份不覆盖新数据」）。
  *
  * ### ③ 靠「原样保留 updatedAt」拿到幂等
- * 导入写库时**保留备份里的 `updatedAt` / `createdAt`**（不改成导入时刻），
+ * 写库时**保留备份里的 `updatedAt` / `createdAt`**（不改成导入时刻），
  * 于是第二次导入同一份文件时「本地 updatedAt === 备份 updatedAt」，
- * 不满足严格大于 ⇒ 全部落入 skip。**导入两次 = 导入一次**，这是可断言的性质。
+ * 合并模式不满足严格大于 ⇒ 全部落入 skip。**导入两次 = 导入一次**。
+ *
+ * 恢复模式的幂等靠另一条判据（它不看 `updatedAt`，以备份为准）：
+ *   - 覆盖 / 复活写入的文档沿用备份的 `updatedAt` ⇒ 第二次内容比对一致 ⇒ skip；
+ *   - `remove` 只挑**活**文档 ⇒ 第一次留下的墓碑第二次不会再被删。
  *
  * ⚠️ 反过来说：如果哪天有人把导入改成「改写 updatedAt = now()」，幂等立刻破功，
- *    而且备份里的历史时间轴会被抹平 —— `backup-test` 的 7c/7d 会红。
+ *    而且备份里的历史时间轴会被抹平 —— `backup-test` 的 5f/7c 会红。
  */
 
 export const BACKUP_FORMAT = 'suishou-ledger-backup'
@@ -195,6 +215,24 @@ function normalizeDoc(kind, raw) {
 }
 
 /**
+ * 两份文档在**备份语义下**是否内容一致（不看 `deleted`）。
+ *
+ * 为什么需要它：恢复模式以备份为准、不看 `updatedAt`，于是「本机已经就是备份
+ * 那一份」的唯一判据只剩逐字段比对。少了它，同一份文件恢复两次会被判成
+ * 「两边都有 ⇒ 覆盖」，数据结果虽然一样，但每次都会多出 N 条待推队列并推上云，
+ * 用户看到「恢复了 187 条」而实际什么都没变 —— 幂等就只剩半个。
+ *
+ * 比对前两边都过一遍 `normalizeDoc`：备份里的文档已经规范化过，本地文档没有
+ * （否则会出现 `version: undefined` 与 `version: 1` 这种假差异）。
+ */
+function sameDoc(kind, a, b) {
+  const na = normalizeDoc(kind, a)
+  const nb = normalizeDoc(kind, b)
+  if (!na || !nb) return false
+  return JSON.stringify(na) === JSON.stringify(nb)
+}
+
+/**
  * 解析备份文本（或已解析对象）。
  *
  * 返回值二态：
@@ -307,9 +345,90 @@ export function planImport({ local = {}, incoming = {} } = {}) {
   return { create, update, counts }
 }
 
-/** `planImport` 结果是否无事可做（用于「这份备份已经导入过」的提示） */
+/**
+ * **恢复**计划：以备份为准，把本机还原到导出那一刻。
+ *
+ * 与 `planImport` 的三处不同（也正是「删错了想找回」这个场景缺的能力）：
+ *   1. 本地是墓碑而备份里活着 ⇒ **复活**（合并模式会因「墓碑更新」而跳过）；
+ *   2. 两边都有 ⇒ 只要内容不同就**覆盖**，不看 `updatedAt`（备份即真相）；
+ *   3. 本机有而备份里没有的活文档 ⇒ 进 `remove` 桶，由适配器**软删**。
+ *
+ * 幂等仍然成立，理由见文件头「决定 ③」。
+ *
+ * ⚠️ 这是**唯一会主动减少本地数据**的路径，所以有两条硬约束：
+ *   - `remove` **只软删**（留墓碑），否则「删」这件事传不给其他设备；
+ *   - 账本单独保护：备份里**一个账本都没有**时不删本机账本 ——
+ *     「没有任何账本可用」是 App 起不来的状态，宁可保留也不制造它。
+ *
+ * @param {{local?: Object, incoming?: Object}} input 形状同 `planImport`
+ * @returns {{create: Object, update: Object, remove: Object,
+ *            counts: {create:number, update:number, skip:number, remove:number, revive:number}}}
+ */
+export function planRestore({ local = {}, incoming = {} } = {}) {
+  const create = {}
+  const update = {}
+  const remove = {}
+  const counts = { create: 0, update: 0, skip: 0, remove: 0, revive: 0 }
+
+  for (const kind of BACKUP_COLLECTIONS) {
+    const locals = local[kind] || []
+    const localById = new Map(locals.map((doc) => [doc.id, doc]))
+    const incomingIds = new Set()
+    const createList = []
+    const updateList = []
+
+    for (const doc of incoming[kind] || []) {
+      incomingIds.add(doc.id)
+      const current = localById.get(doc.id)
+
+      if (!current) {
+        createList.push(doc)
+        counts.create += 1
+        continue
+      }
+      /** 本机删过这一条、备份里还在 ⇒ 复活（「用备份找回误删」走的正是这里） */
+      if (!isAlive(current)) {
+        updateList.push(doc)
+        counts.update += 1
+        counts.revive += 1
+        continue
+      }
+      if (sameDoc(kind, doc, current)) {
+        counts.skip += 1
+        continue
+      }
+      updateList.push(doc)
+      counts.update += 1
+    }
+
+    let removeIds = locals
+      .filter((doc) => !incomingIds.has(doc.id) && isAlive(doc))
+      .map((doc) => doc.id)
+
+    // 账本保护：备份里没有账本时，删空了就没账本可用
+    if (kind === 'ledgers' && removeIds.length && !(incoming[kind] || []).length) {
+      removeIds = []
+    }
+
+    create[kind] = createList
+    update[kind] = updateList
+    remove[kind] = removeIds
+    counts.remove += removeIds.length
+  }
+
+  return { create, update, remove, counts }
+}
+
+/**
+ * 计划是否无事可做（用于「这份备份已经导入过」的提示）。
+ *
+ * ⚠️ 必须一并考虑 `remove`：只清理、不新增的恢复计划同样是「有事可做」，
+ *    漏掉这一项会让 UI 把「将清除 5 条」的计划当成空计划而禁用按钮。
+ */
 export function isPlanEmpty(plan) {
-  return !plan || (plan.counts.create === 0 && plan.counts.update === 0)
+  const c = plan?.counts
+  if (!c) return true
+  return !c.create && !c.update && !c.remove
 }
 
 /**

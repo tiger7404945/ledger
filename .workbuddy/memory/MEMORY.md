@@ -56,17 +56,30 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 638 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition77/**gate**31/**backup**62）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 677 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition77/**gate**31/**backup**101）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
 
-## 数据备份（S8-1，改 backup 相关代码前必读）
-- 纯逻辑全在 `core/backup.js`；适配器只有 `backup.dump()`（原始快照，**含墓碑**）与
-  `backup.apply(plan)`（直写 + `enqueueMany`）。装配层 `exportBackup/previewImport/applyImport`。
-- **导入绝不走 `create()`/`update()`**（会重造 id / 改时间戳 ⇒ 幂等破功）；幂等靠
-  「保留备份原始 `updatedAt` + 严格大于才覆盖」。合并规则改动 = `planImport` 一处。
+## 数据备份（S8-1 / S8-3，改 backup 相关代码前必读）
+- 纯逻辑全在 `core/backup.js`（**两个 planner**）；适配器只有 `backup.dump()`（原始快照，
+  **含墓碑**）与 `backup.apply({create,update,remove})`（直写 + `enqueueMany`）。
+  装配层 `exportBackup` / `previewImport`（一次返回 `plan` + `restore` 两份计划）/
+  `applyImport({ mode, data })`。
+- **导入绝不走 `create()`/`update()`**（会重造 id / 改时间戳 ⇒ 幂等破功）。两种模式各自幂等：
+  - `planImport`（**合并**，默认）靠「保留备份原始 `updatedAt` + **严格大于**才覆盖」；
+  - `planRestore`（**恢复**，以备份为准）**不看 `updatedAt`**，靠 `sameDoc()` 逐字段比对 +
+    「`remove` 只挑活文档」。
+- ⚠️ **「导出 → 删错 → 再导入」在合并口径下不会恢复**（删除是软删 ⇒ 墓碑 `updatedAt` 必然
+  比备份新 ⇒ 判本地更新而跳过）。这不是 bug，是合并模式的必然；该场景由恢复模式承担。
+  两个诉求在「本地墓碑」这一点上正面冲突，**别试图用一条规则同时满足**（放宽合并会破坏
+  「旧备份不覆盖新数据」）。
+- 恢复的 `remove` **只能软删**（写墓碑 + `updatedAt = now()`）；**账本保护**：备份里没有账本时
+  不删本机账本。恢复必须过 `ConfirmDialog` 二次确认（`mask-closable=false`，正文含精确到秒的
+  导出时刻 —— `utils/date.js#formatFullTimeCN`）。
+- `applyImport` 收的是**备份数据本身**（`backup.data`）而不是预览计划 —— 恢复需要全量，
+  只传计划会漏掉合并口径下被跳过的那些。落盘前仍用最新本地副本重算一次。
 - **导出不走登录门禁（读操作），导入必须走**（批量写 + 入队上云）—— backup-test 第 7 节源码扫描守卫。
 - 「我的」页「上次同步」用 `syncEngine.lastSuccessAt`（本地时刻），**别改回水位线 `lastSyncAt`**
   （服务端时间轴的值，显示出来会出现「刚同步完却写着昨天」）。

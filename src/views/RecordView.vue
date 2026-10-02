@@ -471,7 +471,7 @@ watch(primaries, () => {
     <ConfirmDialog
       v-model="confirmOpen"
       title="删除这笔账单？"
-      message="删除后可在后续的云端同步中恢复（本地立即移除）。"
+      message="删除后将从账目中移除。如需找回，可用「我的 → 数据备份」中此前导出的备份恢复。"
       confirm-text="删除"
       danger
       @confirm="removeBill"

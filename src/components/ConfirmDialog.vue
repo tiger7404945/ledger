@@ -93,6 +93,8 @@ function onCancel() {
   line-height: 1.5;
   color: var(--ink-2);
   text-align: center;
+  /** 传进来的换行要生效（不可逆操作的说明需要分段，挤成一段读不清） */
+  white-space: pre-line;
 }
 
 .actions {

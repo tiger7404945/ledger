@@ -6,19 +6,31 @@
  *
  *   - **导出**：把当前分区的账目打包成 JSON 文件下载到本机。
  *     纯读操作，**不设登录门禁** —— 数据本来就在用户自己的设备上。
- *   - **导入**：选一份之前导出的文件，**先预览再确认**，按 id 增量合并。
- *     批量写操作，所以**先过登录门禁**（见 `useLoginGate`）。
+ *   - **导入**：选一份之前导出的文件，**先预览**，然后二选一：
+ *       · **恢复到此备份**（主路径）—— 以备份为准完整还原：写入备份里的数据、
+ *         找回本机已删除的账单、清除本机多出的数据。不可逆，所以带二次确认。
+ *       · **仅合并** —— 只新增 / 覆盖，绝不删本机已有数据。保守路径。
+ *     两种都是批量写操作，所以**先过登录门禁**（见 `useLoginGate`）。
+ *
+ * ## 为什么「恢复」要单独存在，而不是把合并规则放宽
+ *
+ * 「导出 → 删错一笔 → 导回来」是备份最朴素的用法。但本项目的删除是**软删**
+ * （留墓碑 + `updatedAt` 抬到删除时刻），墓碑必然比备份里的时间戳新，于是
+ * 合并口径下一律判「本地更新」而跳过 —— 用户看到的「导入不成功」是设计使然，
+ * 不是故障。放宽合并规则会同时破坏「旧备份不覆盖新数据」。
+ * 所以改成把两种诉求拆成两个显式按钮：安全的那条保持默认，恢复作为
+ * **用户自己按下的**危险动作。裁决过程见 `core/backup.js` 决定 ②。
  *
  * ## 为什么导出也要走数据层而不是「从 store 里凑」
  *
  * store 里只有**当前月份 / 当前账期**那一片切片。导出要的是全量，
  * 只能问数据层要（`core/backup.js` 负责格式与合并规则，适配器负责读写）。
  *
- * ## 预览里为什么要有「跳过」
+ * ## 预览里的数字为什么按「恢复口径」显示
  *
- * 跳过 = 本地那份更新或一样新。它的作用不只是交代数字 —— 它正是
- * **幂等性的可视化**：同一份文件导第二次，会看到「新增 0、更新 0、跳过 187」，
- * 用户一眼就明白「没重复导入」。（这条性质由 `backup-test` 断言）
+ * 用户按下的是「恢复」，就该拿恢复的结果给他看：写回多少条、清除多少条、
+ * 其中多少条是本机删过又找回来的。合并口径的数字不跟它混在一张表里 ——
+ * 混着显示会让人以为「清除」是必然发生的。
  */
 import { computed, ref, watch } from 'vue'
 import { exportBackup, previewImport, applyImport, backupFileName } from '@/api'
@@ -27,7 +39,9 @@ import { useBillStore } from '@/stores/bill.js'
 import { useCategoryStore } from '@/stores/category.js'
 import { useToast } from '@/composables/useToast.js'
 import { requireLogin } from '@/composables/useLoginGate.js'
+import { formatFullTimeCN } from '@/utils/date.js'
 import BottomSheet from '@/components/BottomSheet.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import IconBase from '@/components/icons/IconBase.vue'
 
 const props = defineProps({
@@ -53,8 +67,54 @@ const open = computed({
   set: (value) => emit('update:modelValue', value)
 })
 
-const previewCounts = computed(() => preview.value?.plan?.counts || { create: 0, update: 0, skip: 0 })
-const nothingToImport = computed(() => previewCounts.value.create === 0 && previewCounts.value.update === 0)
+/** 「恢复」的二次确认弹层（不可逆操作，必须由用户明确按下） */
+const restoreAsk = ref(false)
+
+/** 恢复口径：以备份为准完整还原（主路径） */
+const restoreCounts = computed(
+  () => preview.value?.restore?.counts || { create: 0, update: 0, skip: 0, remove: 0, revive: 0 }
+)
+/** 合并口径：只新增 / 覆盖 */
+const mergeCounts = computed(() => preview.value?.plan?.counts || { create: 0, update: 0, skip: 0 })
+
+/** 会写回本机的条数（新增 + 覆盖 + 复活，对用户来说都是「恢复」） */
+const writeCount = computed(() => restoreCounts.value.create + restoreCounts.value.update)
+const removeCount = computed(() => restoreCounts.value.remove)
+const reviveCount = computed(() => restoreCounts.value.revive)
+const mergeWorkCount = computed(() => mergeCounts.value.create + mergeCounts.value.update)
+
+/**
+ * 两个按钮的「无事可做」判据不同：
+ *   - 恢复无事可做 = 写入 0 且清除 0；
+ *   - 合并无事可做 = 新增 0 且覆盖 0（它本来就不清除，所以不看清除数）。
+ */
+const noRestoreWork = computed(() => writeCount.value === 0 && removeCount.value === 0)
+const noMergeWork = computed(() => mergeWorkCount.value === 0)
+
+/** 备份是谁在什么时候导出的 —— 恢复确认框里最重要的两句话 */
+const ownerText = computed(() => {
+  const label = preview.value?.backup?.account?.label || ''
+  if (!label) return '本机'
+  return label === account.label ? `本账号 ${label}` : `账号 ${label}`
+})
+const exportedText = computed(() => formatFullTimeCN(preview.value?.backup?.exportedAt))
+
+/**
+ * 二次确认的正文。用户要判断的是「这一刻之后我记的账值不值得丢」，
+ * 所以必须给出**精确到秒的时刻**与**具体条数**，不能只说「可能会丢失数据」。
+ */
+const restoreMessage = computed(() => {
+  const effect = []
+  if (writeCount.value) effect.push(`写回备份里的 ${writeCount.value} 条`)
+  if (reviveCount.value) effect.push(`其中 ${reviveCount.value} 条是本机已删除的账单，会一并找回`)
+  if (removeCount.value) effect.push(`清除本机多出的 ${removeCount.value} 条`)
+
+  return [
+    `这是${ownerText.value}在 ${exportedText.value || '未知时刻'} 导出的旧数据。`,
+    `恢复会清除这个时刻之后更新的数据${effect.length ? `：${effect.join('，')}` : ''}。`,
+    '此操作不可撤销，是否继续？'
+  ].join('\n')
+})
 
 /** 文件里被跳过的坏数据（缺 id / 金额非法 / 日期非法…）说明，没有就返回空串 */
 const invalidText = computed(() => {
@@ -69,6 +129,7 @@ watch(open, async (value) => {
   if (!value) return
   preview.value = null
   pickedName.value = ''
+  restoreAsk.value = false
   await refreshStats()
 })
 
@@ -161,16 +222,12 @@ async function onFileChange(event) {
   }
 }
 
-async function confirmImport() {
-  if (!preview.value || busy.value) return
-  if (nothingToImport.value) {
-    toast.show('这份备份与当前数据一致，无需导入')
-    return
-  }
-
+/** 两种模式写完后要做的事一模一样：刷新切片 + 收尾 + 提示同步状态 */
+async function runImport(mode) {
   busy.value = true
   try {
-    const result = await applyImport(preview.value.plan)
+    const result = await applyImport({ mode, data: preview.value.backup.data })
+
     // 两份切片都要刷：首页用 month/bills/summary，账单页与统计页用 period*
     await Promise.all([
       billStore.refresh(),
@@ -180,27 +237,52 @@ async function confirmImport() {
 
     const parts = []
     if (result.created) parts.push(`新增 ${result.created}`)
-    if (result.updated) parts.push(`更新 ${result.updated}`)
-    const tail = result.created || result.updated ? '' : '（都被跳过了）'
-    toast.success(`导入完成：${parts.join('、') || '没有变化'}${tail}`)
+    if (result.updated) parts.push(`${mode === 'restore' ? '恢复' : '更新'} ${result.updated}`)
+    if (result.removed) parts.push(`清除 ${result.removed}`)
+    const tail = parts.length ? '' : '（没有变化）'
+    toast.success(`${mode === 'restore' ? '已恢复' : '导入完成'}：${parts.join('、')}${tail}`)
 
-    if (!cloudSignedInForPush()) {
+    if (account.signedIn !== true) {
       // 没登录 ⇒ 数据只在本地，说清楚，免得用户以为已经云备份了
       toast.show('数据已存到本机；登录后会自动同步到云端')
     }
+
     preview.value = null
     pickedName.value = ''
     await refreshStats()
   } catch (e) {
-    toast.show(`导入失败：${e?.message || e}`)
+    toast.show(`${mode === 'restore' ? '恢复' : '导入'}失败：${e?.message || e}`)
   } finally {
     busy.value = false
   }
 }
 
-/** 导入完成后是否需要提醒「还没同步」 */
-function cloudSignedInForPush() {
-  return account.signedIn === true
+/**
+ * **恢复**（主路径，不可逆）：先弹二次确认，把「这是哪一刻的旧数据、会动什么」
+ * 说清楚，用户确认后才执行。确认走 `ConfirmDialog` 的 confirm 事件。
+ */
+function askRestore() {
+  if (!preview.value || busy.value) return
+  if (noRestoreWork.value) {
+    toast.show('本机数据已经与这份备份一致，无需恢复')
+    return
+  }
+  restoreAsk.value = true
+}
+
+function doRestore() {
+  if (!preview.value || busy.value) return
+  runImport('restore')
+}
+
+/** **仅合并**（保守路径）：只新增 / 覆盖，不删本机任何数据 */
+function doMerge() {
+  if (!preview.value || busy.value) return
+  if (noMergeWork.value) {
+    toast.show('这份备份的内容本机已经有了，没有需要合并的')
+    return
+  }
+  runImport('merge')
 }
 </script>
 
@@ -244,26 +326,29 @@ function cloudSignedInForPush() {
         />
 
         <div v-if="!preview" class="note">
-          选择之前导出的备份文件，先看看会合并哪些内容，再决定要不要导入。已有的数据不会被删除。
+          选择之前导出的备份文件，先看看会恢复哪些内容，再决定要不要导入。
         </div>
 
         <div v-else class="preview">
           <p class="preview-file">{{ pickedName }}</p>
+          <p class="preview-when">{{ ownerText }} · {{ exportedText }} 导出</p>
           <ul class="preview-list">
             <li>
-              <em>新增</em>
-              <span class="strong">{{ previewCounts.create }} 条</span>
+              <em>恢复</em>
+              <span class="strong">{{ writeCount }} 条</span>
             </li>
             <li>
-              <em>更新</em>
-              <span>{{ previewCounts.update }} 条</span>
-            </li>
-            <li>
-              <em>跳过</em>
-              <span class="muted">{{ previewCounts.skip }} 条</span>
+              <em>清除</em>
+              <span :class="{ danger: removeCount > 0 }">{{ removeCount }} 条</span>
             </li>
           </ul>
-          <p v-if="nothingToImport" class="note tight">这份备份的内容本机已经有了，导入不会产生重复。</p>
+          <p v-if="reviveCount" class="note tight">
+            其中 {{ reviveCount }} 条是本机已删除的账单，会一并找回。
+          </p>
+          <p v-if="removeCount" class="note tight">
+            「清除」= 本机有、这份备份里没有的记录，恢复后会从账上消失。
+          </p>
+          <p v-if="noRestoreWork" class="note tight">本机数据已经与这份备份一致，无需恢复。</p>
           <p v-if="invalidText" class="warn">{{ invalidText }}</p>
         </div>
 
@@ -273,14 +358,29 @@ function cloudSignedInForPush() {
             v-if="preview"
             class="primary"
             type="button"
-            :disabled="busy || nothingToImport"
-            @click="confirmImport"
+            :disabled="busy || noRestoreWork"
+            @click="askRestore"
           >
-            确认导入
+            恢复到此备份
           </button>
         </div>
+
+        <button v-if="preview && !noMergeWork" class="link" type="button" :disabled="busy" @click="doMerge">
+          仅合并：只新增和更新，不删除本机任何数据
+        </button>
       </section>
     </div>
+
+    <ConfirmDialog
+      v-model="restoreAsk"
+      title="恢复到此备份？"
+      :message="restoreMessage"
+      confirm-text="恢复"
+      cancel-text="取消"
+      danger
+      :mask-closable="false"
+      @confirm="doRestore"
+    />
   </BottomSheet>
 </template>
 
@@ -364,6 +464,26 @@ function cloudSignedInForPush() {
   font-size: 12.5px;
 }
 
+.danger {
+  color: var(--danger);
+}
+
+/** 次级入口（「仅合并」）：不做成按钮，避免与主按钮抢注意力 */
+.link {
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link:disabled {
+  opacity: 0.45;
+}
+
 .preview {
   padding: 12px;
   border-radius: 12px;
@@ -374,6 +494,12 @@ function cloudSignedInForPush() {
   font-size: 12.5px;
   color: var(--ink-2);
   word-break: break-all;
+}
+
+.preview-when {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-3);
 }
 
 .preview-list {

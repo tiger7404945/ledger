@@ -127,3 +127,22 @@ export function formatClockTime(ts, now = Date.now()) {
   const sameDay = new Date(now).toDateString() === d.toDateString()
   return sameDay ? `今天 ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`
 }
+
+/**
+ * 精确到秒的完整时刻：`2026年10月2日 18时03分05秒`。
+ *
+ * 专供「恢复到这份备份」的二次确认 —— 那一刻的精确瞬间就是这次操作的全部依据，
+ * 相对时间（「昨天」「3 小时前」）在这里不够用：用户要判断的正是
+ * 「这个时刻之后我记的账值不值得丢」。
+ *
+ * @param {number} ts 毫秒时间戳（<=0 或非法返回空串）
+ */
+export function formatFullTimeCN(ts) {
+  const t = Number(ts)
+  if (!Number.isFinite(t) || t <= 0) return ''
+  const d = new Date(t)
+  return (
+    `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ` +
+    `${d.getHours()}时${pad2(d.getMinutes())}分${pad2(d.getSeconds())}秒`
+  )
+}
