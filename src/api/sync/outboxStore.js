@@ -25,7 +25,7 @@ import {
   META_KEYS,
   STORES,
   clearStore,
-  openDB,
+  createIdbConnection,
   putMany,
   readAll,
   readMeta,
@@ -103,10 +103,11 @@ export function createMemoryOutboxStore(initial = []) {
  *      不能靠「旧键是否为空」判断，否则用户重置演示数据后会被再导入一遍。
  */
 export function createIdbOutboxStore({ dbName = DB_NAME, version = DB_VERSION } = {}) {
-  let dbPromise = null
+  /** 连接层（探活 + 自动重连）：outbox 有自己的连接，同样会被 Chrome 关掉 */
+  const conn = createIdbConnection({ dbName, version })
   let prepared = null
 
-  const getDB = () => (dbPromise ||= openDB({ dbName, version }))
+  const getDB = () => conn.acquire()
 
   async function prepare() {
     if (prepared) return prepared

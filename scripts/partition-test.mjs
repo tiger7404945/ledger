@@ -42,7 +42,9 @@ const {
   DB_PARTITION_PREFIX,
   META_KEYS,
   STORES,
+  createIdbConnection,
   isPartitionedDbName,
+  isConnClosedError,
   migratePartitionData,
   openDB,
   partitionedDbName,
@@ -405,6 +407,84 @@ t.group('13. ★ purgeSeedBills：老 guest 库里的演示账单清一次')
   t.eq('13e ★ 不传 purgeSeedBills 的分区一条账单都不动', acctSnap.bills.length, 1)
   const acctMeta = await readMeta(acctRaw)
   t.ok('13f 账号分区也没有清理标记', acctMeta.seedBillsPurged === undefined)
+}
+
+/* ---------------- 14. 连接层自愈（Chrome 单方面关连接的顽疾） ---------------- */
+
+t.group('14. ★ createIdbConnection：连接被浏览器关掉后自动重连')
+
+{
+  // Chrome 会单方面关掉空闲连接（真机实测 2026-10-02：无痕窗口退出后重登录，
+  // 登录链路全线抛「The database connection is closing」）。这里用注入的
+  // 假 open 复现同一时序：第一根连接已死，acquire 必须能自愈到第二根。
+  // 造一个与真机报错同形的错误（老 Node 没有 DOMException 时退回普通 Error）
+  const makeClosedErr = () =>
+    typeof DOMException === 'function'
+      ? new DOMException(
+          "Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.",
+          'InvalidStateError'
+        )
+      : Object.assign(new Error('The database connection is closing.'), { name: 'InvalidStateError' })
+  const closedErr = makeClosedErr()
+
+  const healthy = {
+    transaction() {
+      return { abort() {} }
+    }
+  }
+
+  t.ok('14a isConnClosedError 认得 InvalidStateError', isConnClosedError(closedErr))
+  t.ok('14b 也认得 message 匹配的普通 Error', isConnClosedError(new Error('The database connection is closing.')))
+  t.ok('14c 别的错误不误伤', !isConnClosedError(new Error('boom')))
+
+  // 14d：第一根连接已死 → 探活失败 → 自动重开 → 拿到第二根
+  {
+    let opens = 0
+    const conn = createIdbConnection({
+      dbName: 't_conn_dead',
+      version: DB_VERSION,
+      open() {
+        opens++
+        return Promise.resolve(opens === 1 ? { transaction() { throw closedErr } } : healthy)
+      }
+    })
+    const db = await conn.acquire()
+    t.ok('14d ★ 连接死了能自动重连', db === healthy && opens === 2)
+  }
+
+  // 14e：连接健康时不重开（探活通过直接复用）
+  {
+    let opens = 0
+    const conn = createIdbConnection({
+      dbName: 't_conn_alive',
+      version: DB_VERSION,
+      open() {
+        opens++
+        return Promise.resolve(healthy)
+      }
+    })
+    const db1 = await conn.acquire()
+    const db2 = await conn.acquire()
+    t.ok('14e 健康连接被复用，不反复重开', db1 === db2 && opens === 1)
+  }
+
+  // 14f：打开失败的拒绝不能被缓存 —— 第一次失败，第二次要真正重开
+  {
+    let opens = 0
+    const conn = createIdbConnection({
+      dbName: 't_conn_reject',
+      version: DB_VERSION,
+      open() {
+        opens++
+        return opens === 1 ? Promise.reject(new Error('blocked')) : Promise.resolve(healthy)
+      }
+    })
+    let firstErr = null
+    await conn.acquire().catch((e) => { firstErr = e })
+    t.ok('14f 首次打开失败如实抛出', firstErr && firstErr.message === 'blocked')
+    const db = await conn.acquire()
+    t.ok('14g ★ 失败后下一次 acquire 会重开（拒绝不被缓存）', db === healthy && opens === 2)
+  }
 }
 
 t.done()

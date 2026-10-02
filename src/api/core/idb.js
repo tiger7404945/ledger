@@ -168,6 +168,81 @@ export function openDB({ dbName = DB_NAME, version = DB_VERSION } = {}) {
   })
 }
 
+/* ---------------- 连接层：探活 + 自动重连 ---------------- */
+
+/**
+ * 识别「连接已被关闭」类错误。
+ *
+ * Chrome 有一个老毛病：**单方面把空闲的 IndexedDB 连接关掉**（清浏览数据后、
+ * 长会话、无痕窗口都更容易触发），且不通知页面 —— 下一笔 `transaction()` 才
+ * 以 InvalidStateError「The database connection is closing」的形式爆出来。
+ * 这是 Chromium 层的顽疾，Dexie #613 / idb #229 / firebase-js-sdk #1926 /
+ * pouchdb / localForage 全都收到过同款报告，只能靠应用层自愈。
+ */
+export function isConnClosedError(e) {
+  if (!e) return false
+  if (e.name === 'InvalidStateError') return true
+  return /connection is closing/i.test(String(e && e.message))
+}
+
+/**
+ * 带自愈能力的数据库连接。
+ *
+ * 取代「`dbPromise ||= openDB(...)` 一缓存到底」的旧写法 —— 旧写法有两个坑：
+ *   1. 连接被浏览器关掉后，缓存的 Promise 还「成功」着，但句柄已死，
+ *      之后每一笔操作都抛 connection is closing，**永不恢复**；
+ *   2. 打开失败（如 onblocked 拒绝）同样被永久缓存，连重开的机会都没有。
+ *
+ * `acquire()` 在返回句柄前做一次**探活**（建一个即弃的只读事务再 abort）：
+ * 连接死了就重开一次再探。探活用的是 meta 表 —— 五个表里最小的开销，
+ * 相比真正的业务操作可以忽略。探活失败两次才向上抛错。
+ *
+ * @param {object} opts
+ * @param {string}   opts.dbName  库名
+ * @param {number}   opts.version 版本
+ * @param {Function} [opts.open]  打开函数（测试注入用，默认 openDB）
+ * @returns {{ acquire: () => Promise<IDBDatabase> }}
+ */
+export function createIdbConnection({ dbName, version, open } = {}) {
+  const openFn = open || ((o) => openDB(o))
+  let dbPromise = null
+
+  function reopen() {
+    dbPromise = openFn({ dbName, version })
+    return dbPromise
+  }
+
+  /** 探活：连接活着返回 true；已死返回 false；其它错误原样抛出 */
+  function probe(db) {
+    try {
+      db.transaction(STORES.META, 'readonly').abort()
+      return true
+    } catch (e) {
+      if (isConnClosedError(e)) return false
+      throw e
+    }
+  }
+
+  async function acquire() {
+    if (!dbPromise) reopen()
+    let db
+    try {
+      db = await dbPromise
+    } catch (e) {
+      // 打开失败的拒绝不能缓存住 —— 否则之后每次 acquire 都拿到同一个死 Promise
+      dbPromise = null
+      throw e
+    }
+    if (!probe(db)) {
+      db = await reopen()
+      probe(db) // 重开后再探一次；还坏就让错误抛出去
+    }
+    return db
+  }
+
+  return { acquire }
+}
+
 /* ---------------- 基础读写原语 ---------------- */
 
 export function readAll(db, storeName) {
@@ -237,18 +312,23 @@ export function writeMeta(db, patch) {
 }
 
 /** 基于 meta 表的键值仓（syncEngine 用它存水位线） */
-export function createIdbKeyValue(dbPromise) {
+/**
+ * 键值仓（水位线等）。参数是**连接对象**（`createIdbConnection` 的返回值），
+ * 不能传裸 Promise：连接可能被浏览器中途关掉再重开，缓存旧 Promise 会
+ * 永远拿着死句柄（见 createIdbConnection 的注释）。
+ */
+export function createIdbKeyValue(conn) {
   return {
     async get(key) {
-      const meta = await readMeta(await dbPromise)
+      const meta = await readMeta(await conn.acquire())
       return meta[key]
     },
     async set(key, value) {
-      await writeMeta(await dbPromise, { [key]: value })
+      await writeMeta(await conn.acquire(), { [key]: value })
       return true
     },
     async remove(key) {
-      await removeMany(await dbPromise, STORES.META, [key])
+      await removeMany(await conn.acquire(), STORES.META, [key])
       return true
     }
   }

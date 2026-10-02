@@ -85,6 +85,13 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   `ledger_anon`，而身上还挂着那个匿名 uid → 身份/库名错位、莫名弹首绑框）；S7 去匿名后 uid 真为
   `null`，禁令才反过来成立。**别再照 S5 的注释把 `switchPartition(null)` 禁掉。**
 - `migratePartitionData` 只搬 `SCHEMA/SEED/IMPORTED/OUTBOX_IMPORTED`，**刻意不搬 WATERMARK**。
+  ⚠️ **账号分区仍会从裸库 `ledger` 继承**（`index.js`：`migrateFrom: partitioned && !isGuest ? DB_NAME : false`）。
+  真机实测撞到（2026-10-02）：手机裸库里的**旧版演示种子**（`bill_seed_001~029` + `gap`，**无 extra** ⇒ EXTRA 特性之前的老版本）
+  在登录建 `ledger_<uid>` 时被搬进来（reason `migrated`），再被 `enqueueLocalForCloud()` 整体入队推上云
+  ⇒ 新账号凭空多出 30 条演示账单，**击穿 S7「全新账号 0 账单」这条线**。
+  S7 之后未登录写不了 ⇒ 裸库/旧分区里的账单只可能是旧的演示或匿名数据，**继承它没有正当收益**（关不关待用户决策）。
+- ⚠️ **真机验证必须换干净环境**：同一浏览器里残留的 `ledger_guest`/裸库会在登录时被搬进账号分区并推上云。
+  用**无痕窗口**打开，或先清掉该站点数据，否则验证结果必然被污染（看起来像「种子又灌进来了」）。
 - 首绑裁决（`core/firstBind.js` / `firstBindPending` / `firstBindDone`）**已整体删除**，别再加回来。
 
 ## S7 去匿名（**已完成 2026-10-02**）

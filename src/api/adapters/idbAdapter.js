@@ -12,6 +12,7 @@ import {
   META_KEYS,
   STORES,
   clearStore as idbClearStore,
+  createIdbConnection,
   createIdbKeyValue,
   migratePartitionData,
   openDB,
@@ -133,17 +134,24 @@ export function createIdbAdapter(options = {}) {
   /** 是否播了演示账单 —— 决定要不要跑「演示数据迁移」（补种） */
   const seedWantsDemo = seedMode === SEED_MODE.FULL
 
-  let dbPromise = null
+  /**
+   * 连接层（探活 + 自动重连，见 core/idb.js 的 createIdbConnection）。
+   *
+   * ⚠️ 不能再是「`dbPromise ||= openDB(...)` 一缓存到底」：Chrome 会单方面
+   *    关掉空闲连接（真机实测 2026-10-02：无痕窗口退出后再登录，登录链路
+   *    全线抛 connection is closing）。旧的缓存写法死了就永远死了。
+   */
+  const conn = createIdbConnection({ dbName, version })
+  const getDB = () => conn.acquire()
+
   let initPromise = null
   /** 非 null 时，下一次 `init()` 用它当播种档位（只被 `reset()` 设置，见 init 里的说明） */
   let pendingResetMode = null
 
-  const getDB = () => (dbPromise ||= openDB({ dbName, version }))
-
   /** 队列与业务数据同库；换账号时只需把 dbName 换掉即可实现分区（见 S5） */
   const outbox = createOutbox(createIdbOutboxStore({ dbName, version }))
-  /** 键值仓，syncEngine 用它存水位线 */
-  const kv = createIdbKeyValue(getDB())
+  /** 键值仓，syncEngine 用它存水位线。传连接对象而非裸 Promise（要跟着重连走） */
+  const kv = createIdbKeyValue(conn)
 
   /* ---------------- 底层读写（薄包装，绑定本实例的 db） ---------------- */
 
