@@ -286,13 +286,7 @@ async function submit(again) {
       amount,
       categoryId,
       remark: remark.value,
-      date: dateKey.value,
-      /**
-       * `noReimburse`（不报销）已随记账页精简下线（第二阶段的决定）：
-       * 字段仍留在数据契约里以兼容历史文档，但 UI 不再提供入口，
-       * 读写一律归一为 `false` —— 否则编辑一笔老账会把旧值「隐形」带下去。
-       */
-      noReimburse: false
+      date: dateKey.value
     }
     if (editingId.value) {
       await billStore.updateBill(editingId.value, payload)

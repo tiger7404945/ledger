@@ -57,6 +57,7 @@ const {
 } = await import(`${SRC}api/core/idb.js`)
 const { accountPrefixOf } = await import(`${SRC}api/core/cloudId.js`)
 const { createIdbAdapter } = await import(`${SRC}api/adapters/idbAdapter.js`)
+const { SCHEMA_VERSION } = await import(`${SRC}api/contract.js`)
 
 /* 断言与汇总统一走 scripts/_harness.mjs（输出格式见该文件顶部说明） */
 import { createSuite } from './_harness.mjs'
@@ -601,6 +602,150 @@ t.group('16. ★ deleteLocalData：注销把分区清回出厂态')
     0
   )
   t.eq('16l 反例：库里也不剩账单（数据确实被清了，问题只在「回不来」）', clearSnap.bills.length, 0)
+}
+
+/* ---------------- 17. ★ 废弃字段清理 + month 死索引（S8-5） ---------------- */
+
+/**
+ * S8-5 从契约里删掉了三个**从写入到读取都没有消费者**的字段：
+ *   账单 `noReimburse`（开关 S7-10 已下线 / 写入恒 false）、
+ *   账单 `version`（早期设想的「服务端同步版本号」，从未被读取）、
+ *   账本 `ownerId`（云端归属靠 `_openid`，本地靠库分区）。
+ *
+ * 删契约不等于删数据 —— 老设备的库里、老备份文件里都还留着这些键。这一节钉住
+ * 两件事：**本地迁移真的把它们删干净了**，以及**删的时候没有惊动同步**。
+ *
+ * ⚠️ 「没有惊动同步」是这里的重点，也是最容易被写错的地方：抬 `updatedAt` 或
+ *    入 outbox 都会让这条文档在下一轮同步里被判成「本地更新」而推上云 ——
+ *    既去覆盖云端那份，又可能盖掉别的设备上的新修改。所以断言里专门验
+ *    「时间戳原样」+「队列没有多出条目」。
+ */
+t.group('17. ★ S8-5：废弃字段清理与 month 死索引')
+
+{
+  /* ---- 17A：老库里的废弃字段，init 时被清掉 ---- */
+
+  const purgeName = nextDb('purge')
+
+  // 手工造一个「老版本写入过」的库：v3 结构 + 带废弃字段的文档 + 有 schemaVersion
+  // （有它才会跳过播种，从而把这一节的变量控制到只剩「字段清理」一件事）
+  const rawPurge = await openDB({ dbName: purgeName, version: DB_VERSION })
+  await writeMeta(rawPurge, { [META_KEYS.SCHEMA]: SCHEMA_VERSION })
+  await putMany(rawPurge, STORES.LEDGER, [
+    { id: 'ledger_default', name: '默认账本', ownerId: 'user_local', createdAt: 1, updatedAt: 1 }
+  ])
+  await putMany(rawPurge, STORES.BILL, [
+    {
+      id: 'bill_old_1',
+      ledgerId: 'ledger_default',
+      type: 'expense',
+      amount: 168,
+      categoryId: 'cat_daily',
+      primaryCategoryId: 'cat_daily',
+      remark: '老版本写的账',
+      date: '2026-10-02',
+      noReimburse: true,
+      version: 7,
+      createdAt: 111,
+      updatedAt: 222,
+      deleted: 0
+    }
+  ])
+  rawPurge.close()
+  const metaBefore = await readMeta(await openDB({ dbName: purgeName, version: DB_VERSION }))
+  t.ok('17a 造好的老库里确实带着废弃字段', metaBefore[META_KEYS.DEPRECATED_FIELDS_PURGED] === undefined)
+
+  // 「下次启动」
+  const purged = createIdbAdapter({ dbName: purgeName, seed: false })
+  await purged.ready()
+
+  const rawAfter = await openDB({ dbName: purgeName, version: DB_VERSION })
+  const billsAfter = await readAll(rawAfter, STORES.BILL)
+  const ledgersAfter = await readAll(rawAfter, STORES.LEDGER)
+  const metaAfter = await readMeta(rawAfter)
+
+  t.ok(
+    '17b ★ 账单上的 noReimburse / version 被删掉',
+    billsAfter.every((b) => !('noReimburse' in b) && !('version' in b)),
+    JSON.stringify(billsAfter[0])
+  )
+  t.ok('17c ★ 账本上的 ownerId 被删掉', ledgersAfter.every((l) => !('ownerId' in l)))
+  t.ok(
+    '17d 该留的字段一个不少（remark / primaryCategoryId / deleted）',
+    billsAfter[0].remark === '老版本写的账' &&
+      billsAfter[0].primaryCategoryId === 'cat_daily' &&
+      billsAfter[0].deleted === 0
+  )
+  t.eq(
+    '17e ★★ updatedAt 原样不动（抬时间戳会让它被判成「本地更新」而推上云）',
+    [billsAfter[0].createdAt, billsAfter[0].updatedAt],
+    [111, 222]
+  )
+  t.eq('17f ★★ 没有多出待推条目（字段清理不走 outbox）', await purged.outbox.pendingCount(), 0)
+  t.eq('17g meta 落了一次性标记', metaAfter[META_KEYS.DEPRECATED_FIELDS_PURGED], 1)
+
+  // 幂等：再来一次不该有任何变化
+  const purgedAgain = createIdbAdapter({ dbName: purgeName, seed: false })
+  await purgedAgain.ready()
+  const billsAgain = await readAll(await openDB({ dbName: purgeName, version: DB_VERSION }), STORES.BILL)
+  t.eq('17h 再启动一次结果不变（幂等）', billsAgain[0], billsAfter[0])
+  t.eq('17i 队列依然是空的', await purgedAgain.outbox.pendingCount(), 0)
+
+  /* ---- 17B：month 死索引（建在从未写入的字段上） ---- */
+
+  const freshIdx = await openDB({ dbName: nextDb('idxnew'), version: DB_VERSION })
+  t.ok(
+    '17j 新建的库不含 month 索引',
+    !freshIdx.transaction(STORES.BILL, 'readonly').objectStore(STORES.BILL).indexNames.contains('month')
+  )
+  freshIdx.close()
+
+  // 手工造一个 v2 结构的老库（带 month 索引），验证升级路径真的把它删掉
+  const legacyIdxName = nextDb('idxlegacy')
+  await new Promise((resolve, reject) => {
+    const req = indexedDB.open(legacyIdxName, 2)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      db.createObjectStore(STORES.LEDGER, { keyPath: 'id' })
+      const cat = db.createObjectStore(STORES.CATEGORY, { keyPath: 'id' })
+      cat.createIndex('ledgerId', 'ledgerId')
+      cat.createIndex('parentId', 'parentId')
+      cat.createIndex('type', 'type')
+      cat.createIndex('updatedAt', 'updatedAt')
+      const bill = db.createObjectStore(STORES.BILL, { keyPath: 'id' })
+      bill.createIndex('ledgerId', 'ledgerId')
+      bill.createIndex('date', 'date')
+      bill.createIndex('month', 'month') // ← 老库那份死索引
+      bill.createIndex('categoryId', 'categoryId')
+      bill.createIndex('updatedAt', 'updatedAt')
+      db.createObjectStore(STORES.OUTBOX, { keyPath: 'id' }).createIndex('synced', 'synced')
+      db.createObjectStore(STORES.META, { keyPath: 'key' })
+    }
+    req.onsuccess = () => {
+      req.result.close()
+      resolve()
+    }
+    req.onerror = () => reject(req.error)
+  })
+
+  const asV2 = await openDB({ dbName: legacyIdxName, version: 2 })
+  t.ok(
+    '17k 老库（v2）确实带 month 索引（否则这一组测了个寂寞）',
+    asV2.transaction(STORES.BILL, 'readonly').objectStore(STORES.BILL).indexNames.contains('month')
+  )
+  await putMany(asV2, STORES.BILL, [{ id: 'b_keep', ledgerId: 'ledger_default', amount: 1, date: '2026-10-02' }])
+  asV2.close()
+
+  const asV3 = await openDB({ dbName: legacyIdxName, version: DB_VERSION })
+  const billIdx = asV3.transaction(STORES.BILL, 'readonly').objectStore(STORES.BILL).indexNames
+  t.ok('17l ★ 升级到 v3 后 month 索引被删掉', !billIdx.contains('month'))
+  t.ok(
+    '17m 其它索引原样保留',
+    ['ledgerId', 'date', 'categoryId', 'updatedAt'].every((n) => billIdx.contains(n))
+  )
+  const keptRows = await readAll(asV3, STORES.BILL)
+  t.eq('17n 升级不丢数据', keptRows.length, 1)
+  asV3.close()
 }
 
 t.done()

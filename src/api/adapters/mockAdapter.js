@@ -29,7 +29,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 /**
  * Mock 适配器：内存 + localStorage 持久化。
  * 完全实现 contract.js 中定义的 Repository 契约，行为与后续的
- * idbAdapter / leancloudAdapter 保持一致（均为 Promise、均写 outbox）。
+ * idbAdapter 保持一致（均为 Promise、均写 outbox）。
  *
  * @returns {ReturnType<typeof createMockAdapter>}
  */
@@ -330,11 +330,9 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
         primaryCategoryId: primaryId,
         remark: String(payload.remark || '').trim(),
         date: payload.date || todayKey(),
-        noReimburse: !!payload.noReimburse,
         createdAt: now(),
         updatedAt: now(),
-        deleted: 0,
-        version: 1
+        deleted: 0
       }
       s.bills.push(doc)
       persist()
@@ -364,7 +362,7 @@ export function createMockAdapter({ latency = 24, persistKey = 'ledger.db.v1' } 
       }
       if (next.remark !== undefined) next.remark = String(next.remark).trim()
 
-      Object.assign(doc, next, { updatedAt: now(), version: (doc.version || 1) + 1 })
+      Object.assign(doc, next, { updatedAt: now() })
       persist()
       await enqueue(COLLECTIONS.BILL, 'update', doc.id, { ...doc })
       return decorateBill(doc, lookupOf(s))

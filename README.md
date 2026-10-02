@@ -17,7 +17,7 @@
 npm install
 npm run dev       # http://127.0.0.1:5173
 npm run build     # 产物输出到 dist/
-npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁 + 数据备份），共 699 条
+npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁 + 数据备份），共 725 条
 ```
 
 ### 配置云端（可选）
@@ -80,6 +80,11 @@ VITE_CLOUDBASE_ENV=<你的环境 ID>
   - **写操作，两种模式都需要登录**。同一份文件执行两次都不产生重复（幂等）。
   - 两种模式的分工说明：本项目的删除是软删（留墓碑 + 抬高 `updatedAt`），墓碑必然比备份里的时间戳新，所以「导出 → 删错 → 再导入」在**合并**口径下会静默跳过 —— 该场景由「恢复到此备份」承担，而不是靠放宽合并规则（那会同时破坏「旧备份不覆盖新数据」）。
   - **同步状态可视化（S8-2）**：「我的」页数据层状态卡新增「上次同步」（用同步成功的本地时刻，不是水位线）；同步失败且可重试时「立即同步」自动变为主题色的「重试同步」。
+- **数据层瘦身（S8-5，2026-10-02）**：清掉一批「写了但没人读」的历史包袱。
+  - **三个死字段**：账单 `noReimburse`（「不报销」开关 S7-10 已从记账页下线，写入恒 false）、账单 `version`（早期设想的「服务端同步版本号」，实际从未被读取 —— 跨设备裁决走 `updatedAt` / 云端 `serverUpdatedAt`）、账本 `ownerId`（值恒 `'user_local'`，云端归属靠 `_openid`、本地靠库分区）。本地与云端一并清除。
+  - **一个死索引**：BILL 表的 `month` 索引建在一个**从来没写过的字段**上（月度查询走 `monthKeyOf(date)`，且整个项目不用索引查询），索引恒为空。库版本 2 → 3，升级时显式 `deleteIndex` 把老库那份也清掉。
+  - **一个死文件**：`adapters/leancloudAdapter.js`（选型作废，每个方法都是 `throw new NotImplementedError`）。
+  - ⚠️ **清理刻意不动 `updatedAt`、也不入同步队列**：抬时间戳会让这条账在下一轮同步里被判成「本地更新」而推上云，既去覆盖云端那份、又可能盖掉别的设备上的新修改。字段清理由**独立 meta 标记**保证只跑一次 —— 绝不能借 `SCHEMA_VERSION` 实现（那个版本号对不上会触发重新播种，等于清空用户数据）。
 
 ## 目录结构
 
@@ -99,7 +104,6 @@ src/
     adapters/mockAdapter.js        内存 + localStorage（对照基准，保留）
     adapters/idbAdapter.js         当前启用：IndexedDB 离线缓存
     adapters/cloudbaseAdapter.js   当前启用：腾讯云开发（文档型库 + 手机号登录），SDK 动态 import
-    adapters/leancloudAdapter.js   已废弃（LeanCloud 停服），仅保留同步策略注释作参考
     sync/outbox.js         增量同步队列（本地写入即入队，变更通知订阅者）
     sync/outboxStore.js    队列的存储后端（IndexedDB 表 / 内存）+ 旧 localStorage 队列一次性搬迁
     sync/cloudClient.js    云端客户端接口约定（只有形状，无实现）
@@ -124,9 +128,10 @@ cloudfunctions/
 | 适配器                   | 状态                                                  |
 | --------------------- | --------------------------------------------------- |
 | `mockAdapter.js`      | 第一阶段实现（内存 + localStorage）。保留作契约对照基准                 |
-| `idbAdapter.js`       | **当前启用**：IndexedDB，按账号分区（登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`）、版本 2、5 个 objectStore |
+| `idbAdapter.js`       | **当前启用**：IndexedDB，按账号分区（登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`）、库版本 3、5 个 objectStore |
 | `cloudbaseAdapter.js` | **当前启用**：腾讯云开发（`@cloudbase/js-sdk` + 手机号登录 + 文档型数据库） |
-| `leancloudAdapter.js` | 已废弃（LeanCloud 停服），仅留同步策略注释作参考                       |
+
+> `leancloudAdapter.js` 骨架已于 S8-5（2026-10-02）删除：它没有任何生产引用，每个方法都只是 `throw new NotImplementedError`，留着只会让人以为「还支持 LeanCloud」。
 
 业务规则（过滤 / 排序 / 聚合 / 派生字段 / 种子迁移）统一放在 `api/core/`，由各适配器共用 —— 避免「两个适配器各写一套、慢慢漂开」。**合并规则也只写一份**（`core/merge.js`），mock 与真云端共用。
 
@@ -259,7 +264,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 2. **一度改用 Supabase → 因国内访问不稳定放弃**。方案本身没问题（Postgres + RLS + 开源可自托管），但其官方域名在国内直连不稳，真机测试常需自备域名与代理。
 3. **终选腾讯云开发 CloudBase**：国内访问快、合规、有免费额度，且前端静态托管与后端同平台，省掉跨域与域名配置。**注意：免费环境每个账号限 1 个，单次续期 6 个月、不支持自动续费，过期会停用。**
 
-`leancloudAdapter.js` 只在注释里保留其同步策略（本地为主 + outbox 推送 + 水位拉取 + 新者胜）作设计参考，不会再被实现。
+那段同步策略（本地为主 + outbox 推送 + 水位拉取 + 新者胜）已在 `sync/syncEngine.js`、`core/merge.js` 与 `cloudbaseAdapter.js` 里真实落地。适配器骨架本身已于 S8-5 删除 —— 「保留作参考」的价值在实现完成那天就归零了，只剩误导。
 
 > 两次换厂商都只动了适配器层，**视图与 store 一行未改** —— 这正是「契约 + 适配器」分层的价值。
 
@@ -383,16 +388,16 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
 - 设计变量集中在 `src/styles/tokens.css`，改主题色只需动 `--brand*`。
 - 数据当前持久化在 **IndexedDB**（按账号分区：登录后 `ledger_<账号前缀>`、未登录 `ledger_guest`，版本 2）+ **腾讯云开发**；首次打开会自动接管第一阶段留在 localStorage 的旧库。~~「我的 → 重置演示数据」~~（**该按钮已于 2026-10-02 删除**：演示数据不再播发，没有可重置的东西；演示种子只剩测试在用）。
 - 云端连接方式是"有配置就启用、没配置就纯本地"：`.env.local` 里 `VITE_CLOUDBASE_ENV` 为空即退回本地模式，无需改代码。
-- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **699 条**）
+- **数据层断言**（`scripts/`，纳入版本管理）：`npm run test:data`（共 **725 条**）
   - `contract-test.mjs` —— 契约一致性（mock 与 idb 双跑，87 条断言）
   - `period-test.mjs`（22 条）/ `seed-test.mjs`（28 条）/ `migrate-test.mjs`（11 条）
     - `seed-test` 含 S7-9 的分层断言：`buildBase()` 只含账本 + 分类（**0 条账单**）、`buildDemoBills()` 在生产构建下返回空、`buildSeed()` 的组合结果与改造前一致（演示数据不缩水）
   - `sync-test.mjs` —— 同步引擎 20 组场景（143 条断言），用测试时钟 + 注入定时器让退避延迟可断言、不必真等；S7 新增「未登录短路（`reason === 'not-signed-in'`）」与「退出后重新登录全量回拉」的用例
   - `conflict-test.mjs` —— 并发与边界 13 组场景（135 条断言）：同毫秒并发、时钟偏差、拔网恢复、软删除撞修改、三设备并发、错误分类。判据是不丢/不重复/两端收敛
   - `cloudid-test.mjs` —— 云端 id 别名映射（42 条断言）：换身份同名本地 id 不再撞车、跨设备仍按本地 id 合并
-  - `partition-test.mjs` —— 库分区与旧库继承（89 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种、连接层自愈；**S7 新增**未登录分区只播基础设施 / 演示账单一次性清理、账号分区兜底分类 `updatedAt = 0`、S7-10 装配层恒不继承裸库（源码扫描回归守卫）；**S8-4 新增**注销把分区清回出厂态（同号再登录能重新播种 + 遗留 localStorage 键一并清 + 与 `clearLocalData` 的反例对照）
-  - `gate-test.mjs` —— 写操作登录门禁（41 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）、身份切换后的 store 刷新时序；**S8-4 新增**注销账号的顺序守卫（先清云端 → 再清本地 → 最后登出切分区）与「注销按钮只能开确认框、不得直绑执行」
-  - `backup-test.mjs` —— 数据备份（101 条断言）：导出格式（白名单字段、软删除墓碑与同步元数据不进文件）、解析校验（坏数据逐条跳过不打断整份、版本过新整份拒绝）、合并计划三分支（新增 / 更新 / 跳过）、**「导出 → 空库导入 → 再导一次」往返幂等**、旧备份不覆盖本地新数据、**恢复计划四分支（新增 / 覆盖 / 复活 / 软删清除）+ 「导出 → 误删 → 恢复」端到端 + 恢复两次幂等 + 账本保护 + 「清除只写墓碑不做物理删除」**、导入入同步队列、身份凭据（uid）不泄漏进文件、「导入过门禁 / 导出不过门禁 / 恢复必经二次确认」静态守卫
+  - `partition-test.mjs` —— 库分区与旧库继承（103 条断言）：库名派生、分区隔离、outbox 不串号、裸库只被认领一次、空源必须能播种、连接层自愈；**S7 新增**未登录分区只播基础设施 / 演示账单一次性清理、账号分区兜底分类 `updatedAt = 0`、S7-10 装配层恒不继承裸库（源码扫描回归守卫）；**S8-4 新增**注销把分区清回出厂态（同号再登录能重新播种 + 遗留 localStorage 键一并清 + 与 `clearLocalData` 的反例对照）；**S8-5 新增**废弃字段清理（清得掉 + `updatedAt` 原样 + 不入队 + 幂等）与 `month` 死索引（新库不建 / 老库升级后删掉、其它索引与数据不受影响）
+  - `gate-test.mjs` —— 写操作登录门禁（52 条断言）：路由 `meta.requiresAuth` 源码扫描、`shouldAllowWrite` 真值表、登录弹层状态机（挂起动作 / 取消即丢弃 / 登录成功后执行）、身份切换后的 store 刷新时序；**S8-4 新增**注销账号的顺序守卫（先清云端 → 再清本地 → 最后登出切分区）与「注销按钮只能开确认框、不得直绑执行」；**S8-5 新增** schema 清理的写入点守卫（三个已删字段的每一个写入路径，含记账页提交 payload、`DB_VERSION` 与两条索引变更）
+  - `backup-test.mjs` —— 数据备份（102 条断言）：导出格式（白名单字段、软删除墓碑与同步元数据不进文件）、解析校验（坏数据逐条跳过不打断整份、版本过新整份拒绝）、合并计划三分支（新增 / 更新 / 跳过）、**「导出 → 空库导入 → 再导一次」往返幂等**、旧备份不覆盖本地新数据、**恢复计划四分支（新增 / 覆盖 / 复活 / 软删清除）+ 「导出 → 误删 → 恢复」端到端 + 恢复两次幂等 + 账本保护 + 「清除只写墓碑不做物理删除」**、导入入同步队列、身份凭据（uid）不泄漏进文件、「导入过门禁 / 导出不过门禁 / 恢复必经二次确认」静态守卫；**S8-5 新增**已删字段（`noReimburse` / `version` / `ownerId`）既不被导出也不被导入
   - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。

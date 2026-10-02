@@ -199,6 +199,55 @@ export function createIdbAdapter(options = {}) {
     return result.changed
   }
 
+  /* ---------------- 废弃字段清理（S8-5） ---------------- */
+
+  /**
+   * 已从契约里删除、但仍可能留在历史文档上的字段。
+   *
+   * 三个字段的共同点：**从写入到读取都没有任何消费者**。
+   *   - 账单 `noReimburse` —— 「不报销」开关 S7-10 已从记账页下线，写入恒 false；
+   *   - 账单 `version`     —— 早期设想的「服务端同步版本号」，从未被读取
+   *     （跨设备裁决走 `updatedAt` / 云端 `serverUpdatedAt`）；
+   *   - 账本 `ownerId`     —— 第一阶段还没有账号体系时的占位，值恒 `'user_local'`；
+   *     真正的归属在云端是 `_openid`、在本地是库分区。
+   */
+  const DEPRECATED_FIELDS = {
+    [STORES.LEDGER]: ['ownerId'],
+    [STORES.BILL]: ['noReimburse', 'version']
+  }
+
+  /** 清理规则的版本；将来再删字段就 +1，老库会自己补跑 */
+  const DEPRECATED_FIELDS_VERSION = 1
+
+  /**
+   * 逐条删掉历史文档上的废弃字段（一次性、幂等；只写回真正有变化的文档）。
+   *
+   * ⚠️ **刻意不动 `updatedAt`、也不入 outbox**。这是纯存储卫生，不是用户改内容：
+   *    抬了时间戳，这条账就会在下一轮同步里被判成「本地更新」而推送 ——
+   *    既去改云端那份，又可能顶掉别的设备上的新修改。不入队则两端各清各的，
+   *    等用户哪天真去改这条账时，`.set()` 的整份覆盖会自然收敛。
+   *    （云端那份由管理端 `$unset` 一次性清掉。）
+   *
+   * @returns {Promise<number>} 实际被改写的文档条数
+   */
+  async function purgeDeprecatedFields() {
+    let touched = 0
+    for (const [storeName, fields] of Object.entries(DEPRECATED_FIELDS)) {
+      const rows = await readAll(storeName)
+      const next = []
+      for (const row of rows) {
+        const hits = fields.filter((f) => Object.prototype.hasOwnProperty.call(row, f))
+        if (!hits.length) continue
+        const copy = toPlain(row)
+        hits.forEach((f) => delete copy[f])
+        next.push(copy)
+        touched += 1
+      }
+      if (next.length) await putMany(storeName, next)
+    }
+    return touched
+  }
+
   async function init() {
     await getDB()
 
@@ -272,6 +321,18 @@ export function createIdbAdapter(options = {}) {
         await writeMeta({ [META_KEYS.SEED]: seedData.meta || {} })
       }
       await writeMeta({ [META_KEYS.SCHEMA]: SCHEMA_VERSION })
+    }
+
+    /**
+     * S8-5：清掉历史文档上的废弃字段。
+     *
+     * 放在播种 / 接管**之后**：那两条路径刚写进来的文档已经不含废弃字段，
+     * 但这个顺序能让「老库首次启动」一次就把库里所有文档过一遍。
+     * 幂等靠独立标记 —— 见 `META_KEYS.DEPRECATED_FIELDS_PURGED` 的说明。
+     */
+    if (meta[META_KEYS.DEPRECATED_FIELDS_PURGED] !== DEPRECATED_FIELDS_VERSION) {
+      await purgeDeprecatedFields()
+      await writeMeta({ [META_KEYS.DEPRECATED_FIELDS_PURGED]: DEPRECATED_FIELDS_VERSION })
     }
 
     // 队列搬迁（旧 localStorage → IndexedDB）在这里顺带做完，
@@ -546,11 +607,9 @@ export function createIdbAdapter(options = {}) {
         primaryCategoryId: primaryId,
         remark: String(payload.remark || '').trim(),
         date: payload.date || todayKey(),
-        noReimburse: !!payload.noReimburse,
         createdAt: now(),
         updatedAt: now(),
-        deleted: 0,
-        version: 1
+        deleted: 0
       }
       await putMany(STORES.BILL, [doc])
       await enqueue(COLLECTIONS.BILL, 'create', doc.id, { ...doc })
@@ -586,8 +645,7 @@ export function createIdbAdapter(options = {}) {
       const merged = {
         ...doc,
         ...next,
-        updatedAt: now(),
-        version: (doc.version || 1) + 1
+        updatedAt: now()
       }
       await putMany(STORES.BILL, [merged])
       await enqueue(COLLECTIONS.BILL, 'update', merged.id, { ...merged })

@@ -74,7 +74,7 @@ export const BACKUP_COLLECTIONS = ['ledgers', 'categories', 'bills']
  * `deleted` 不在名单里：导出只取活文档，导入写回时统一补 `deleted: 0`。
  */
 const FIELDS = {
-  ledgers: ['id', 'name', 'ownerId', 'createdAt', 'updatedAt'],
+  ledgers: ['id', 'name', 'createdAt', 'updatedAt'],
   categories: ['id', 'name', 'icon', 'parentId', 'type', 'ledgerId', 'order', 'createdAt', 'updatedAt'],
   bills: [
     'id',
@@ -85,10 +85,8 @@ const FIELDS = {
     'primaryCategoryId',
     'remark',
     'date',
-    'noReimburse',
     'createdAt',
-    'updatedAt',
-    'version'
+    'updatedAt'
   ]
 }
 
@@ -187,10 +185,8 @@ function normalizeDoc(kind, raw) {
     doc.type = BILL_TYPE_VALUES.includes(doc.type) ? doc.type : 'expense'
     doc.ledgerId = str(doc.ledgerId)
     doc.remark = str(doc.remark)
-    doc.noReimburse = doc.noReimburse === true
     doc.categoryId = doc.categoryId ? String(doc.categoryId) : null
     doc.primaryCategoryId = doc.primaryCategoryId ? String(doc.primaryCategoryId) : null
-    doc.version = Number.isFinite(Number(doc.version)) ? Number(doc.version) : 1
     return doc
   }
 
@@ -210,7 +206,6 @@ function normalizeDoc(kind, raw) {
   const name = str(doc.name).trim()
   if (!name) return null
   doc.name = name
-  doc.ownerId = str(doc.ownerId)
   return doc
 }
 

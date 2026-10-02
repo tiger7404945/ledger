@@ -8,8 +8,10 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 **S0–S5、S7、S8 全部完成**，云端=用户自有腾讯云开发 CloudBase（envId 只在 `.env.local`）。
 **S7 = 去掉匿名身份 + 写操作登录门禁**（2026-10-01 裁决、2026-10-02 凌晨实施完毕，见下）。
 **S7-10（2026-10-02）= 关闭裸库继承 + 记账/首页功能裁剪**（见「功能裁剪」节）。
-**S8 = 上线收尾**：S8-1 数据备份/导入、S8-2 同步状态补全、S8-3 恢复模式、S8-4「我的」页精简 + 注销账号
-（见「数据备份」「注销账号」两节）。剩余上线项：正式域名/安全域名白名单、真机系统终验、打 `v1.0.0`。
+**S8 = 上线收尾**：S8-1 数据备份/导入、S8-2 同步状态补全、S8-3 恢复模式、S8-4「我的」页精简 + 注销账号、
+S8-5 schema 瘦身（见「数据备份」「注销账号」「schema 瘦身」三节）。
+剩余上线项：正式域名/安全域名白名单（⚠️ 2026-10-02 实测：`*.tcloudbaseapp.com` 测试域名现在会先弹
+一个免责提示页，需点「确定访问」才能进 App —— 正式域名这件事的实际收益又多了一条）、真机系统终验、打 `v1.0.0`。
 标签 v0.1~v0.5 已打（v0.5.0 = S5 账号体系 + 库分区，2026-10-01，package.json 已对齐）。
 
 ## 强制约定（违反返工）
@@ -33,7 +35,13 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 
 ## 数据层 / IndexedDB
 - 库名 `ledger_<账号前缀8位>`（`accountPrefixOf`），**未登录 = `ledger_guest`**（`GUEST_ACCOUNT_PREFIX`）；
-  版本 2，store：ledger/category/bill/outbox/meta。
+  **库版本 3**（v3 = S8-5 删掉 BILL 的死索引 `month`），store：ledger/category/bill/outbox/meta。
+- ⚠️ **`DB_VERSION` ≠ `SCHEMA_VERSION`**：前者只管 objectStore/索引结构（升它安全）；
+  后者记在 meta 里、决定「要不要播种/接管」——**bump 它会触发重新播种、用种子覆盖用户数据**，
+  绝对不能拿它当迁移版本号用（补数据走 `SEED_EXTRA_VERSION` 那类独立标记）。
+- ⚠️ 改 store/索引结构时，`createObjectStore` 分支**只在建新库时跑**，已存在的表要在
+  `onupgradeneeded` 里用 `dropIndexIfExists(tx.objectStore(x), 'name')` 显式处理
+  （直接 `deleteIndex` 不存在时会抛 `NotFoundError`）。真机（Chromium）v2→v3 实测通过。
 - `toPlain()` 深拷贝后再 put（Vue Proxy 会 DataCloneError）；读-改-写**分两个事务**
   （跨 await 抛 TransactionInactiveError）；`createIdbAdapter({dbName,seed,migrateFrom,claimant})`。
 - `reset()` 必须保留 `importedFromLocalStorage`/`outboxImported` 两标记；
@@ -58,11 +66,38 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
   真机表现为重登后分类宫格空白。修法：sync 完成后**再** `resetLoadedStores()` 一次；
   且它必须同时重置 `bill.periodInitialized`（账单页/统计页的区间切片有独立守卫）。
   gate-test 第 4 段用源码扫描锁死这条时序。
-- `npm run test:data` **十脚本 699 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition89/**gate**41/**backup**101）。输出格式由 `scripts/_harness.mjs` 统一
+- `npm run test:data` **十脚本 725 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition103/**gate**52/**backup**102）。输出格式由 `scripts/_harness.mjs` 统一
   （`createSuite(名)` → `t.ok/t.eq/t.group` → 末尾 `t.done()` 打汇总并设 exitCode）；
   **改测试脚本别再手搓 pass/fail**，否则又会出现「某脚本失败但 test:data 照样成功」。
   `migrate-test` 的历史叫法是 `t.assert`（harness 里有别名）。
+
+## schema 瘦身（S8-5，2026-10-02）—— 已删的东西别加回来
+- **判据只有一条：从写入到读取有没有消费者。** 有就留（哪怕看着别扭），没有就删。
+- **已删字段**：账单 `noReimburse`（开关 S7-10 已下线 / 写入恒 false）、账单 `version`
+  （从未被读取 —— 裁决走 `updatedAt` + 云端 `serverUpdatedAt`）、账本 `ownerId`（恒 `'user_local'`，
+  云端归属靠 `_openid`、本地靠库分区）。**本地与云端都清了**。
+- **已删索引**：BILL 的 `month` —— 建在一个**从未写入的字段**上，且**全项目不用索引查询**
+  （一律 `readAll` 全表读 + JS 过滤），恒为空。库版本 2 → 3。
+- **已删文件**：`adapters/leancloudAdapter.js`（零引用，全是 `throw NotImplementedError`）。
+- **已删资源**：静态托管 12 个历史 hashed 产物（23 → 11 个文件）。
+- ⚠️ **刻意保留**：`serverUpdatedAt` / `_serverTs`（**两者分工不同，不是冗余**：前者是 S4-6 裁决刻度、
+  后者是水位线）、legacy localStorage 两键与 `importedFromLocalStorage`/`outboxImported`（找回旧数据的退路）、
+  `partitionMigratedFrom`/`partitionClaimedBy` + `migratePartitionData`（S7-10 关了继承但能力保留，测试在测）、
+  `BILL_TYPES.transfer/lending`（历史文档要能过同步）、`mockAdapter.js`（契约对照基准 + 测试基座）。
+- **本地清理迁移**（`idbAdapter#purgeDeprecatedFields`，meta 标记 `deprecatedFieldsPurged`）：
+  ⚠️ **不动 `updatedAt`、不入 outbox** —— 抬时间戳会让这条账被判成「本地更新」而 push，
+  既覆盖云端又可能盖掉别人设备上的新修改。不入队则两端各清各的，用户真去改这条账时
+  `.set()` 整份覆盖会自然收敛（partition-test 17e/17f 钉死）。
+- ⚠️ **绝不能用 bump `SCHEMA_VERSION` 实现字段迁移**：那个版本号对不上会触发**重新播种**
+  （`mode` 恒 `'base'`），用固定 id 的种子覆盖用户自己记的账。必须走独立标记。
+- **云端清理**走管理端 `$unset`（`writeNoSqlDatabaseContent`，`isMulti: true`），不是等客户端推送收敛
+  —— 本地没改过的文档永远不会被重新 push。清理前的字段级备份在
+  `.preview/cloud-schema-cleanup-backup-2026-10-02.json`。
+- **顺手抓到的漏网之鱼**：`RecordView.vue` 提交 payload 里的 `noReimburse: false`。
+  多一个字段不会让任何测试失败，但 `update` 走 `{...doc, ...patch}` ⇒ 编辑老账会把它**种回库里**。
+  ⇒ **删字段时要把「写入点」逐个找出来**（create / update / seed / backup 白名单 / 页面提交 payload），
+  gate-test 第 6 节现用源码扫描把它们全钉住。
 
 ## 数据备份（S8-1 / S8-3，改 backup 相关代码前必读）
 - 纯逻辑全在 `core/backup.js`（**两个 planner**）；适配器只有 `backup.dump()`（原始快照，
@@ -191,7 +226,8 @@ Vue3+Vite 记账 Web App。设计稿=根目录 9 张 jpg（统计页无稿）。
 
 ## 功能裁剪（S7-10，2026-10-02 用户拍板，别「顺手加回来」）
 - **记账页**：类型 Tab 只留**支出/收入**（转账/借贷从未真正建模，提交时折叠成 expense）；
-  胶囊只留「今天 / 账本」（资产账户、图片、不报销已删）。`noReimburse` 契约字段**保留**但读写恒 `false`
+  胶囊只留「今天 / 账本」（资产账户、图片、不报销已删）。~~`noReimburse` 契约字段**保留**但读写恒 `false`~~
+  —— **该字段已于 S8-5 连同旧值一起删除**（见「schema 瘦身」节），别再引用它
   （否则编辑老账会把旧值隐形带下去）；草稿里也没有它了。
 - **首页**：总览三列 = 本月收入 / **本月结余**（`summary.balance`，前端不自算）/ 日均支出；
   「自动记账」「净资产」两卡已删；「添加卡片 + 编辑首页」合并为单个「编辑分类」（都跳 `/category`）。

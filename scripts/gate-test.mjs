@@ -212,4 +212,71 @@ const sheet = sheetMod.useLoginSheet()
   t.ok('5j 确认文案交代了平台侧账号记录的处理', /账号记录/.test(mineSrc))
 }
 
+/* ---------------- 6. schema 清理的回归守卫（S8-5） ---------------- */
+
+/**
+ * S8-5 删掉了三个字段（账单 `noReimburse` / `version`、账本 `ownerId`）、
+ * 一个死索引（BILL 的 `month`）和一个废弃文件（`leancloudAdapter.js`）。
+ *
+ * 删除类改动最容易「悄悄长回来」：某个写路径还在赋值，字段就复活了，而且
+ * **不会有任何测试失败**（多一个字段不影响渲染）。所以这里用源码扫描把
+ * 每一个写入点都钉住 —— 特别是 `RecordView` 那个漏网的提交 payload，
+ * 它会把编辑老账时的字段重新种回去。
+ */
+{
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+
+  // 6a 废弃的 LeanCloud 适配器已删（它没有任何生产引用，全是 NotImplementedError）
+  let gone = false
+  try {
+    read('../src/api/adapters/leancloudAdapter.js')
+  } catch (e) {
+    gone = true
+  }
+  t.ok('6a ★ 废弃的 leancloudAdapter 已删除', gone)
+
+  // 6b 备份字段白名单（导出与导入都靠它裁剪）
+  const bkSrc = read('../src/api/core/backup.js')
+  const fieldsAt = bkSrc.indexOf('const FIELDS = {')
+  const fieldsBlock = bkSrc.slice(fieldsAt, bkSrc.indexOf('账单类型的历史取值'))
+  t.ok(
+    '6b ★ 备份白名单不含 noReimburse / version / ownerId',
+    fieldsAt > 0 && !/noReimburse|ownerId|'version'/.test(fieldsBlock)
+  )
+
+  // 6c / 6d 两个适配器与种子都不再产出这些字段
+  t.ok('6c ★ 种子不再产出 noReimburse / ownerId', !/noReimburse|ownerId/.test(read('../src/api/mock/seed.js')))
+  t.ok(
+    '6d mock 适配器与 idbAdapter 形状一致（否则契约测试会漂）',
+    !/noReimburse|ownerId/.test(read('../src/api/adapters/mockAdapter.js'))
+  )
+
+  // 6e 记账页的提交 payload —— S8-5 实际漏网过一次，编辑老账时把它种了回来
+  t.ok('6e ★ 记账页提交不再写入 noReimburse', !/noReimburse/.test(read('../src/views/RecordView.vue')))
+
+  // 6f ~ 6h 本地清理迁移
+  const idbSrc = read('../src/api/adapters/idbAdapter.js')
+  const coreDbSrc = read('../src/api/core/idb.js')
+  const purgeAt = idbSrc.indexOf('async function purgeDeprecatedFields')
+  const purgeBody = purgeAt > 0 ? idbSrc.slice(purgeAt, idbSrc.indexOf('async function init', purgeAt)) : ''
+
+  t.ok('6f ★ 本地字段清理迁移存在', purgeAt > 0)
+  t.ok(
+    '6g ★ 清理走独立 meta 标记（bump SCHEMA_VERSION 会重新播种、清空用户数据）',
+    /DEPRECATED_FIELDS_PURGED/.test(coreDbSrc) && /DEPRECATED_FIELDS_PURGED/.test(purgeBody + idbSrc.slice(idbSrc.indexOf('async function init')))
+  )
+  t.ok(
+    '6h ★★ 清理不动 updatedAt、不入队（否则这条账会被当成「本地更新」推上云）',
+    purgeAt > 0 && !/\bupdatedAt\s*:/.test(purgeBody) && !/enqueue/.test(purgeBody)
+  )
+
+  // 6i ~ 6k 库版本与死索引
+  t.ok('6i ★ DB_VERSION 已升到 3', /export const DB_VERSION = 3/.test(coreDbSrc))
+  t.ok('6j ★ 新库不再创建 month 死索引', !/createIndex\('month'/.test(coreDbSrc))
+  t.ok(
+    '6k ★ 升级路径显式删掉老库的 month 索引（createObjectStore 分支只在建新库时跑）',
+    /dropIndexIfExists\(tx\.objectStore\(STORES\.BILL\), 'month'\)/.test(coreDbSrc)
+  )
+}
+
 t.done()

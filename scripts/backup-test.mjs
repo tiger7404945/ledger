@@ -76,6 +76,7 @@ const nextDb = (label) => `t_backup_${label}_${++seq}`
 const L = {
   id: 'ledger_default',
   name: '默认账本',
+  /** ⚠️ S8-5 已从契约删除：故意留着，用第 1 组 1j 验证它被白名单滤掉 */
   ownerId: '',
   createdAt: 1000,
   updatedAt: 1000,
@@ -119,7 +120,9 @@ const B = [
     primaryCategoryId: 'cat_food',
     remark: '午饭',
     date: '2026-10-01',
+    /** ⚠️ S8-5 已从契约删除：故意留着，用第 1 组 1j 验证它被白名单滤掉 */
     noReimburse: false,
+    version: 1,
     createdAt: 1000,
     updatedAt: 1000,
     deleted: 0,
@@ -135,7 +138,6 @@ const B = [
     primaryCategoryId: null,
     remark: '工资',
     date: '2026-10-01',
-    noReimburse: false,
     createdAt: 1001,
     updatedAt: 1001,
     deleted: 0
@@ -149,7 +151,6 @@ const B = [
     primaryCategoryId: null,
     remark: '被删掉的账',
     date: '2026-10-02',
-    noReimburse: false,
     createdAt: 1002,
     updatedAt: 1002,
     /** 软删除墓碑：**不该**出现在备份文件里（见第 1 组 1c） */
@@ -199,11 +200,27 @@ t.group('1. buildBackup：导出格式是契约，只含用户可见的数据')
   t.ok('1h deleted 字段不进备份（导入时统一补 0）', bk.data.bills.every((d) => d.deleted === undefined))
   t.ok('1i pickAlive：没有 deleted 字段视为活着', pickAlive([{ id: 'a' }, { id: 'b', deleted: 1 }]).length === 1)
 
+  /**
+   * S8-5 反例：`noReimburse` / `version` / `ownerId` 已从契约里删除，
+   * 但**历史备份文件里可能还带着它们**（旧版本导出的），老库里也可能残留。
+   * 上面 L / B 里特意留了这些字段 —— 导出与导入都必须靠白名单把它们滤掉，
+   * 否则删掉的字段会顺着备份文件「复活」。
+   */
+  t.ok(
+    '1j ★ S8-5 已删除的字段既不进备份、也不被导入',
+    bk.data.bills.every((d) => d.noReimburse === undefined && d.version === undefined) &&
+      bk.data.ledgers.every((d) => d.ownerId === undefined) &&
+      parseBackup(JSON.stringify(bk)).backup.data.bills.every(
+        (d) => d.noReimburse === undefined && d.version === undefined
+      ) &&
+      parseBackup(JSON.stringify(bk)).backup.data.ledgers.every((d) => d.ownerId === undefined)
+  )
+
   const withAccount = buildBackup({
     data: DATA,
     account: { label: '手机号 138****1234', signedIn: true, uid: 'SECRET_UID_SHOULD_NOT_LEAK' }
   })
-  t.eq('1j ★ 身份凭据（uid）不写进备份文件', Object.keys(withAccount.account).sort(), [
+  t.eq('1k ★ 身份凭据（uid）不写进备份文件', Object.keys(withAccount.account).sort(), [
     'label',
     'signedIn'
   ])
@@ -371,10 +388,8 @@ t.group('4. 往返：导出的对象必须能被自己解析回来')
     primaryCategoryId: 'cat_food',
     remark: '午饭',
     date: '2026-10-01',
-    noReimburse: false,
     createdAt: 1000,
-    updatedAt: 1000,
-    version: 1
+    updatedAt: 1000
   })
 }
 

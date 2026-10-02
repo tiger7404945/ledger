@@ -144,7 +144,7 @@ const year = Number(month.slice(0, 4))
   // 只有一笔用户自己记的账，外加一笔与种子 id 相同但内容被改过的账单。
   const old = {
     schemaVersion: SCHEMA_VERSION,
-    ledgers: [{ id: ledgerId, name: '默认账本', ownerId: 'user_local' }],
+    ledgers: [{ id: ledgerId, name: '默认账本' }],
     categories: [],
     bills: [
       {

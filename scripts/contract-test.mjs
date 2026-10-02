@@ -212,8 +212,6 @@ async function writeProbe(adapter) {
     primaryCategoryId: b.primaryCategoryId,
     type: b.type,
     deleted: b.deleted,
-    version: b.version,
-    noReimburse: b.noReimburse,
     date: b.date
   }
   out.countAfterCreate = (await bill.list({ ledgerId: LEDGER_ID, month })).length
@@ -225,8 +223,7 @@ async function writeProbe(adapter) {
     amount: b2.amount,
     displayName: b2.displayName,
     categoryId: b2.categoryId,
-    primaryCategoryId: b2.primaryCategoryId,
-    version: b2.version
+    primaryCategoryId: b2.primaryCategoryId
   }
   out.remarkHistoryOfSub = await bill.remarkHistory({ ledgerId: LEDGER_ID, categoryId: sub2.id })
 

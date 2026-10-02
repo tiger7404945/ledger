@@ -89,7 +89,6 @@ const billDoc = (clock, id, amount, extra = {}) => ({
   primaryCategoryId: null,
   remark: '',
   date: '2026-09-29',
-  noReimburse: false,
   createdAt: clock.now(),
   updatedAt: clock.stamp(),
   deleted: 0,

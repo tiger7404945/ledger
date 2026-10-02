@@ -436,7 +436,7 @@ cloud.as('user_b')        // 同一后端，切换身份（模拟换账号 / 换
 
 **测不了的，得说清楚**：真实隔离靠服务端安全规则（`doc._openid == auth.openid`），fakeCloud 里的隔离只是「客户端自觉」。S2 能保证的是**我们的代码没有把身份维度抹掉**，不能保证云端真的拒绝越权读 —— 那要靠 S3 验收标准第 3 条（换匿名身份访问看不到上一个身份的数据）。
 
-**真正的风险不在云端，在本地。** CloudBase 有安全规则兜底，本地 IndexedDB 没有。如果 A 退出登录、B 登录，两人共用同一个 `ledger` 库：B 会看到 A 的账，更糟的是 **A 残留在 outbox 里的待推条目会被推到 B 的账号下** —— 这是数据串号，比越权读更严重。契约里 `Ledger.ownerId` 已预留字段，但 adapter 的查询没有按它过滤。
+**真正的风险不在云端，在本地。** CloudBase 有安全规则兜底，本地 IndexedDB 没有。如果 A 退出登录、B 登录，两人共用同一个 `ledger` 库：B 会看到 A 的账，更糟的是 **A 残留在 outbox 里的待推条目会被推到 B 的账号下** —— 这是数据串号，比越权读更严重。契约里 `Ledger.ownerId` 已预留字段，但 adapter 的查询没有按它过滤。（📌 S8-5 复盘：这个字段**从来没有等到它的消费者** —— 定案走的是「库名分区」方案，`ownerId` 于 2026-10-02 删除。）
 
 | 方案 | 做法 | 代价 |
 | --- | --- | --- |
@@ -1307,6 +1307,8 @@ await this.switchPartition(uid || null)
 - 胶囊组删「资产账户」「图片」「不报销」：前两个点了只弹「后续版本支持」的空胶囊；
   「不报销」连同 `noReimburse` 表单状态、草稿字段一起下线 —— **数据契约字段保留**，
   读写一律归一为 `false`（否则编辑一笔老账会把旧值「隐形」带下去）。
+  （📌 S8-5 收尾：这个「保留」字段最终还是删了 —— 保留它的唯一理由是「别把旧值隐形带下去」，
+  而 S8-5 的字段清理把旧值本身也删干净了，理由随之消失。见 S8-5 小节。）
 
 **③ 首页改版**（产品决定）
 
@@ -1436,6 +1438,67 @@ await this.switchPartition(uid || null)
 「退出登录 + 注销账号」并排、点遮罩不关闭、点「永久注销」走到 `account.deleteAccount()`
 并被「未配置云端」正确拦下（toast 提示）—— 链路接通且无数据风险。干净会话四页零运行时错误。
 
+### S8-5（2026-10-02 夜）：资源与 schema 瘦身
+
+用户指令：**「同意清除不再需要的资源和代码。并审视一下数据库 schema，清除不需要的字段包括云端和本地。」**
+
+清理的前提是**先证明「不需要」**，而不是看着像旧的就删。用的判据只有一条：
+**这个字段/索引/文件，从写入到读取有没有任何一个消费者？** 有消费者就留着（哪怕看着别扭），
+没有就删。按这条标准盘出来的清单：
+
+| 对象 | 位置 | 判定依据 |
+| --- | --- | --- |
+| `noReimburse` | 账单（本地 + 云端） | 「不报销」开关 S7-10 已从记账页下线，写入恒 `false`；全库扫描无任何读取点 |
+| `version` | 账单（本地 + 云端） | 早期设想的「服务端同步版本号」，**从未被读取**（跨设备裁决走 `updatedAt` / 云端 `serverUpdatedAt`），却还在每次 update 时 +1 |
+| `ownerId` | 账本（本地 + 云端） | 值恒 `'user_local'`；云端归属靠 `_openid`、本地靠库分区，这个字段没有任何查询按它过滤 |
+| `month` 索引 | BILL objectStore | 建在一个**从来没写过的字段**上（月度查询走 `monthKeyOf(date)`）；且整个项目**不使用索引查询**（一律 `readAll` 全表读 + JS 过滤）⇒ 索引恒为空，纯写入负担 |
+| `leancloudAdapter.js` | `src/api/adapters/` | 选型作废后残留的骨架，每个方法都是 `throw new NotImplementedError`，**零生产引用** |
+| 12 个历史 hashed 产物 | 静态托管 `assets/` | 每次构建产生新 hash，旧的再也不会被 `index.html` 引用 |
+
+**⚠️ 刻意保留、别当成漏网**（都有明确消费者，或是有意的兼容层）：
+
+- `serverUpdatedAt`（S4-6 的服务端裁决刻度）与 `_serverTs`（水位线）—— **两者分工不同**，
+  `core/merge.js` 明确写了「不要复用 `_serverTs` 做裁决」，一度以为前者是后者的冗余副本，查证后否定。
+- 第一阶段遗留的 localStorage 键与 `importedFromLocalStorage` / `outboxImported` 标记 ——
+  它们是「旧版本数据还能找回」的退路，`clearLegacyLocalKeys()` 只在注销时碰。
+- `partitionMigratedFrom` / `partitionClaimedBy` 与 `migratePartitionData` —— S7-10 已关闭裸库继承
+  （装配层恒传 `migrateFrom: false`），但迁移**能力**保留、`partition-test` 7/10/11 节仍在测，
+  恢复继承只需改回一行。
+- `BILL_TYPES` 的 `transfer` / `lending` —— 记账页不产出，但历史文档要能照常过同步。
+- `mockAdapter.js` —— 不只是历史包袱，它是**契约对照基准**（`contract-test` 双跑）与多个测试的基座。
+
+**三个实施要点：**
+
+1. **本地清理不动 `updatedAt`、不入 outbox。** 这是纯存储卫生，不是用户改内容。一旦抬了时间戳，
+   这条账会在下一轮同步里被判成「本地更新」而 push —— 既去覆盖云端那份，又可能盖掉别的设备上的
+   新修改（`shouldTakeRemote` 会判「本地更新」直接放行）。不入队则两端各清各的，等用户哪天真去改
+   这条账时，`.set()` 的整份覆盖会自然收敛。`partition-test` 17e/17f 把这两条钉死。
+2. **清理走独立 meta 标记 `deprecatedFieldsPurged`，绝不借 `SCHEMA_VERSION`。** 那个版本号一旦
+   对不上，`init()` 会认定「库没初始化过」并**重新播种**（`mode` 恒为 `'base'`），用固定 id 的种子
+   覆盖用户自己记的账 —— 一条「顺手 bump 个版本号」就能造成数据事故。
+3. **云端用管理端 `$unset` 一次性清**，而不是等客户端下次推送时自然覆盖：本地没改动过的文档
+   永远不会被重新 push，靠同步收敛只会留下一个长期不一致的尾巴。清理前先做**字段级备份**
+   （`.preview/cloud-schema-cleanup-backup-2026-10-02.json`），并预检「`noReimburse: true` 的记录数」
+   —— 实测 **0 条**，删除无信息损失。
+
+**库版本 2 → 3**：`createObjectStore` 分支只在建新库时跑，所以已存在的 BILL 表要在
+`onupgradeneeded` 里显式 `deleteIndex('month')`（`dropIndexIfExists` 先判 `indexNames.contains`，
+不存在时 `deleteIndex` 会抛 `NotFoundError`）。⚠️ `DB_VERSION` **只影响 objectStore / 索引结构**，
+与 `SCHEMA_VERSION` 是两回事，动它安全。真机（Chromium）实测升级路径：v2 库（含 `month`）→
+open v3 → 索引只剩 `date`，数据不丢。
+
+**托管资源清理**：部署新构建后，按「新 `index.html` 是否引用」判定，删掉 12 个历史产物的
+`assets/index-*.js|css` —— 托管文件 23 → 11（余下：`index.html`、3 个在用产物、
+平台自带 `__auth/*` 与 `cloud-admin/index.html`）。删完逐个 curl 复核：在用的 200、已删的 404。
+
+**测试与验证**：`test:data` **725 条全绿**（partition 89 → 103：新增第 17 节字段清理与索引升级；
+gate 41 → 52：新增第 6 节写入点源码守卫；backup 101 → 102：新增「已删字段既不导出也不导入」的
+反例断言）。`npm run build` 通过。线上四页走查零控制台错误。
+
+> **顺手抓到的漏网之鱼**：`RecordView.vue` 的提交 payload 里还写着 `noReimburse: false`。
+> 它不会让任何测试失败（多一个字段不影响渲染），但编辑一笔老账时会把已删字段**重新种回库里**
+> —— 而 `update` 走 `{...doc, ...patch}`，正是最容易漏的路径。已加 `gate-test` 6e 守卫。
+
 ---
 
 ## 5. 云端数据设计
@@ -1470,10 +1533,12 @@ await this.switchPartition(uid || null)
 | `primaryCategoryId` | string \| null | 一级分类 id |
 | `remark` | string | 备注 |
 | `date` | string | `YYYY-MM-DD`（字符串便于区间比较与排序） |
-| `noReimburse` | boolean | 不报销 |
 | `deleted` | number | 0 / 1 |
 | `createdAt` / `updatedAt` | number | 毫秒时间戳 |
-| `version` | number | 每次更新 +1，便于排查 |
+
+> ⚠️ **S8-5（2026-10-02）删掉了本表原有的 `noReimburse` 与 `version` 两行**，以及
+> `ledger_ledgers` 的 `ownerId` —— 三个字段从写入到读取都没有消费者，详见 S8-5 小节。
+> 历史文档里的旧值已由本地迁移 + 管理端 `$unset` 清掉。
 
 **`ledger_categories`**：在上表基础上去掉金额相关字段，增加 `name` / `icon` / `parentId` / `type` / `order`。
 **`ledger_ledgers`**：`_id` / `_openid` / `_serverTs` + `name` / `createdAt` / `updatedAt`。

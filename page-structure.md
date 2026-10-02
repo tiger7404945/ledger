@@ -245,15 +245,21 @@ Bill {
   primaryCategoryId: string | null
   remark: string
   date: string            // YYYY-MM-DD
-  noReimburse: boolean    // 保留字段：UI 已不再提供该开关，写入恒为 false
   createdAt: number
   updatedAt: number
   deleted?: 0 | 1
-  version?: number        // 同步版本号
 }
 
-Ledger { id, name, ownerId, createdAt }
+// S8-5 删掉的三个字段（本地 + 云端一并清除，留在这里只为提示「别再写回来」）：
+//   Bill.noReimburse  —— 「不报销」开关 S7-10 已下线，写入恒 false，无任何读取点
+//   Bill.version      —— 早期设想的同步版本号，从未被读取（裁决走 updatedAt + 云端 serverUpdatedAt）
+//   Ledger.ownerId    —— 值恒 'user_local'，云端归属靠 _openid、本地靠库分区
+
+Ledger { id, name, createdAt }
 ```
+
+> **本地库版本 3**（S8-5）：BILL 表原有的 `month` 索引已删除 —— 它建在一个从未写入的字段上
+> （月度查询走 `monthKeyOf(date)`，且本项目不使用索引查询）。
 
 ### Repository 契约
 已全部实现，且 **mockAdapter 与 idbAdapter 由同一套断言验证结果一致**（`.preview/contract-test.mjs`，83 条）。

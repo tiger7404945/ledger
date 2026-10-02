@@ -2,8 +2,7 @@
  * ============================================================
  *  数据层契约（Repository Contract）
  * ============================================================
- *  第一阶段只实现 mockAdapter；后续接入本地离线缓存与云端同步时，
- *  只需新增实现同一套契约的 adapter，视图层与 store 层零改动。
+ *  视图与 store 只认这份契约，换存储实现时两边零改动。
  *
  *  分层：
  *    views / components
@@ -12,10 +11,16 @@
  *          ↓
  *      repository（本文件定义的契约）
  *          ↓
- *   ┌──────────────┬──────────────┬─────────────────┐
- *   │ mockAdapter  │ idbAdapter   │ leancloudAdapter │
- *   │ （本期）      │ （离线缓存）  │ （联网增量同步）  │
- *   └──────────────┴──────────────┴─────────────────┘
+ *   ┌──────────────┬─────────────────────────────────┐
+ *   │ mockAdapter  │ idbAdapter                      │
+ *   │ 内存/测试基座 │ 本地权威存储（IndexedDB，离线）  │
+ *   └──────────────┴─────────────────────────────────┘
+ *                        ↓ 变更走 outbox
+ *              syncEngine + cloudbaseAdapter（云端副本）
+ *
+ *  ⚠️ 云端**不是**一个 repository 实现：同步是「跨集合、跨存储」的行为，
+ *     由 `sync/syncEngine.js` 调度，适配器只提供读写口（见文件末说明）。
+ *     LeanCloud 适配器骨架已随选型作废删除（2026-10-02，见 phase2-backend-plan.md）。
  *
  *  所有方法均返回 Promise，且必须遵循「本地先行（local-first）」：
  *  写操作先落本地、再入 outbox 队列，由同步引擎异步推送。
@@ -56,9 +61,12 @@ export const NAME_MAX_LENGTH = 8
  * @typedef {Object} Ledger 账本
  * @property {string} id
  * @property {string} name
- * @property {string} ownerId
  * @property {number} createdAt
  * @property {number} updatedAt
+ *
+ * ⚠️ 曾经有个 `ownerId`（值恒为 `'user_local'`）。它是第一阶段「还没有账号体系」
+ *    时的占位，**云端真正的归属靠 `_openid`**，本地则靠库分区隔离 ——
+ *    这个字段从写入到读取都没有任何消费者，已于 S8-5 删除。
  */
 
 /**
@@ -85,11 +93,15 @@ export const NAME_MAX_LENGTH = 8
  * @property {string?} primaryCategoryId     一级分类 id
  * @property {string}  remark
  * @property {string}  date                  YYYY-MM-DD
- * @property {boolean} noReimburse           保留字段：记账页已不再提供该开关，写入恒为 false
  * @property {number}  createdAt
  * @property {number}  updatedAt
  * @property {0|1}     [deleted]
- * @property {number}  [version]             服务端同步版本号
+ *
+ * ⚠️ S8-5 删掉了两个从不参与逻辑的字段，别再「顺手加回来」：
+ *   - `noReimburse` —— 「不报销」开关在 S7-10 已从记账页下线，写入恒为 false；
+ *   - `version`     —— 早期设想的「服务端同步版本号」，实际从未被读取。
+ *     跨设备裁决用的是 `updatedAt` 与云端 `serverUpdatedAt`（见 core/merge.js）。
+ *   两者的历史值已随 S8-5 的字段清理迁移一并从本地与云端移除。
  */
 
 /**
@@ -105,7 +117,7 @@ export const NAME_MAX_LENGTH = 8
  */
 
 /**
- * 适配器必须实现的完整接口（供后续 idbAdapter / leancloudAdapter 对照实现）：
+ * 适配器必须实现的完整接口（mockAdapter / idbAdapter 对照实现，见 contract-test）：
  *
  * ledger:   list() | get(id) | update(id, patch)
  * category: list({ ledgerId, type }) | get(id) | create(payload) | update(id, patch)
@@ -129,7 +141,7 @@ export const NAME_MAX_LENGTH = 8
  */
 export class NotImplementedError extends Error {
   constructor(what) {
-    super(`[ledger] ${what} 尚未实现（第一阶段仅提供 mockAdapter）`)
+    super(`[ledger] ${what} 尚未实现`)
     this.name = 'NotImplementedError'
   }
 }

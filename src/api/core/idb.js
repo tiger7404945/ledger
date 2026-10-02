@@ -20,7 +20,19 @@
  */
 
 export const DB_NAME = 'ledger'
-export const DB_VERSION = 2
+/**
+ * IndexedDB 库版本。
+ *
+ * 变更历史：
+ *   - v1 → v2：S5 库分区 + outbox / meta 两张表；
+ *   - v2 → v3（S8-5）：删掉 BILL 的 `month` 索引 —— 它建在一个**从未写入过**
+ *     的字段上（月度查询走 `monthKeyOf(date)`，见 core/query.js），索引恒为空，
+ *     属于纯写入负担。升级时会显式 `deleteIndex` 把老库那份也清掉。
+ *
+ * ⚠️ 这个版本号**只影响 objectStore / 索引结构**，与 `SCHEMA_VERSION`（记在
+ *    meta 里、决定要不要播种与接管）是两回事。动它不会触发重新播种，安全。
+ */
+export const DB_VERSION = 3
 
 /**
  * 按账号分区后的库名前缀（S5-5）—— `ledger_<账号前缀>`。
@@ -119,11 +131,33 @@ export const META_KEYS = {
    * 种子，所以可以整批清掉。这个标记保证清理只做一次：否则开发构建下
    * 「重置演示数据」抬档 FULL 灌进去的演示账单，会在下一次启动又被清掉。
    */
-  SEED_BILLS_PURGED: 'seedBillsPurged'
+  SEED_BILLS_PURGED: 'seedBillsPurged',
+  /**
+   * 已清理「废弃字段」的版本（S8-5）。
+   *
+   * S8-5 从契约里删掉了三个**没有任何消费者**的字段：账单的 `noReimburse`
+   * （「不报销」开关 S7-10 已下线，写入恒 false）与 `version`（从未被读取），
+   * 账本的 `ownerId`（云端归属靠 `_openid`）。历史库里仍留着它们的旧值，
+   * 靠这个标记保证迁移**只跑一次**。
+   *
+   * ⚠️ **不能用 bump `SCHEMA_VERSION` 来实现这件事**：那个版本号一旦对不上，
+   *    `init()` 会认定「库没初始化过」并**重新播种**，把用户自己记的账覆盖掉。
+   *    纯存储卫生必须走独立标记（与 `SEED_EXTRA_VERSION` 同一套思路）。
+   *
+   * ⚠️ `clearLocalData()`（退出登录）会保留它 —— 分区内容下次从云端全量回拉，
+   *    云端那份同样已经清过，没必要再跑；`deleteLocalData()`（注销）抹掉它，
+   *    同号再登录时重新跑一遍也无害（幂等）。
+   */
+  DEPRECATED_FIELDS_PURGED: 'deprecatedFieldsPurged'
 }
 
 /** 见文件头约定 1 */
 export const toPlain = (doc) => JSON.parse(JSON.stringify(doc))
+
+/** 索引存在才删 —— `deleteIndex` 对一个不存在的索引会抛 NotFoundError */
+function dropIndexIfExists(store, name) {
+  if (store && store.indexNames.contains(name)) store.deleteIndex(name)
+}
 
 /** 打开数据库（含建库与索引；已存在则直接复用） */
 export function openDB({ dbName = DB_NAME, version = DB_VERSION } = {}) {
@@ -135,6 +169,7 @@ export function openDB({ dbName = DB_NAME, version = DB_VERSION } = {}) {
     const req = indexedDB.open(dbName, version)
     req.onupgradeneeded = () => {
       const db = req.result
+      const tx = req.transaction
       if (!db.objectStoreNames.contains(STORES.LEDGER)) {
         db.createObjectStore(STORES.LEDGER, { keyPath: 'id' })
       }
@@ -149,9 +184,17 @@ export function openDB({ dbName = DB_NAME, version = DB_VERSION } = {}) {
         const store = db.createObjectStore(STORES.BILL, { keyPath: 'id' })
         store.createIndex('ledgerId', 'ledgerId')
         store.createIndex('date', 'date')
-        store.createIndex('month', 'month')
         store.createIndex('categoryId', 'categoryId')
         store.createIndex('updatedAt', 'updatedAt')
+      } else {
+        /**
+         * v2 → v3（S8-5）：老库的 BILL 上还挂着 `month` 索引。
+         *
+         * 账单文档里**根本没有 `month` 字段**（月份由 `monthKeyOf(date)` 现算），
+         * 所以这个索引自建立起就是空的；而每一次写入都要为它维护一条空条目。
+         * `createObjectStore` 分支只在建新库时跑，已存在的 store 必须在这里显式删。
+         */
+        dropIndexIfExists(tx.objectStore(STORES.BILL), 'month')
       }
       if (!db.objectStoreNames.contains(STORES.OUTBOX)) {
         const store = db.createObjectStore(STORES.OUTBOX, { keyPath: 'id' })

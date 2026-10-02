@@ -231,11 +231,9 @@ export function buildExtraBills(ts = Date.now()) {
       primaryCategoryId: primaryId,
       remark: tpl.remark || '',
       date: `${targetMonth}-${pad2(day)}`,
-      noReimburse: false,
       createdAt: ts - 5000 - index * 1000,
       updatedAt: ts - 5000 - index * 1000,
-      deleted: 0,
-      version: 1
+      deleted: 0
     }
   })
 }
@@ -288,7 +286,6 @@ export function buildBase(ts = Date.now(), { categoryUpdatedAt = null } = {}) {
   const ledger = {
     id: LEDGER_ID,
     name: '默认账本',
-    ownerId: 'user_local',
     createdAt: ts,
     updatedAt: ts
   }
@@ -355,11 +352,9 @@ export function buildDemoBills(ts = Date.now()) {
       primaryCategoryId: primaryId,
       remark: tpl.remark || '',
       date,
-      noReimburse: false,
       createdAt: ts - index * 1000,
       updatedAt: ts - index * 1000,
-      deleted: 0,
-      version: 1
+      deleted: 0
     }
   })
 
@@ -379,11 +374,9 @@ export function buildDemoBills(ts = Date.now()) {
       primaryCategoryId: CAT_ID('shopping'),
       remark: GAP_BILL_REMARK,
       date: `${month}-01`,
-      noReimburse: false,
       createdAt: ts + 1,
       updatedAt: ts + 1,
-      deleted: 0,
-      version: 1
+      deleted: 0
     })
   }
 
