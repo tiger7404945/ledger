@@ -66,8 +66,8 @@ const profileName = computed(() => (cloud ? account.label : '本地记账'))
 const profileSub = computed(() => {
   if (!cloud) return '未配置云端 · 数据仅保存在本机'
   if (!account.ready) return '正在确认账号…'
-  if (account.signedIn) return '本地优先 · 换设备登录可找回'
-  return '本地优先 · 数据只在本机'
+  if (account.signedIn) return '数据云备份，换机可找回'
+  return '请登录后使用'
 })
 
 const avatarText = computed(() => {
@@ -75,13 +75,17 @@ const avatarText = computed(() => {
   return account.signedIn ? '我' : '未'
 })
 
-/** 头像下方的说明段：把「未登录的风险 / 登录的收益」一句说透 */
+/**
+ * 头像下方的说明段：只在**已登录**时给（解释同步行为）。
+ *
+ * ⚠️ 未登录时返回空串、整段不渲染：那一句「请登录后使用」已经由 `profileSub`
+ *    承担，再渲染一遍就是同一张卡上相邻重复（还紧挨着「登录 / 注册」按钮）。
+ *    另外 S7 之后未登录**写不了任何东西**（写操作全被门禁拦住），本机没有
+ *    用户数据可丢 —— 过去那句「清除浏览器数据会丢失」的提醒已经过时，删得。
+ */
 const profileHint = computed(() => {
-  if (!cloud) return ''
-  if (account.signedIn) {
-    return '数据与手机号绑定，换设备登录即可继续记账；未同步的改动会在恢复网络后自动补推。'
-  }
-  return '未登录时数据只保存在本机（清除浏览器数据会丢失）。登录后可同步到云端，多台设备共用一套账。'
+  if (!cloud || !account.signedIn) return ''
+  return '数据与手机号绑定，换设备登录即可继续记账；未同步的改动会在恢复网络后自动补推。'
 })
 
 /** 退出登录确认框（S5-4）：本地副本会被清掉（云端保留完整一份），先确认 */
@@ -193,7 +197,7 @@ async function syncNow() {
           </div>
         </div>
         <template v-if="cloud">
-          <p class="profile-hint">{{ profileHint }}</p>
+          <p v-if="profileHint" class="profile-hint">{{ profileHint }}</p>
           <div class="actions">
             <button
               v-if="!account.signedIn"
