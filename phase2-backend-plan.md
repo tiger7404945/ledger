@@ -1658,6 +1658,41 @@ shopping-cart / smartphone / toilet-paper / tshirt`），替换「购物」组�
 
 ---
 
+### S8-11（2026-10-03）：学习 / 家庭 / 人情三组换填充风图标（PNG 矢量化管线）
+
+这次用户给的不是 SVG 而是 **21 张 PNG 位图**（豆包 AI 生成的线稿，1536²，白底黑线）。
+走 `icon-vectorize` 技能的成熟管线（`.vectorize-work/vectorize.py`，venv + vtracer）：
+
+1. **像素采样**：全部 21 张四角/环带/前景占比/水印区暗像素 → 背景干净（250+）、
+   水印区零暗像素，**一条 128 阈值同时清掉水印与淡纹理**；
+2. **预处理**：3×3 中值去孤立暗斑 → `<128` 定 bbox（⚠️ 别用 `<200`：几张图带浅色装饰，
+   bbox 会打满 1536 画布）→ 2% guard 裁剪 → **无条件** LANCZOS 缩放到 512 工作分辨率 →
+   σ=1.0 高斯（缩放后的工作像素空间）→ 掩码门控二值化 `(mb>110)&(gb<128)`；
+3. **vtracer**：binary + spline、filter_speckle=4、corner=60、length=4.0、precision=1 →
+   剥掉 path 硬编码 fill，包进 `<g fill="currentColor" transform="translate/scale">`、
+   contain 居中进 512 画布（margin 5%）——**结构正好喂给 convert-fill-icons.mjs 的
+   `g` extractor**，后续与 SVG 批次完全同一条管线；
+4. **IoU 自检**：无头浏览器 canvas 渲染 vs 同几何基准图，21 张全部 **91.2~98.4%**、
+   面积比 0.966~1.039（线条粗细正确）。
+   ⚠️ 自检页第一版把基准图比较极性写反了（黑底白图当成「暗像素=前景」），IoU 全线 0.1~0.6
+   ——遇到「全线崩」先怀疑自检脚本而不是矢量化质量。
+
+**映射（5 覆盖 + 14 新增，累计九组 86 张）**：
+
+- **学习**（`studyFill.js` 61KB）：覆盖 `cap / book / pen`；新增 `backpack（书包）/
+  training（班牌）/ teach（板书授课）/ palette（调色盘）`。
+- **家庭**（`familyFill.js` 44KB）：全新增 `pendantLamp / tv / aircon / roller / hammer /
+  fridge`；⚠️ 第 4 张相机与购物组 `camera` 重复，**不生成**，家庭选择器直接复用 camera key。
+- **人情**（`giftFill.js` 43KB）：覆盖 `gift / redpacket`（**红包种子分类自动换新**）；
+  新增 `reward（赏字圆牌）/ heart / doubleHeart / coinBag`；⚠️ 第 7 张（圆顶+双侧环+宽底）
+  内容待用户确认，暂未接入（SVG 存 `.vectorize-work/svg/mystery.svg`）。
+
+gate 六模块循环扩到 **九模块**（gate 90 → **99**）；`test:data` **793 条全绿**；预览页九组
+86 枚（89 圆底全非空）。主包 793KB → 946KB（gzip 328KB，三批净增约 +53KB gzip）。
+改完即部署（新包 `index-8XR1wbJX.js`，删孤儿 `index-CtaZqtGx.js`，线上 200 核验通过）。
+
+---
+
 ## 5. 云端数据设计
 
 本项目用 **CloudBase 文档型数据库**（不是关系型）：账单本身就是嵌套对象，查询也不需要 JOIN；文档型在 Web SDK 直连上最成熟。

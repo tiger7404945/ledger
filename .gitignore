@@ -36,3 +36,12 @@ pnpm-debug.log*
 skills-lock.json
 .wbapp_*.genie
 .workbuddy/applications.yaml
+
+# PNG 矢量化工作目录（S8-11）：只入库 svg 产物与脚本，venv/中间产物不入
+.venv/
+.vectorize-work/svg/_base_*.npy
+.vectorize-work/svg/_raw_*
+.vectorize-work/svg/_bin_*
+.vectorize-work/iou-check.html
+.vectorize-work/contact-sheet.png
+.vectorize-work/zoom*.png

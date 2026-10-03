@@ -337,7 +337,7 @@ const sheet = sheetMod.useLoginSheet()
 }
 
 /* ==========================================================================
- * 第 8 节（S8-8~S8-10）：六组填充风图标 + 尺寸可配参数
+ * 第 8 节（S8-8~S8-11）：九组填充风图标 + 尺寸可配参数
  * ========================================================================== */
 {
   const foodSrc = readFileSync(new URL('../src/components/icons/foodFill.js', import.meta.url), 'utf8')
@@ -366,8 +366,8 @@ const sheet = sheetMod.useLoginSheet()
     })
   )
   t.ok(
-    '8d ★ ICONS 以「后展开覆盖」吃进六组填充风图标（放前面会被同 key 旧定义盖回去）',
-    /\.\.\.FOOD_FILL_ICONS,\s*\.\.\.SHOP_FILL_ICONS,\s*\.\.\.SPORT_FILL_ICONS,\s*\.\.\.TRANSPORT_FILL_ICONS,\s*\.\.\.FUN_FILL_ICONS,\s*\.\.\.HOUSE_FILL_ICONS\s*\n?\}/.test(iconSrc)
+    '8d ★ ICONS 以「后展开覆盖」吃进九组填充风图标（放前面会被同 key 旧定义盖回去）',
+    /\.\.\.FOOD_FILL_ICONS,\s*\.\.\.SHOP_FILL_ICONS,\s*\.\.\.SPORT_FILL_ICONS,\s*\.\.\.TRANSPORT_FILL_ICONS,\s*\.\.\.FUN_FILL_ICONS,\s*\.\.\.HOUSE_FILL_ICONS,\s*\.\.\.STUDY_FILL_ICONS,\s*\.\.\.FAMILY_FILL_ICONS,\s*\.\.\.GIFT_FILL_ICONS\s*\n?\}/.test(iconSrc)
   )
 
   const eatGroup = iconSrc.slice(iconSrc.indexOf("key: 'eat'"), iconSrc.indexOf("key: 'shop'"))
@@ -431,6 +431,21 @@ const sheet = sheetMod.useLoginSheet()
       label: '住房（S8-10）', file: 'houseFill.js', exportName: 'HOUSE_FILL_ICONS',
       newKeys: ['rent', 'electricity', 'gas', 'telephone'],
       groupAnchor: ["key: 'house'", "key: 'fun'"]
+    },
+    {
+      label: '学习（S8-11）', file: 'studyFill.js', exportName: 'STUDY_FILL_ICONS',
+      newKeys: ['backpack', 'training', 'teach', 'palette'],
+      groupAnchor: ["key: 'study'", "key: 'medical'"]
+    },
+    {
+      label: '家庭（S8-11）', file: 'familyFill.js', exportName: 'FAMILY_FILL_ICONS',
+      newKeys: ['pendantLamp', 'tv', 'aircon', 'roller', 'hammer', 'fridge'],
+      groupAnchor: ["key: 'family'", "key: 'study'"]
+    },
+    {
+      label: '人情（S8-11）', file: 'giftFill.js', exportName: 'GIFT_FILL_ICONS',
+      newKeys: ['reward', 'heart', 'doubleHeart', 'coinBag'],
+      groupAnchor: ["key: 'gift'", "key: 'family'"]
     }
   ]
   for (const mod of FILL_MODULES) {

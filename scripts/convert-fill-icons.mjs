@@ -181,6 +181,73 @@ const BATCHES = [
       ['gas.svg', 'gas'],
       ['telephone.svg', 'telephone']
     ]
+  },
+  {
+    name: 'study',
+    out: 'src/components/icons/studyFill.js',
+    exportName: 'STUDY_FILL_ICONS',
+    dir: 'D:/projects/ledger/.vectorize-work/svg',
+    extractor: 'g',
+    header: [
+      ' * 学习组·填充风图标（S8-11，由 scripts/convert-fill-icons.mjs 从用户 PNG 矢量化生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 7 张 PNG（豆包 AI 线稿，.vectorize-work/vectorize.py 矢量化）。',
+      ' * 同 key 覆盖 3 个旧 key（cap / book / pen）；其余 4 个是新 key（backpack / training / teach / palette）。'
+    ],
+    MAP: [
+      ['backpack.svg', 'backpack'],
+      ['cap.svg', 'cap'],
+      ['book.svg', 'book'],
+      ['pen.svg', 'pen'],
+      ['training.svg', 'training'],
+      ['teach.svg', 'teach'],
+      ['palette.svg', 'palette']
+    ]
+  },
+  {
+    name: 'family',
+    out: 'src/components/icons/familyFill.js',
+    exportName: 'FAMILY_FILL_ICONS',
+    dir: 'D:/projects/ledger/.vectorize-work/svg',
+    extractor: 'g',
+    header: [
+      ' * 家庭组·填充风图标（S8-11，由 scripts/convert-fill-icons.mjs 从用户 PNG 矢量化生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 7 张 PNG（豆包 AI 线稿，.vectorize-work/vectorize.py 矢量化）。',
+      ' * 全部是新 key（pendantLamp / tv / aircon / roller / hammer / fridge）；',
+      ' * 注：第 4 张相机与购物组 camera 重复，不生成 —— 家庭组选择器直接复用 camera key。'
+    ],
+    MAP: [
+      ['pendantLamp.svg', 'pendantLamp'],
+      ['tv.svg', 'tv'],
+      ['aircon.svg', 'aircon'],
+      ['roller.svg', 'roller'],
+      ['hammer.svg', 'hammer'],
+      ['fridge.svg', 'fridge']
+    ]
+  },
+  {
+    name: 'gift',
+    out: 'src/components/icons/giftFill.js',
+    exportName: 'GIFT_FILL_ICONS',
+    dir: 'D:/projects/ledger/.vectorize-work/svg',
+    extractor: 'g',
+    header: [
+      ' * 人情组·填充风图标（S8-11，由 scripts/convert-fill-icons.mjs 从用户 PNG 矢量化生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 7 张 PNG（豆包 AI 线稿，.vectorize-work/vectorize.py 矢量化）。',
+      ' * 同 key 覆盖 2 个旧 key（gift / redpacket，红包种子分类自动换新）；',
+      ' * 其余 4 个是新 key（reward / heart / doubleHeart / coinBag）。',
+      ' * 注：第 7 张（dome+双环）内容待用户确认，暂未接入（SVG 存 .vectorize-work/svg/mystery.svg）。'
+    ],
+    MAP: [
+      ['reward.svg', 'reward'],
+      ['redpacket.svg', 'redpacket'],
+      ['heart.svg', 'heart'],
+      ['gift.svg', 'gift'],
+      ['doubleHeart.svg', 'doubleHeart'],
+      ['coinBag.svg', 'coinBag']
+    ]
   }
 ]
 

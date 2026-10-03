@@ -5,7 +5,8 @@
 
 ## 阶段
 Vue3+Vite 记账 App。**S0–S8 全部完成**（S8-1 备份/导入、S8-2 同步状态、S8-3 恢复模式、
-S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8/S8-9 吃喝/购物组填充风图标）。
+S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~S8-10 六组填充风图标共 67 张
+——吃喝/购物/运动/交通/娱乐/住房，均已部署）。
 云端=用户自有腾讯云 CloudBase（envId 只在 `.env.local`）。剩余上线项：正式域名
 （tcloudbaseapp 测试域名现带免责提示页）、真机终验、打 v1.0.0。标签 v0.1~v0.5 已打。
 
@@ -13,11 +14,13 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8/
 - 视图不直调 adapter，只用 `api/index.js` 代理的 repo 与 Pinia store；写操作 local-first + `outbox.enqueue`。
 - 业务/合并规则只在 `src/api/core/` 写一次；后端可替换（换厂商只动适配器层，已两次生效）。
 - 云端资源一律 `ledger` 前缀，出口 `src/config/cloud.js`，不手写资源名。
-- **图标两套风格共用 24×24 画布**：旧线性 stroke=currentColor；吃喝/购物组填充风在
-  `icons/foodFill.js`、`shopFill.js`（`<g stroke="none" transform="scale(24/512)">` 外壳）。
-  **别手改路径**，重生成跑 `node scripts/convert-fill-icons.mjs`（多批次 BATCHES 配置，
+- **图标两套风格共用 24×24 画布**：旧线性 stroke=currentColor；六组填充风在
+  `icons/{food,shop,sport,transport,fun,house}Fill.js`（`<g stroke="none" transform="scale(24/512)">`
+  外壳）。**别手改路径**，重生成跑 `node scripts/convert-fill-icons.mjs`（多批次 BATCHES 配置，
   加新批次往里加再重跑；预览页 `node scripts/build-icon-preview.mjs` 生成）。
   大小调 `CATEGORY_ICON_RATIO`（icons/index.js，现 0.65）。新 key 要进 `ICON_GROUPS` 对应组。
+  ⚠️ `ticket`（种子「演出」在用）从未定义过，渲染兜底「更多」圆点——待补图或换 key。
+- `test:data` 当前 **784 条**；gate-test 第 8 节是六模块循环，加新图标批次会自动吃进去。
 
 ## 高频陷阱
 - **账单 store 两份切片勿合并**：首页 `month/bills/summary`；账单页+统计页 `period*`
@@ -39,8 +42,8 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8/
 - 水位线只认 `_serverTs` 严格单调；**推送被拒必须回拉**。种子 `updatedAt=0` 不影响回拉。
 - **IDB 连接会被 Chromium 杀**：连接层探活+自动重连，打开失败的拒绝不能被缓存。
 - **身份切换后 store 必须刷两次**（sync 完成后再 `resetLoadedStores()`，含 `bill.periodInitialized`）。
-- `npm run test:data` **十脚本 769 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition124/gate75/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
+- `npm run test:data` **十脚本 784 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition124/gate90/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
 
 ## 清理/迁移纪律（S8-5/8-7，已删的东西别加回来）
 - 判据：从写入到读取有没有消费者。已删：账单 `noReimburse`/`version`、账本 `ownerId`、

@@ -6,8 +6,8 @@
  * 约定：
  *  - 默认 fill: none，stroke: currentColor
  *  - 需要在描边图标上点缀实心元素时，显式写 fill="currentColor" stroke="none"
- *  - S8-8/S8-9 起吃喝组、购物组混入填充风图标（foodFill.js / shopFill.js，
- *    fill="currentColor" stroke="none"），两种风格共用同一张 24×24 画布与 currentColor 主题联动
+ *  - S8-8 起各分组陆续混入填充风图标（各 *Fill.js，fill="currentColor" stroke="none"），
+ *    两种风格共用同一张 24×24 画布与 currentColor 主题联动
  */
 import { FOOD_FILL_ICONS } from './foodFill.js'
 import { SHOP_FILL_ICONS } from './shopFill.js'
@@ -15,9 +15,15 @@ import { SPORT_FILL_ICONS } from './sportFill.js'
 import { TRANSPORT_FILL_ICONS } from './transportFill.js'
 import { FUN_FILL_ICONS } from './funFill.js'
 import { HOUSE_FILL_ICONS } from './houseFill.js'
+import { STUDY_FILL_ICONS } from './studyFill.js'
+import { FAMILY_FILL_ICONS } from './familyFill.js'
+import { GIFT_FILL_ICONS } from './giftFill.js'
 
 /** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import 各 *Fill.js */
-export { FOOD_FILL_ICONS, SHOP_FILL_ICONS, SPORT_FILL_ICONS, TRANSPORT_FILL_ICONS, FUN_FILL_ICONS, HOUSE_FILL_ICONS }
+export {
+  FOOD_FILL_ICONS, SHOP_FILL_ICONS, SPORT_FILL_ICONS, TRANSPORT_FILL_ICONS,
+  FUN_FILL_ICONS, HOUSE_FILL_ICONS, STUDY_FILL_ICONS, FAMILY_FILL_ICONS, GIFT_FILL_ICONS
+}
 
 /**
  * 分类图标的「图标 / 圆底」尺寸比 —— ★ 调图标大小就改这一个数 ★
@@ -241,7 +247,10 @@ export const ICONS = {
   ...SPORT_FILL_ICONS,
   ...TRANSPORT_FILL_ICONS,
   ...FUN_FILL_ICONS,
-  ...HOUSE_FILL_ICONS
+  ...HOUSE_FILL_ICONS,
+  ...STUDY_FILL_ICONS,
+  ...FAMILY_FILL_ICONS,
+  ...GIFT_FILL_ICONS
 }
 
 /** 图标选择器的分组（顺序与截图左右两栏一致） */
@@ -313,17 +322,29 @@ export const ICON_GROUPS = [
   {
     key: 'gift',
     label: '人情',
-    icons: ['gift', 'redpacket', 'flower', 'candy', 'wineglass', 'cakeGift']
+    icons: [
+      /* S8-11 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'gift', 'redpacket', 'reward', 'heart', 'doubleHeart', 'coinBag',
+      'flower', 'candy', 'wineglass', 'cakeGift'
+    ]
   },
   {
     key: 'family',
     label: '家庭',
-    icons: ['family', 'baby', 'pet', 'elder', 'child', 'school']
+    icons: [
+      /* S8-11 起前面这些是填充风新图标（user 手绘）；camera 与购物组共用同一张 */
+      'pendantLamp', 'tv', 'aircon', 'camera', 'roller', 'hammer', 'fridge',
+      'family', 'baby', 'pet', 'elder', 'child', 'school'
+    ]
   },
   {
     key: 'study',
     label: '学习',
-    icons: ['book', 'notebook', 'pen', 'cap', 'lightbulb', 'microphone']
+    icons: [
+      /* S8-11 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'backpack', 'cap', 'book', 'pen', 'training', 'teach', 'palette',
+      'notebook', 'lightbulb', 'microphone'
+    ]
   },
   {
     key: 'medical',
