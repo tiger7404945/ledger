@@ -1893,3 +1893,31 @@ gate 循环扩到 **十四模块**（99 → **114**），8d 改为「全部 expo
 ---
 
 *本文件随第二阶段推进持续更新。每完成一个 S，回来把对应的验收项勾上，并更新第 6 节的里程碑状态。*
+
+## S8-13：film 图标居中修复 + 居中度审计 + 种子图标重排名单（2026-10-03）
+
+**问题**：娱乐组 `film`（film-reel）在圆底里明显偏移。居中度审计（新增
+`scripts/build-center-audit.mjs` → `.preview/center-audit.html`，浏览器里量每枚图标的
+墨迹包围盒）证实：**114 枚里只有它一枚**偏出（Δ(79, −82)，且只有 285×278）——
+源目录里的 `film-reel.svg` 是张没铺满画布的版本，shell 抽取器不做居中，原样进了产物。
+
+**修复**：用户重出了一张 445×434、中心 (256, 255.5) 的 film-reel.svg 放回源目录，
+重跑 `convert-fill-icons.mjs` 即替换（管线例行操作）。重跑审计：**0 枚偏移 >20px**。
+
+**顺手**：
+- 用户同日在 seed.js 里重排了 8 个种子分类的图标（零食 can→popsicle、日用 box→toiletPaper、
+  房租 bed→rent、家居 bolt→bed、打车 taxi→car、高铁 train→tram、**演出 ticket→moneyBag
+  （顺带解决 ticket 从未定义的存量问题）**、送礼 flower→gift），并在 index.js 里删了
+  8 个不要的旧线性图标（can/fries/sushi/fish/run/yoga/microphone/spa）。
+- 种子改图标**只对新装库生效**（只在 `empty-source` 播），所以把 8 条全部列进
+  `CATEGORY_ICON_REFRESH`（现共 9 条），老设备每次 init 自动换新。
+- partition-test 第 19 节重写：模拟老设备「倒回旧图标」再启动（原断言用新种子播种，
+  刷新是空操作、测了个寂寞），124 → 126 条。
+
+**部署事故与教训**：Git Bash 里 `tcb hosting deploy ./dist /` 的裸 `/` 被 MSYS 路径改写吃成
+`C:/Users/DELL/.../PortableGit/versions/1.2.0/`，5 个文件传到了错误前缀下。**Git Bash 调
+CLI 别传裸 `/`，省略 cloudPath 即传根目录**；误传文件按精确 key 逐个 delete 清掉。
+另发现用户当天已自行用 CLI 部署 4 次（17:23~17:57），攒了 5 个孤儿哈希包，一并清理。
+
+**回归**：`test:data` **810 条全绿**（partition 126）；构建 1132KB / gzip 389KB；
+线上 `index-CZim_FTQ.js` 200 核验通过，托管收敛到 11 个文件。

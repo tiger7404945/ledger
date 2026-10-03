@@ -68,23 +68,23 @@ const CATEGORY_TREE = [
   {
     key: 'snack',
     name: '零食',
-    icon: 'can',
+    icon: 'popsicle',
     subs: [
       { key: 'snack-fruit', name: '水果', icon: 'apple' },
       { key: 'snack-milktea', name: '奶茶', icon: 'bubbleTea' },
       { key: 'snack-dessert', name: '甜品', icon: 'cake' }
     ]
   },
-  { key: 'daily', name: '日用', icon: 'box' },
+  { key: 'daily', name: '日用', icon: 'toiletPaper' },
   {
     key: 'house',
     name: '住房',
     icon: 'house',
     subs: [
-      { key: 'house-rent', name: '房租', icon: 'bed' },
+      { key: 'house-rent', name: '房租', icon: 'rent' },
       { key: 'house-utility', name: '水电燃气', icon: 'drop' },
       { key: 'house-property', name: '物业费', icon: 'houseLoan' },
-      { key: 'house-furniture', name: '家居', icon: 'bolt' }
+      { key: 'house-furniture', name: '家居', icon: 'bed' }
     ]
   },
   {
@@ -93,9 +93,9 @@ const CATEGORY_TREE = [
     icon: 'bus',
     subs: [
       { key: 'traffic-bus', name: '公交地铁', icon: 'bus' },
-      { key: 'traffic-taxi', name: '打车租车', icon: 'taxi' },
+      { key: 'traffic-taxi', name: '打车租车', icon: 'car' },
       { key: 'traffic-parking', name: '停车费', icon: 'parking' },
-      { key: 'traffic-train', name: '火车高铁', icon: 'train' },
+      { key: 'traffic-train', name: '火车高铁', icon: 'tram' },
       { key: 'traffic-fuel', name: '加油', icon: 'fuel' }
     ]
   },
@@ -107,7 +107,7 @@ const CATEGORY_TREE = [
     subs: [
       { key: 'fun-movie', name: '电影', icon: 'film' },
       { key: 'fun-game', name: '游戏', icon: 'gamepad' },
-      { key: 'fun-show', name: '演出', icon: 'ticket' }
+      { key: 'fun-show', name: '演出', icon: 'moneyBag' }
     ]
   },
   { key: 'broadband', name: '宽带', icon: 'wifi' },
@@ -119,15 +119,15 @@ const CATEGORY_TREE = [
     subs: [
       { key: 'gift-redpacket', name: '红包', icon: 'redpacket' },
       { key: 'gift-treat', name: '请客', icon: 'wineglass' },
-      { key: 'gift-present', name: '送礼', icon: 'flower' }
+      { key: 'gift-present', name: '送礼', icon: 'gift' }
     ]
   },
   { key: 'shopping', name: '购物', icon: 'cart' },
-  { key: 'other', name: '其它', icon: 'more' },
   { key: 'repair', name: '维修保养', icon: 'car' },
   { key: 'medical', name: '医疗', icon: 'medkit' },
   { key: 'edu', name: '教育', icon: 'cap' },
-  { key: 'insurance', name: '保险', icon: 'membership' }
+  { key: 'insurance', name: '保险', icon: 'membership' },
+  { key: 'other', name: '其它', icon: 'more' }
 ]
 
 const INCOME_TREE = [
@@ -168,7 +168,19 @@ export const REMOVED_SEED_CATEGORY_IDS = [CAT_ID('goose')]
  *    说明他有偏好，我们不覆盖。同样刻意不动 `updatedAt`、不入 outbox
  *    （改图标是视觉刷新，不是数据变更，抬时间戳会把它判成「本地更新」推上云端）。
  */
-export const CATEGORY_ICON_REFRESH = [{ id: SUB_ID('snack-milktea'), from: 'lollipop', to: 'bubbleTea' }]
+export const CATEGORY_ICON_REFRESH = [
+  { id: SUB_ID('snack-milktea'), from: 'lollipop', to: 'bubbleTea' },
+  /* 2026-10-03：种子分类图标重排 —— 老设备的分类记录里存的是旧 key，
+     种子改了不会自动生效（只在 `empty-source` 播种），所以逐条列进名单 */
+  { id: CAT_ID('snack'), from: 'can', to: 'popsicle' },
+  { id: CAT_ID('daily'), from: 'box', to: 'toiletPaper' },
+  { id: SUB_ID('house-rent'), from: 'bed', to: 'rent' },
+  { id: SUB_ID('house-furniture'), from: 'bolt', to: 'bed' },
+  { id: SUB_ID('traffic-taxi'), from: 'taxi', to: 'car' },
+  { id: SUB_ID('traffic-train'), from: 'train', to: 'tram' },
+  { id: SUB_ID('fun-show'), from: 'ticket', to: 'moneyBag' },
+  { id: SUB_ID('gift-present'), from: 'flower', to: 'gift' }
+]
 
 /**
  * 账单模板：offset = 距今天数（0 = 今天）

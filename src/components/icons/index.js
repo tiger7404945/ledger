@@ -44,7 +44,6 @@ export const CATEGORY_ICON_RATIO = 0.65
 
 export const ICONS = {
   /* ================= 吃喝 ================= */
-  can: '<ellipse cx="12" cy="6.8" rx="4.6" ry="2.4"/><path d="M7.4 6.8v10.4a4.6 2.4 0 0 0 9.2 0V6.8"/><path d="M10.2 12.4c.9-1 1.8-1 2.7 0s1.8 1 2.7 0"/>',
   lollipop:
     '<circle cx="10" cy="9.6" r="5.2"/><path d="M10 6.4a3.2 3.2 0 0 1 3.2 3.2"/><path d="M13.8 13.4 20 19.6"/>',
   bowl: '<path d="M3.4 11.6h17.2a8.6 8.6 0 0 1-17.2 0Z"/><path d="M10 8.4c0-1.1 2-1.3 2-2.4M14.4 8.4c0-1.1 2-1.3 2-2.4"/>',
@@ -57,17 +56,12 @@ export const ICONS = {
     '<path d="M8.8 20.6 3.8 15.6a3.6 3.6 0 0 1 .4-5.2 3.6 3.6 0 0 1 5.2-.4l5 5a7.2 7.2 0 0 1-5.6 5.6Z"/><path d="M14.6 6.4 16.6 4.2M16.6 9 19.6 7.6M12.6 4.4 13.6 2.2"/><path d="M7.4 12.6l1.6 1.6M9.6 10.4l1.6 1.6"/>',
   apple:
     '<path d="M12 8.6c-1.6-2-4.5-1.6-5.6.6-1.1 2.2.2 5.9 2.3 7.9 1 1 2.3 1 3.3 0 1 1 2.3 1 3.3 0 2.1-2 3.4-5.7 2.3-7.9-1.1-2.2-4-2.6-5.6-.6Z"/><path d="M12 8.6V5.6"/><path d="M12 5.6c.8-1.3 2.1-1.7 2.9-1.6"/>',
-  fries:
-    '<path d="M6.6 9.6h10.8l1 10.8H5.6l1-10.8Z"/><path d="M9.2 9.6V4.4M12 9.6V3.2M14.8 9.6V4.6"/><path d="M7.2 14.2h9.6"/>',
   cutlery:
     '<path d="M6.6 3.2v5.6a2.3 2.3 0 0 0 4.6 0V3.2"/><path d="M8.9 8.8v12"/><path d="M16.6 3.2c-1.6 1.5-2.4 3.5-2.4 5.6 0 1.8.8 3.3 2.4 3.8v8.2"/>',
   cocktail:
     '<path d="M4.4 4.4h11.2L10 11.6 4.4 4.4Z"/><path d="M10 11.6v7.6"/><path d="M6.6 19.2h6.8"/>',
-  sushi:
-    '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="3.6"/><path d="M5.6 12h1.8M16.6 12h1.8"/>',
   chopsticks:
     '<path d="M3.4 20.6 12.6 4.4M7 21 15.2 5.2"/><path d="M11.2 13.6h9.4a4.7 4.7 0 0 1-9.4 0Z"/>',
-  fish: '<path d="M2.6 12c2.8-4.4 7.6-6 11.4-3.2L17.6 6v12l-3.6-2.8C10.2 18 5.4 16.4 2.6 12Z"/><circle cx="7" cy="11" r=".8" fill="currentColor" stroke="none"/>',
 
   /* ================= 购物 ================= */
   bag: '<path d="M5.4 8.4h13.2l1 11.2a1 1 0 0 1-1 1.1H5.4a1 1 0 0 1-1-1.1l1-11.2Z"/><path d="M8.8 8.4V6.6a3.2 3.2 0 0 1 6.4 0v1.8"/>',
@@ -147,8 +141,7 @@ export const ICONS = {
   dumbbell:
     '<path d="M6.4 9.4v5.2M3.6 8v8M17.6 8v8M20.4 9.4v5.2"/><path d="M6.4 12h11.2"/>',
   swim: '<path d="M3.6 17c1.6-1.4 3.2-1.4 4.8 0s3.2 1.4 4.8 0 3.2-1.4 4.8 0"/><path d="M3.6 20.4c1.6-1.4 3.2-1.4 4.8 0s3.2 1.4 4.8 0 3.2-1.4 4.8 0"/><circle cx="16.6" cy="7.4" r="2"/><path d="M12.8 12.8 7.4 11.4"/>',
-  run: '<circle cx="14.6" cy="5.2" r="2"/><path d="M12.8 20.4 14.4 15l-3.4-2.4 1.2-4.2 3.2 1.8 3 1"/><path d="M10.4 12.6 6 13.8M15.8 15l3 3.2"/>',
-  yoga: '<circle cx="12" cy="5.4" r="2.2"/><path d="M12 9v4.4M12 13.4 7 16M12 13.4 17 16M8.4 20.4 12 17l3.6 3.4"/>',
+  
 
   /* ================= 人情 ================= */
   gift: '<rect x="3.4" y="9.4" width="17.2" height="4" rx="1"/><path d="M4.8 13.4v7h14.4v-7"/><path d="M12 9.4v11"/><path d="M12 9.4C10.6 9.4 7.4 9.4 7.4 7a2.2 2.2 0 0 1 4.6 0c0 2.4 0 2.4 0 2.4Zm0 0c1.4 0 4.6 0 4.6-2.4a2.2 2.2 0 0 0-4.6 0Z"/>',
@@ -181,8 +174,6 @@ export const ICONS = {
   cap: '<path d="M2.8 9.4 12 5l9.2 4.4L12 13.8 2.8 9.4Z"/><path d="M6.4 11.6v4.6c0 1.6 2.6 2.8 5.6 2.8s5.6-1.2 5.6-2.8v-4.6"/><path d="M20.4 10.4v5.2"/>',
   lightbulb:
     '<path d="M9.4 17.4a6.2 6.2 0 1 1 5.2 0v1.6H9.4v-1.6Z"/><path d="M9.6 21.4h4.8"/>',
-  microphone:
-    '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.6 11.6a6.4 6.4 0 0 0 12.8 0"/><path d="M12 18v3.2M9 21.2h6"/>',
 
   /* ================= 医疗 ================= */
   medkit:
@@ -194,7 +185,6 @@ export const ICONS = {
     '<path d="M14.6 13.6V5.2a2.6 2.6 0 0 0-5.2 0v8.4a4.6 4.6 0 1 0 5.2 0Z"/><circle cx="12" cy="17.6" r="1.2" fill="currentColor" stroke="none"/>',
   syringe:
     '<path d="M4.6 19.4 14.8 9.2M17.4 3.6 20.4 6.6M16 5 19 8M9.4 14.6l-1.6-1.6M12.4 11.6 10.8 10"/><path d="M3.4 20.6l2.2-.6-1.6-1.6-.6 2.2Z"/>',
-  spa: '<path d="M12 20.4c0-4.6 2-8.6 5.4-10.8-1 5-2.8 8.6-5.4 10.8Z"/><path d="M12 20.4c0-4.6-2-8.6-5.4-10.8 1 5 2.8 8.6 5.4 10.8Z"/><path d="M12 20.4V9.2"/><path d="M12 9.2a2.6 2.6 0 1 1 0-5.2 2.6 2.6 0 0 1 0 5.2Z"/>',
 
   /* ================= 其它 / 会员卡 ================= */
   more: '<circle cx="5.4" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="18.6" cy="12" r="1.4" fill="currentColor" stroke="none"/>',
@@ -274,8 +264,7 @@ export const ICON_GROUPS = [
       'bowl', 'cutlery', 'burger', 'bubbleTea', 'coffeeCup',
       'beer', 'cake', 'candy', 'iceCream', 'popsicle',
       'friedEgg', 'springRoll', 'honeyJar', 'apple', 'carrot',
-      'cocktail', 'can', 'lollipop', 'popcorn', 'fries',
-      'sushi', 'chopsticks', 'fish', 'cakeGift'
+      'cocktail', 'lollipop', 'chopsticks'
     ]
   },
   {
@@ -327,7 +316,7 @@ export const ICON_GROUPS = [
       /* S8-10 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
       'basketball', 'dumbbell', 'swim', 'badminton', 'billiards',
       'climbing', 'fishing', 'racket', 'runningShoe',
-      'football', 'run', 'yoga'
+      'football'
     ]
   },
   {
@@ -362,7 +351,7 @@ export const ICON_GROUPS = [
     icons: [
       /* S8-11 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
       'backpack', 'cap', 'book', 'pen', 'training', 'teach', 'palette',
-      'notebook', 'lightbulb', 'microphone'
+      'notebook', 'lightbulb'
     ]
   },
   {
@@ -370,7 +359,7 @@ export const ICON_GROUPS = [
     label: '医疗',
     icons: [
       /* S8-12 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
-      'medkit', 'pill', 'hospital', 'syringe', 'tooth', 'thermometer', 'spa'
+      'medkit', 'pill', 'hospital', 'syringe', 'tooth', 'thermometer'
     ]
   },
   {

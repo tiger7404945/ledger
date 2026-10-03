@@ -22,9 +22,14 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
   **PNG 源先矢量化**：`.vectorize-work/vectorize.py`（venv+vtracer，128 阈值、512 工作分辨率、
   IoU 自检）产出 512 画布 currentColor SVG → 喂 `g` extractor，后续管线同 SVG 批次。
   大小调 `CATEGORY_ICON_RATIO`（icons/index.js，现 0.65）。新 key 要进 `ICON_GROUPS` 对应组。
-  ⚠️ `ticket`（种子「演出」在用）从未定义过，渲染兜底「更多」圆点——待补图或换 key；
+  **shell 抽取器不居中**：源 SVG 主体没铺满 512 画布，图标就会在圆底里偏——跑
+  `node scripts/build-center-audit.mjs`（打开 `.preview/center-audit.html`）量墨迹包围盒把关。
   人情第 7 张（mystery.svg）内容待用户确认未接入。
-- `test:data` 当前 **808 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
+- `test:data` 当前 **810 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
+- **部署走本机 CLI**：`tcb hosting deploy ./dist -e my-cloudbase-********`
+  （tcb 在 `~/.workbuddy/binaries/node/cli-connector-packages/`，已登录）。**Git Bash 里
+  别传裸 `/` 当 cloudPath**（MSYS 会改写成 PortableGit 路径），省略即传根目录。
+  旧哈希包要手动 `hosting delete` 清，**别用 `--prune`**（会连 cloud-admin/`__auth` 一起删）。
 
 ## 高频陷阱
 - **账单 store 两份切片勿合并**：首页 `month/bills/summary`；账单页+统计页 `period*`
@@ -46,8 +51,8 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
 - 水位线只认 `_serverTs` 严格单调；**推送被拒必须回拉**。种子 `updatedAt=0` 不影响回拉。
 - **IDB 连接会被 Chromium 杀**：连接层探活+自动重连，打开失败的拒绝不能被缓存。
 - **身份切换后 store 必须刷两次**（sync 完成后再 `resetLoadedStores()`，含 `bill.periodInitialized`）。
-- `npm run test:data` **十脚本 808 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition124/gate114/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
+- `npm run test:data` **十脚本 810 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
+  cloudid42/partition126/gate114/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
 
 ## 清理/迁移纪律（S8-5/8-7，已删的东西别加回来）
 - 判据：从写入到读取有没有消费者。已删：账单 `noReimburse`/`version`、账本 `ownerId`、

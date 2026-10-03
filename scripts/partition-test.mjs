@@ -845,41 +845,76 @@ t.group('17. ★ S8-5：废弃字段清理与 month 死索引')
 {
   const { buildSeed, CATEGORY_ICON_REFRESH } = await import(`${SRC}api/mock/seed.js`)
 
-  t.eq('19a ★ 换新名单就一条：奶茶 lollipop → bubbleTea', CATEGORY_ICON_REFRESH, [
-    { id: 'sub_snack-milktea', from: 'lollipop', to: 'bubbleTea' }
+  t.eq('19a ★ 换新名单九条：奶茶 + 8 条种子分类图标重排（每条都是固定 id + from→to）', CATEGORY_ICON_REFRESH, [
+    { id: 'sub_snack-milktea', from: 'lollipop', to: 'bubbleTea' },
+    { id: 'cat_snack', from: 'can', to: 'popsicle' },
+    { id: 'cat_daily', from: 'box', to: 'toiletPaper' },
+    { id: 'sub_house-rent', from: 'bed', to: 'rent' },
+    { id: 'sub_house-furniture', from: 'bolt', to: 'bed' },
+    { id: 'sub_traffic-taxi', from: 'taxi', to: 'car' },
+    { id: 'sub_traffic-train', from: 'train', to: 'tram' },
+    { id: 'sub_fun-show', from: 'ticket', to: 'moneyBag' },
+    { id: 'sub_gift-present', from: 'flower', to: 'gift' }
   ])
+  const seedIcons = Object.fromEntries(
+    buildSeed(1, { mode: 'base' }).categories.map((c) => [c.id, c.icon])
+  )
+  t.ok(
+    '19a2 ★★ 名单每条都指向真实种子分类（固定 id）、`from !== to`、且 `to` 与当前种子图标一致',
+    CATEGORY_ICON_REFRESH.every(
+      (r) => /^(cat|sub)_[a-z-]+$/.test(r.id) && r.from !== r.to && seedIcons[r.id] === r.to
+    )
+  )
 
   const iconDb = nextDb('icon')
   const rawIcon = await openDB({ dbName: iconDb, version: DB_VERSION })
   await writeMeta(rawIcon, { [META_KEYS.SCHEMA]: SCHEMA_VERSION })
   const seedBase = buildSeed(1, { mode: 'base' })
-  await putMany(rawIcon, STORES.CATEGORY, seedBase.categories)
+  /* 模拟「老设备」：先按当前种子播种，再把名单里的分类**倒回旧图标（from）**，
+     否则库里一开始就是新图标，刷新会变成空操作、测了个寂寞 */
+  const legacy = seedBase.categories.map((c) => {
+    const r = CATEGORY_ICON_REFRESH.find((x) => x.id === c.id)
+    return r ? { ...c, icon: r.from } : c
+  })
+  await putMany(rawIcon, STORES.CATEGORY, legacy)
+  const before = Object.fromEntries(legacy.map((c) => [c.id, { icon: c.icon, updatedAt: c.updatedAt }]))
   rawIcon.close()
 
   const iconAdapter = createIdbAdapter({ dbName: iconDb, seed: false })
   await iconAdapter.ready()
 
   const cats = await readAll(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY)
-  const milktea = cats.find((c) => c.id === 'sub_snack-milktea')
-  t.eq('19b ★ 已播种过的库里，奶茶的图标被刷成 bubbleTea', milktea?.icon, 'bubbleTea')
+  const after = Object.fromEntries(cats.map((c) => [c.id, { icon: c.icon, updatedAt: c.updatedAt }]))
+  const targets = CATEGORY_ICON_REFRESH.map((r) => r.id)
   t.ok(
-    '19c ★ 其它分类的图标一个都没动（名单外零波及）',
-    cats.filter((c) => c.id !== 'sub_snack-milktea' && !seedBase.categories.find((s) => s.id === c.id && s.icon === c.icon)).length === 0
+    '19b ★★ 九条名单全部按 from→to 刷新生效（老设备倒回旧图标后启动即换新）',
+    CATEGORY_ICON_REFRESH.every((r) => after[r.id]?.icon === r.to)
   )
-  t.eq('19d 刷新不动 updatedAt（视觉刷新不是数据变更）', milktea?.updatedAt, seedBase.categories.find((c) => c.id === 'sub_snack-milktea').updatedAt)
+  t.ok(
+    '19c ★★ 名单之外的分类图标一个都没动（零波及）',
+    Object.keys(after).every((id) => targets.includes(id) || after[id].icon === before[id].icon)
+  )
+  t.ok(
+    '19d ★★ 刷新不动 updatedAt（视觉刷新不是数据变更，抬时间戳会被判成「本地更新」推上云端）',
+    targets.every((id) => after[id].updatedAt === before[id].updatedAt)
+  )
   t.eq('19e 队列干净（不入 outbox）', await iconAdapter.outbox.pendingCount(), 0)
 
-  /* ---- 19B：守卫生效 —— 用户自己改过图标的分类不被覆盖 ---- */
-  const appleDoc = cats.find((c) => c.id === 'sub_snack-fruit')
+  /* ---- 19B：守卫生效 —— 名单内但用户自己改过图标的，不覆盖 ---- */
+  const showDoc = cats.find((c) => c.id === 'sub_fun-show')
   await putMany(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY, [
-    { ...appleDoc, icon: 'diamond' } // 用户把「水果」的图标改成了钻石
+    { ...showDoc, icon: 'diamond' } // 用户在「演出」上自己挑了钻石图标
   ])
   const againAdapter = createIdbAdapter({ dbName: iconDb, seed: false })
   await againAdapter.ready()
   const catsAgain = await readAll(await openDB({ dbName: iconDb, version: DB_VERSION }), STORES.CATEGORY)
   t.ok(
-    '19f ★★ 用户改过的图标（diamond）原样保留 —— 守卫是「=== from 才动」',
-    catsAgain.find((c) => c.id === 'sub_snack-fruit')?.icon === 'diamond'
+    '19f ★★ 名单内但用户改过的图标（diamond）原样保留 —— 守卫是「=== from 才动」',
+    catsAgain.find((c) => c.id === 'sub_fun-show')?.icon === 'diamond'
+  )
+  t.ok(
+    '19g ★★ 同一轮里其它名单项照常刷新（守卫不误伤）',
+    catsAgain.find((c) => c.id === 'cat_daily')?.icon === 'toiletPaper'
   )
 }
 
