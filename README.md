@@ -419,7 +419,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   - `backup-test.mjs` —— 数据备份（102 条断言）：导出格式（白名单字段、软删除墓碑与同步元数据不进文件）、解析校验（坏数据逐条跳过不打断整份、版本过新整份拒绝）、合并计划三分支（新增 / 更新 / 跳过）、**「导出 → 空库导入 → 再导一次」往返幂等**、旧备份不覆盖本地新数据、**恢复计划四分支（新增 / 覆盖 / 复活 / 软删清除）+ 「导出 → 误删 → 恢复」端到端 + 恢复两次幂等 + 账本保护 + 「清除只写墓碑不做物理删除」**、导入入同步队列、身份凭据（uid）不泄漏进文件、「导入过门禁 / 导出不过门禁 / 恢复必经二次确认」静态守卫；**S8-5 新增**已删字段（`noReimburse` / `version` / `ownerId`）既不被导出也不被导入
   - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
-- 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
+- 参考截图（`微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`）只存本地不入库；页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
 - **接手项目先读 `软件设计文档.md`**（SDD）：以「现状」而非「决策过程」组织的结构说明书 —— 分层架构、7 条关键时序图、逐模块接口清单、UML 类图与状态机、**数据库 schema 逐字段说明**（含字段生命周期与设计审视）、横切关注点、测试覆盖与常见改动指引。所有图用 Mermaid 绘制，可直接渲染。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
   1. **免费环境要手动续期**：单次 6 个月、不支持自动续费 —— **续期提醒已设，环境到期 2027-03-30**。

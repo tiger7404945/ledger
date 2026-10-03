@@ -37,6 +37,12 @@ skills-lock.json
 .wbapp_*.genie
 .workbuddy/applications.yaml
 
+# ---- 参考截图（仅本地留存，不入库）----
+/微信图片_*.jpg
+/填写备注.jpg
+/月选择器.jpg
+/年选择器.jpg
+
 # PNG 矢量化工作目录（S8-11）：只入库 svg 产物与脚本，venv/中间产物不入
 .venv/
 .vectorize-work/svg/_base_*.npy
