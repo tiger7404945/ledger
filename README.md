@@ -20,6 +20,25 @@ npm run build     # 产物输出到 dist/
 npm run test:data # 数据层断言（契约一致性 + 区间/汇总 + 种子 + 迁移 + 同步引擎 + 并发边界 + 云端 id + 库分区 + 写操作门禁 + 数据备份），共 808 条
 ```
 
+### 打包与部署（静态托管）
+
+产物是纯静态资源，构建后直接推给 CloudBase 静态托管：
+
+```bash
+npm run build                                    # 1) 打包，产物在 dist/
+tcb login                                        # 2) 首次 / 登录过期时授权（设备码流程）
+tcb hosting deploy ./dist / -e <环境ID>           # 3) 上传到托管根目录（index.html 自动最后传）
+```
+
+- **环境 ID** 即 `.env.local` 里的 `VITE_CLOUDBASE_ENV`（当前 `my-cloudbase-********`）。
+- CLI 不在 PATH 时用全路径 `C:\Users\DELL\.workbuddy\binaries\node\cli-connector-packages\tcb`，
+  或 `npx -y @cloudbase/cli`（版本 3.8.5，Bash / PowerShell 都可）。
+- 部署后建议核验：`curl -s https://<默认域名>/ | grep -o 'index-[A-Za-z0-9_-]*\.js'`。
+- **换包会留孤儿**：`dist/assets/` 里的 hashed 产物每次构建都变，旧的那份不会自动删，用
+  `tcb hosting list -e <环境ID>` 查、`tcb hosting delete assets/index-xxx.js -e <环境ID>` 删。
+  ⚠️ **别用 `--prune`**：它会连带删掉「不属于本次发布」的远端文件（比如你自己另传的
+  `cloud-admin/index.html`、平台的 `__auth/**`）。
+
 ### 配置云端（可选）
 
 **不配也能用**——纯本地记账，一切照旧，只是「我的」页会显示"未配置云端"。
