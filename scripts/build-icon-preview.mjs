@@ -6,12 +6,20 @@
 import { writeFileSync } from 'node:fs'
 import { FOOD_FILL_ICONS } from '../src/components/icons/foodFill.js'
 import { SHOP_FILL_ICONS } from '../src/components/icons/shopFill.js'
+import { SPORT_FILL_ICONS } from '../src/components/icons/sportFill.js'
+import { TRANSPORT_FILL_ICONS } from '../src/components/icons/transportFill.js'
+import { FUN_FILL_ICONS } from '../src/components/icons/funFill.js'
+import { HOUSE_FILL_ICONS } from '../src/components/icons/houseFill.js'
 
 const RATIO = 0.65 // 与 index.js 的 CATEGORY_ICON_RATIO 保持一致
 
 const GROUPS = [
   ['吃喝组 · 16 枚', FOOD_FILL_ICONS],
-  ['购物组 · 16 枚', SHOP_FILL_ICONS]
+  ['购物组 · 16 枚', SHOP_FILL_ICONS],
+  ['运动组 · 9 枚', SPORT_FILL_ICONS],
+  ['交通组 · 10 枚', TRANSPORT_FILL_ICONS],
+  ['娱乐组 · 10 枚', FUN_FILL_ICONS],
+  ['住房组 · 6 枚', HOUSE_FILL_ICONS]
 ]
 
 const cell = (key, inner) =>
@@ -22,10 +30,10 @@ const grids = GROUPS.map(
     `<h2>${label}</h2><div class='grid'>${Object.entries(icons).map(([k, v]) => cell(k, v)).join('')}</div>`
 ).join('\n')
 
-const demo = ['bag', 'cart', 'diamond']
+const demo = ['car', 'basketball', 'gamepad']
   .map(
     (k, i) =>
-      `<div style='text-align:center'><span class='disc ${['', 'mint', 'active'][i]}'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor'>${(FOOD_FILL_ICONS[k] || SHOP_FILL_ICONS[k])}</svg></span><div class='tag'>${k}</div></div>`
+      `<div style='text-align:center'><span class='disc ${['', 'mint', 'active'][i]}'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor'>${(FOOD_FILL_ICONS[k] || SHOP_FILL_ICONS[k] || SPORT_FILL_ICONS[k] || TRANSPORT_FILL_ICONS[k] || FUN_FILL_ICONS[k] || HOUSE_FILL_ICONS[k])}</svg></span><div class='tag'>${k}</div></div>`
   )
   .join('')
 
@@ -51,7 +59,7 @@ const html = `<!DOCTYPE html>
   .mint{background:#dcfdf6}
   .active{background:#3fd9b6;color:#fff;box-shadow:0 4px 10px rgba(63,217,182,.35)}
 </style></head><body>
-<h1>填充风图标总览（S8-8 吃喝 + S8-9 购物）</h1>
+<h1>填充风图标总览（S8-8~S8-10 六组 67 枚）</h1>
 <div class='sub'>拖滑杆调「图标 / 圆底」尺寸比 —— App 内对应 src/components/icons/index.js 的 CATEGORY_ICON_RATIO（当前 ${RATIO}）</div>
 <div class='panel'>
   <div class='row'><span style='font-size:12px;color:#6b7c7c'>小</span><input id='r' type='range' min='0.40' max='0.72' step='0.01' value='${RATIO}'><span style='font-size:12px;color:#6b7c7c'>大</span><span class='val' id='v'>${RATIO.toFixed(2)}</span></div>

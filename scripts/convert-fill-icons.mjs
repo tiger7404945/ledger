@@ -82,6 +82,105 @@ const BATCHES = [
       ['toilet-paper.svg', 'toiletPaper'],
       ['ice-skate.svg', 'iceSkate']
     ]
+  },
+  {
+    name: 'sport',
+    out: 'src/components/icons/sportFill.js',
+    exportName: 'SPORT_FILL_ICONS',
+    dir: 'E:/svg-输出-五类/sports',
+    extractor: 'shell',
+    header: [
+      ' * 运动组·填充风图标（S8-10，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 9 张 512×512 填充风 SVG（单 path、每条自带 fill="currentColor"）。',
+      ' * 同 key 覆盖 3 个旧 key（basketball / dumbbell / swim←swimming-pool）；其余 6 个是新 key。',
+      ' * 注：running-shoe 是新 key（不覆盖旧线性 run）。'
+    ],
+    MAP: [
+      ['basketball.svg', 'basketball'],
+      ['dumbbell.svg', 'dumbbell'],
+      ['swimming-pool.svg', 'swim'],
+      ['running-shoe.svg', 'runningShoe'],
+      ['badminton.svg', 'badminton'],
+      ['billiards.svg', 'billiards'],
+      ['climbing.svg', 'climbing'],
+      ['fishing.svg', 'fishing'],
+      ['racket.svg', 'racket']
+    ]
+  },
+  {
+    name: 'traffic',
+    out: 'src/components/icons/transportFill.js',
+    exportName: 'TRANSPORT_FILL_ICONS',
+    dir: 'E:/svg-输出-五类/transport',
+    extractor: 'shell',
+    header: [
+      ' * 交通组·填充风图标（S8-10，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 10 张 512×512 填充风 SVG（单 path、每条自带 fill="currentColor"）。',
+      ' * 同 key 覆盖 7 个旧 key（car / bus / train←high-speed-rail / ship / bike←bicycle /',
+      ' * parking / fuel←gas-pump）；其余 3 个是新 key（metro / tram / charging）。'
+    ],
+    MAP: [
+      ['car.svg', 'car'],
+      ['bus.svg', 'bus'],
+      ['high-speed-rail.svg', 'train'],
+      ['ship.svg', 'ship'],
+      ['bicycle.svg', 'bike'],
+      ['metro.svg', 'metro'],
+      ['tram.svg', 'tram'],
+      ['charging.svg', 'charging'],
+      ['parking.svg', 'parking'],
+      ['gas-pump.svg', 'fuel']
+    ]
+  },
+  {
+    name: 'fun',
+    out: 'src/components/icons/funFill.js',
+    exportName: 'FUN_FILL_ICONS',
+    dir: 'E:/svg-输出-五类/entertainment',
+    extractor: 'shell',
+    header: [
+      ' * 娱乐组·填充风图标（S8-10，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 10 张 512×512 填充风 SVG（单 path、每条自带 fill="currentColor"）。',
+      ' * 同 key 覆盖 4 个旧 key（gamepad / film←film-reel / headset←headphones / microphone）；',
+      ' * 其余 6 个是新 key（mahjong / playingCards / videoPlay / palmTree / hat / moneyBag）。',
+      ' * 注：money-bag 画的实际是红包封，但没覆盖人情组的 redpacket —— 人情组保持旧图标。'
+    ],
+    MAP: [
+      ['gamepad.svg', 'gamepad'],
+      ['film-reel.svg', 'film'],
+      ['headphones.svg', 'headset'],
+      ['microphone.svg', 'microphone'],
+      ['mahjong.svg', 'mahjong'],
+      ['playing-cards.svg', 'playingCards'],
+      ['video-play.svg', 'videoPlay'],
+      ['palm-tree.svg', 'palmTree'],
+      ['hat.svg', 'hat'],
+      ['money-bag.svg', 'moneyBag']
+    ]
+  },
+  {
+    name: 'house',
+    out: 'src/components/icons/houseFill.js',
+    exportName: 'HOUSE_FILL_ICONS',
+    dir: 'E:/svg-输出-五类/housing',
+    extractor: 'shell',
+    header: [
+      ' * 住房组·填充风图标（S8-10，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 6 张 512×512 填充风 SVG（单 path、每条自带 fill="currentColor"）。',
+      ' * 同 key 覆盖 2 个旧 key（bed / house）；其余 4 个是新 key（rent / electricity / gas / telephone）。'
+    ],
+    MAP: [
+      ['house.svg', 'house'],
+      ['bed.svg', 'bed'],
+      ['rent.svg', 'rent'],
+      ['electricity.svg', 'electricity'],
+      ['gas.svg', 'gas'],
+      ['telephone.svg', 'telephone']
+    ]
   }
 ]
 

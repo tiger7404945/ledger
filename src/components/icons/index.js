@@ -11,9 +11,13 @@
  */
 import { FOOD_FILL_ICONS } from './foodFill.js'
 import { SHOP_FILL_ICONS } from './shopFill.js'
+import { SPORT_FILL_ICONS } from './sportFill.js'
+import { TRANSPORT_FILL_ICONS } from './transportFill.js'
+import { FUN_FILL_ICONS } from './funFill.js'
+import { HOUSE_FILL_ICONS } from './houseFill.js'
 
-/** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import foodFill.js / shopFill.js */
-export { FOOD_FILL_ICONS, SHOP_FILL_ICONS }
+/** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import 各 *Fill.js */
+export { FOOD_FILL_ICONS, SHOP_FILL_ICONS, SPORT_FILL_ICONS, TRANSPORT_FILL_ICONS, FUN_FILL_ICONS, HOUSE_FILL_ICONS }
 
 /**
  * 分类图标的「图标 / 圆底」尺寸比 —— ★ 调图标大小就改这一个数 ★
@@ -231,9 +235,13 @@ export const ICONS = {
     '<rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.6" fill="#3fd9b6" stroke="none"/><path d="M7.6 12.4l3 3 5.8-6" stroke="#fff" stroke-width="2"/>',
   'checkbox-off':
     '<rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.6"/>',
-  /* S8-8/S8-9：吃喝、购物两组换用户手绘的填充风图标（同 key 覆盖上面的线性版），放在最后以生效 */
+  /* S8-8~S8-10：吃喝/购物/运动/交通/娱乐/住房六组换用户手绘的填充风图标（同 key 覆盖上面的线性版），放在最后以生效 */
   ...FOOD_FILL_ICONS,
-  ...SHOP_FILL_ICONS
+  ...SHOP_FILL_ICONS,
+  ...SPORT_FILL_ICONS,
+  ...TRANSPORT_FILL_ICONS,
+  ...FUN_FILL_ICONS,
+  ...HOUSE_FILL_ICONS
 }
 
 /** 图标选择器的分组（顺序与截图左右两栏一致） */
@@ -265,26 +273,42 @@ export const ICON_GROUPS = [
   {
     key: 'traffic',
     label: '交通',
-    icons: ['car', 'compass', 'ship', 'train', 'bike', 'bus', 'parking', 'fuel', 'taxi']
+    icons: [
+      /* S8-10 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'car', 'bus', 'train', 'ship', 'bike',
+      'metro', 'tram', 'charging', 'parking', 'fuel',
+      'compass', 'taxi'
+    ]
   },
   {
     key: 'house',
     label: '住房',
-    icons: ['bolt', 'bed', 'flame', 'drop', 'call', 'wifi', 'houseLoan', 'house']
+    icons: [
+      /* S8-10 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'house', 'bed', 'rent', 'electricity', 'gas',
+      'telephone', 'bolt', 'flame', 'drop', 'call', 'wifi', 'houseLoan'
+    ]
   },
   {
     key: 'fun',
     label: '娱乐',
     icons: [
+      /* S8-10 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'gamepad', 'film', 'headset', 'microphone', 'mahjong',
+      'playingCards', 'videoPlay', 'palmTree', 'hat', 'moneyBag',
       'person', 'laptop', 'keypad', 'ticket', 'mask',
-      'laugh', 'film', 'gamepad', 'dart', 'easel',
-      'mic', 'headset'
+      'laugh', 'dart', 'easel', 'mic'
     ]
   },
   {
     key: 'sport',
     label: '运动',
-    icons: ['basketball', 'football', 'dumbbell', 'swim', 'run', 'yoga']
+    icons: [
+      /* S8-10 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'basketball', 'dumbbell', 'swim', 'badminton', 'billiards',
+      'climbing', 'fishing', 'racket', 'runningShoe',
+      'football', 'run', 'yoga'
+    ]
   },
   {
     key: 'gift',

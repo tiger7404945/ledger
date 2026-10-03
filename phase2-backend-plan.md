@@ -1629,6 +1629,35 @@ shopping-cart / smartphone / toilet-paper / tshirt`），替换「购物」组�
 
 ---
 
+### S8-10（2026-10-03）：运动 / 交通 / 娱乐 / 住房四组换填充风图标
+
+用户一次提供四批共 35 张 512×512 填充风 SVG（运动 9、交通 10、娱乐 10、住房 6，全是
+单 path 铺根下、无 `<g>`，走 `shell` extractor）。S8-8~S8-10 累计 **67 张**填充风图标。
+
+**映射（16 覆盖 + 19 新增）**：
+
+- **运动**（`sportFill.js` 74KB）：覆盖 `basketball / dumbbell / swim`←swimming-pool；
+  新增 `runningShoe / badminton / billiards / climbing / fishing / racket`。
+- **交通**（`transportFill.js` 65KB）：覆盖 `car / bus / train`←high-speed-rail / `ship /
+  bike`←bicycle / `parking / fuel`←gas-pump；新增 `metro / tram / charging`。
+- **娱乐**（`funFill.js` 64KB）：覆盖 `gamepad / film`←film-reel / `headset`←headphones /
+  `microphone`；新增 `mahjong / playingCards / videoPlay / palmTree / hat / moneyBag`。
+  ⚠️ money-bag 画的实际是红包封，但**没覆盖人情组的 `redpacket`**——按用户批次归属放进
+  娱乐组当新 key。另：`ticket`（种子「演出」在用）**从未在 ICONS 里定义过**，一直兜底渲染
+  「更多」圆点——存量 bug，本批没给票券图，待用户补图或换 key。
+- **住房**（`houseFill.js` 36KB）：覆盖 `bed / house`；新增 `rent / electricity / gas /
+  telephone`（房租/电费/燃气/电话，正好对应房租、水电燃气等种子二级分类的语义，但种子
+  图标是同 key 覆盖之外的旧 key，**没动 `CATEGORY_ICON_REFRESH`**——要换种子分类的图标
+  得显式改 `CATEGORY_TREE`，那是另一个决定）。
+
+**守卫泛化**：gate 第 8 节的购物专段改写成 **六模块循环**（每模块 3 条：全内联 / 零硬编码色
++ `stroke="none"` 外壳 / 新 key 进组），gate 75 → **90**；`test:data` **784 条全绿**。
+预览页同步扩到六组 67 枚（70 圆底无头渲染全非空）。构建主包 547KB → 793KB
+（gzip 275KB，四批净增约 +54KB gzip）。**本批改完即部署**（CloudBase 连接器已接通，
+静态托管直传 dist，含孤儿产物清理）。
+
+---
+
 ## 5. 云端数据设计
 
 本项目用 **CloudBase 文档型数据库**（不是关系型）：账单本身就是嵌套对象，查询也不需要 JOIN；文档型在 Web SDK 直连上最成熟。
