@@ -30,7 +30,7 @@ tcb login                                        # 2) 首次 / 登录过期时�
 tcb hosting deploy ./dist / -e <环境ID>           # 3) 上传到托管根目录（index.html 自动最后传）
 ```
 
-- **环境 ID** 即 `.env.local` 里的 `VITE_CLOUDBASE_ENV`（当前 `my-cloudbase-********`）。
+- **环境 ID** 即 `.env.local` 里的 `VITE_CLOUDBASE_ENV`（只配置在本机，不入库）。
 - CLI 不在 PATH 时用全路径 `C:\Users\DELL\.workbuddy\binaries\node\cli-connector-packages\tcb`，
   或 `npx -y @cloudbase/cli`（版本 3.8.5，Bash / PowerShell 都可）。
 - 部署后建议核验：`curl -s https://<默认域名>/ | grep -o 'index-[A-Za-z0-9_-]*\.js'`。
@@ -420,6 +420,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   - `_alias-loader.mjs` —— Node 端补 `@/` 别名与扩展名解析的 loader（`gate-test` 要 import store / composable，靠它）
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图见仓库根目录 `微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`，页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
+- **接手项目先读 `软件设计文档.md`**（SDD）：以「现状」而非「决策过程」组织的结构说明书 —— 分层架构、7 条关键时序图、逐模块接口清单、UML 类图与状态机、**数据库 schema 逐字段说明**（含字段生命周期与设计审视）、横切关注点、测试覆盖与常见改动指引。所有图用 Mermaid 绘制，可直接渲染。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
   1. **免费环境要手动续期**：单次 6 个月、不支持自动续费 —— **续期提醒已设，环境到期 2027-03-30**。
   2. **临时域名已就绪**：`<环境ID>-<随机段>.ap-shanghai.app.tcloudbase.com`（平台自带，无需自助加安全域名，当前 404 是因为静态托管还没部署内容）。正式域名待开发测试结束后申请。

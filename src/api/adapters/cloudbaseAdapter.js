@@ -14,7 +14,7 @@
  *    判断依据不是「哪个 SDK 更好」，而是**数据住在哪个环境**。
  *
  * 环境事实（全部实测，不是文档推断）：
- *   环境     my-cloudbase-********（体验版，ap-shanghai）
+ *   环境     my-cloudbase-****（见本机 .env.local，ap-shanghai）
  *   后端     纯 NoSQL（`RuntimeBackends.postgresql === false`）→ 用 app.database() 集合
  *   权限     三个集合都是 PRIVATE（仅创建者可读写），**服务端**按 `_openid` 过滤
  *

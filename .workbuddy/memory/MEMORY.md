@@ -1,7 +1,8 @@
 # 项目长期记忆 · 随手记账（D:\projects\ledger）
 
 > 只留「改动前必须先知道」的规则。细节：`phase2-backend-plan.md`（S0–S9 实施记录）、
-> `CLOUD-S4-NOTES.md`、同目录 `YYYY-MM-DD.md` 日志。
+> **`软件设计文档.md`（S9 产出：结构说明书 —— 分层/8 张时序图/逐模块接口/UML/schema 逐字段/改动指引，
+> 接手先读它；改架构、契约或 schema 时同步更新）**、`CLOUD-S4-NOTES.md`、同目录 `YYYY-MM-DD.md` 日志。
 
 ## 阶段
 Vue3+Vite 记账 App。**S0–S8 全部完成**（S8-1 备份/导入、S8-2 同步状态、S8-3 恢复模式、
@@ -29,7 +30,7 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
 - **⚠️ scoped 类名别撞车**：BillsView 的 `.empty`（空态文字，margin 30px 0）曾套到日历占位格
   `.cell.empty` 上，把 44px 行撑到 104px。占位格类名已固定为 `is-blank`（gate 第 9 节钉住）。
   排 UI 几何问题先无头浏览器实测（量轨高/逐属性二分），别靠猜。
-- **部署走本机 CLI**：`tcb hosting deploy ./dist -e my-cloudbase-********`
+- **部署走本机 CLI**：`tcb hosting deploy ./dist -e <环境ID>`
   （tcb 在 `~/.workbuddy/binaries/node/cli-connector-packages/`，已登录）。**Git Bash 里
   别传裸 `/` 当 cloudPath**（MSYS 会改写成 PortableGit 路径），省略即传根目录。
   旧哈希包要手动 `hosting delete` 清，**别用 `--prune`**（会连 cloud-admin/`__auth` 一起删）。
