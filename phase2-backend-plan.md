@@ -1593,6 +1593,42 @@ soup-bowl / spoon-fork / spring-roll`），要求替换「吃喝」分类的内�
 
 ---
 
+### S8-9（2026-10-03）：购物组换填充风图标
+
+用户提供第二批 16 张 512×512 填充风 SVG（`camera / cosmetics / delivery-truck / diamond /
+ice-skate / mask / monitor / package-box / pants / rubber-duck / scissors / shopping-bag /
+shopping-cart / smartphone / toilet-paper / tshirt`），替换「购物」组图标；后续还有其它批次。
+比例参数用户已自调为 `CATEGORY_ICON_RATIO = 0.65`。
+
+**转换脚本泛化**：`convert-food-icons.mjs` 改名/重写为 **`scripts/convert-fill-icons.mjs`**，
+改成多批次配置（`BATCHES`：目录 + 文件映射 + 输出文件 + extractor）。吃喝批输出与旧脚本
+**逐字节一致**（只有头注释里的脚本名变了）。extractor 两种：
+
+- `g`：源稿是「裸 path 包在 `<g fill=currentColor>` 里」（吃喝批），原样抠出 `<g>` 保其内部变换；
+- `shell`：源稿是「裸 `<path fill=currentColor>` 直接铺在 svg 根下」（购物批），抠掉 svg 壳
+  和 `<title>`。购物批全是**单 path**，无内部变换。
+
+**映射策略**（同 S8-8，key 是数据契约）：
+
+- **10 张直接覆盖旧 key**：`bag / cart / tshirt / diamond / scissors / box / camera /
+  monitor / truck / duck`（truck←delivery-truck、box←package-box、duck←rubber-duck、
+  bag←shopping-bag、cart←shopping-cart）。历史库零迁移自动换新；
+  种子里 `服饰→tshirt`、`购物→cart`、`日用→box` 同 key 被覆盖，**无需动
+  `CATEGORY_ICON_REFRESH`**（那是「key 换 key」才需要的机制）。
+- **6 张新 key 进购物选择器组**：`pants / cosmetics / mirror / smartphone / toiletPaper /
+  iceSkate`，填充风排前面，旧线性 5 枚（bottles/card/jacket/coupon/wallet）保留在后。
+- ⚠️ 源文件 `mask.svg` 实际画的是**化妆镜**（`<title>mirror</title>`），故 key 取 `mirror`
+  而非覆盖娱乐组的 `mask`（舞会面具）—— 按文件名映射会撞车。
+- 产出 `src/components/icons/shopFill.js`（87KB，吃喝 180KB + 购物 87KB → 主包
+  458KB → 547KB / gzip 约 +30KB）。
+
+**守卫与回归**：gate 72 → 75（8d 改为断言**两组展开的先后**、新增 8l/8m/8n：购物 16 张
+全内联 / 零硬编码色 + `stroke="none"` 外壳 / 6 个新 key 进组）；`test:data` **769 条全绿**。
+预览页改由 **`scripts/build-icon-preview.mjs`** 从生成的图标模块直接渲染（加新批次重跑一次
+即可），无头验证 35 处圆底全部非空、App 加载零报错。
+
+---
+
 ## 5. 云端数据设计
 
 本项目用 **CloudBase 文档型数据库**（不是关系型）：账单本身就是嵌套对象，查询也不需要 JOIN；文档型在 Web SDK 直连上最成熟。

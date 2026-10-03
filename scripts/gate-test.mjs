@@ -337,7 +337,7 @@ const sheet = sheetMod.useLoginSheet()
 }
 
 /* ==========================================================================
- * 第 8 节（S8-8）：吃喝组填充风图标 + 尺寸可配参数
+ * 第 8 节（S8-8/S8-9）：吃喝、购物两组填充风图标 + 尺寸可配参数
  * ========================================================================== */
 {
   const foodSrc = readFileSync(new URL('../src/components/icons/foodFill.js', import.meta.url), 'utf8')
@@ -365,7 +365,10 @@ const sheet = sheetMod.useLoginSheet()
       return seg.includes(`'<g stroke="none"`)
     })
   )
-  t.ok('8d ★ ICONS 以「后展开覆盖」吃进 FOOD_FILL_ICONS（放前面会被同 key 旧定义盖回去）', /\.\.\.FOOD_FILL_ICONS\s*\n?\}/.test(iconSrc))
+  t.ok(
+    '8d ★ ICONS 以「后展开覆盖」吃进两组填充风图标（放前面会被同 key 旧定义盖回去）',
+    /\.\.\.FOOD_FILL_ICONS,\s*\.\.\.SHOP_FILL_ICONS\s*\n?\}/.test(iconSrc)
+  )
 
   const eatGroup = iconSrc.slice(iconSrc.indexOf("key: 'eat'"), iconSrc.indexOf("key: 'shop'"))
   t.ok('8e ★ 8 个新 key 全部进了吃喝选择器组', ['beer', 'bubbleTea', 'coffeeCup', 'friedEgg', 'honeyJar', 'iceCream', 'popsicle', 'springRoll'].every((k) => eatGroup.includes(`'${k}'`)))
@@ -395,6 +398,27 @@ const sheet = sheetMod.useLoginSheet()
   t.ok(
     '8k ★★ 图标刷新不动 updatedAt、不入队（视觉刷新不是数据变更）',
     refreshBody.length > 0 && !/updatedAt/.test(refreshBody) && !/enqueue/.test(refreshBody)
+  )
+
+  /* --- S8-9：购物组填充风图标 --- */
+  const shopSrc = readFileSync(new URL('../src/components/icons/shopFill.js', import.meta.url), 'utf8')
+  const SHOP_KEYS = [
+    'bag', 'cart', 'tshirt', 'pants', 'diamond', 'cosmetics', 'mirror', 'smartphone',
+    'scissors', 'box', 'camera', 'monitor', 'truck', 'duck', 'toiletPaper', 'iceSkate'
+  ]
+  t.ok(
+    '8l ★ 16 张购物组图标全部内联进 shopFill.js（10 个覆盖旧 key + 6 个新 key）',
+    SHOP_KEYS.every((k) => new RegExp(`\\b${k}:\\s*'`).test(shopSrc))
+  )
+  t.ok(
+    '8m ★★ 购物组同样零硬编码颜色、每张都有 stroke="none" 外壳',
+    !/#[0-9a-fA-F]{3,8}\b/.test(shopSrc) &&
+      SHOP_KEYS.every((k) => shopSrc.slice(shopSrc.indexOf(`${k}: '`), shopSrc.indexOf(`${k}: '`) + 120).includes(`'<g stroke="none"`))
+  )
+  const shopGroup = iconSrc.slice(iconSrc.indexOf("key: 'shop'"), iconSrc.indexOf("key: 'traffic'"))
+  t.ok(
+    '8n ★ 6 个购物组新 key 全部进了购物选择器组',
+    ['pants', 'cosmetics', 'mirror', 'smartphone', 'toiletPaper', 'iceSkate'].every((k) => shopGroup.includes(`'${k}'`))
   )
 }
 

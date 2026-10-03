@@ -6,13 +6,14 @@
  * 约定：
  *  - 默认 fill: none，stroke: currentColor
  *  - 需要在描边图标上点缀实心元素时，显式写 fill="currentColor" stroke="none"
- *  - S8-8 起吃喝组混入填充风图标（foodFill.js，fill="currentColor" stroke="none"），
- *    两种风格共用同一张 24×24 画布与 currentColor 主题联动
+ *  - S8-8/S8-9 起吃喝组、购物组混入填充风图标（foodFill.js / shopFill.js，
+ *    fill="currentColor" stroke="none"），两种风格共用同一张 24×24 画布与 currentColor 主题联动
  */
 import { FOOD_FILL_ICONS } from './foodFill.js'
+import { SHOP_FILL_ICONS } from './shopFill.js'
 
-/** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import foodFill.js */
-export { FOOD_FILL_ICONS }
+/** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import foodFill.js / shopFill.js */
+export { FOOD_FILL_ICONS, SHOP_FILL_ICONS }
 
 /**
  * 分类图标的「图标 / 圆底」尺寸比 —— ★ 调图标大小就改这一个数 ★
@@ -23,7 +24,7 @@ export { FOOD_FILL_ICONS }
  *   0.56 → 稍大        0.68 → 塞满圆底（再大就要出圈了）
  * 单处覆盖不受影响：任何 <CategoryIcon :icon-ratio="..."> 显式传值仍优先生效。
  */
-export const CATEGORY_ICON_RATIO = 0.62
+export const CATEGORY_ICON_RATIO = 0.65
 
 export const ICONS = {
   /* ================= 吃喝 ================= */
@@ -230,8 +231,9 @@ export const ICONS = {
     '<rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.6" fill="#3fd9b6" stroke="none"/><path d="M7.6 12.4l3 3 5.8-6" stroke="#fff" stroke-width="2"/>',
   'checkbox-off':
     '<rect x="3.6" y="3.6" width="16.8" height="16.8" rx="4.6"/>',
-  /* S8-8：吃喝组换用户手绘的填充风图标（同 key 覆盖上面的线性版），放在最后以生效 */
-  ...FOOD_FILL_ICONS
+  /* S8-8/S8-9：吃喝、购物两组换用户手绘的填充风图标（同 key 覆盖上面的线性版），放在最后以生效 */
+  ...FOOD_FILL_ICONS,
+  ...SHOP_FILL_ICONS
 }
 
 /** 图标选择器的分组（顺序与截图左右两栏一致） */
@@ -252,9 +254,12 @@ export const ICON_GROUPS = [
     key: 'shop',
     label: '购物',
     icons: [
-      'bag', 'tshirt', 'cart', 'bottles', 'scissors',
-      'box', 'camera', 'card', 'diamond', 'truck',
-      'duck', 'monitor', 'jacket', 'coupon', 'wallet'
+      /* S8-9 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'bag', 'cart', 'tshirt', 'pants', 'diamond',
+      'cosmetics', 'mirror', 'smartphone', 'scissors', 'box',
+      'camera', 'monitor', 'truck', 'duck', 'toiletPaper',
+      'iceSkate', 'bottles', 'card', 'jacket', 'coupon',
+      'wallet'
     ]
   },
   {
