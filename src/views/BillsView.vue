@@ -209,7 +209,7 @@ function monthExpense(m) {
                   :key="index"
                   class="cell"
                   :class="{
-                    empty: !day,
+                    'is-blank': !day,
                     'is-today': day === today,
                     'is-active': day === activeDay
                   }"
@@ -462,6 +462,9 @@ function monthExpense(m) {
 }
 
 .empty {
+  /* ⚠️ 这是「空态提示文字」的样式，只能用在 <p class="empty"> 上。
+     日历占位格曾经也叫 `empty`，被这里的 margin 顶到 44+60=104px 高（行距不一致的元凶），
+     所以占位格已改名 `is-blank` —— 新增格子类名别再复用 `empty`。 */
   margin: 30px 0;
   text-align: center;
   font-size: 13px;
@@ -500,7 +503,10 @@ function monthExpense(m) {
   color: var(--ink);
 }
 
-.cell.empty {
+/* 占位格（本月第一天之前的空位、月末补齐的空位）：
+   只藏起来、不占视觉，但**必须留在网格里**（不能 display:none，否则日期会错位）。
+   注意类名是 `is-blank` 不是 `empty` —— 见上面 `.empty` 的注释。 */
+.cell.is-blank {
   visibility: hidden;
 }
 

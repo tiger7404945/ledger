@@ -496,4 +496,31 @@ const sheet = sheetMod.useLoginSheet()
   }
 }
 
+/* ==========================================================================
+ * 第 9 节（S8-13）：日历占位格类名守卫
+ *
+ * 事故复盘：账单页日历的占位格曾经用类名 `empty`，与同一份 scoped 样式里
+ * 「空态提示文字」的 `.empty { margin: 30px 0 }` 撞名 —— 占位格被套上 30px 上下外边距，
+ * 44px 的行被撑到 104px，于是「含占位格的那一行」（月初/月末）行距明显变大。
+ * 这类 bug 编译、单测、构建都发现不了，只能靠约定 + 源码扫描钉住。
+ * ========================================================================== */
+{
+  const billsSrc = readFileSync(new URL('../src/views/BillsView.vue', import.meta.url), 'utf8')
+  t.ok(
+    '9a ★★ 日历占位格用 `is-blank`，不再复用空态文字类名 `empty`（曾把行高从 44 撑到 104）',
+    billsSrc.includes("'is-blank': !day") && billsSrc.includes('.cell.is-blank') && !/empty:\s*!day/.test(billsSrc)
+  )
+  t.ok(
+    '9b ★ `.empty` 只用于空态文字（margin: 30px 0 的前后必须有注释说明它不能用在格子上）',
+    /\.empty\s*\{[\s\S]{0,200}?margin:\s*30px 0/.test(billsSrc) &&
+      billsSrc.includes('新增格子类名别再复用 `empty`')
+  )
+  const gridRule = billsSrc.slice(billsSrc.indexOf('.grid {'), billsSrc.indexOf('.cell')) 
+  t.ok(
+    '9c ★ 日历网格列数与占位格规则都在位（7 列 + visibility 隐藏而非 display:none）',
+    /grid-template-columns:\s*repeat\(7,\s*1fr\)/.test(gridRule) &&
+      /visibility:\s*hidden/.test(billsSrc.slice(billsSrc.indexOf('.cell.is-blank')))
+  )
+}
+
 t.done()

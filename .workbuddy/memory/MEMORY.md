@@ -25,7 +25,10 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
   **shell 抽取器不居中**：源 SVG 主体没铺满 512 画布，图标就会在圆底里偏——跑
   `node scripts/build-center-audit.mjs`（打开 `.preview/center-audit.html`）量墨迹包围盒把关。
   人情第 7 张（mystery.svg）内容待用户确认未接入。
-- `test:data` 当前 **810 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
+- `test:data` 当前 **813 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
+- **⚠️ scoped 类名别撞车**：BillsView 的 `.empty`（空态文字，margin 30px 0）曾套到日历占位格
+  `.cell.empty` 上，把 44px 行撑到 104px。占位格类名已固定为 `is-blank`（gate 第 9 节钉住）。
+  排 UI 几何问题先无头浏览器实测（量轨高/逐属性二分），别靠猜。
 - **部署走本机 CLI**：`tcb hosting deploy ./dist -e my-cloudbase-********`
   （tcb 在 `~/.workbuddy/binaries/node/cli-connector-packages/`，已登录）。**Git Bash 里
   别传裸 `/` 当 cloudPath**（MSYS 会改写成 PortableGit 路径），省略即传根目录。
