@@ -13,6 +13,11 @@ import { HOUSE_FILL_ICONS } from '../src/components/icons/houseFill.js'
 import { STUDY_FILL_ICONS } from '../src/components/icons/studyFill.js'
 import { FAMILY_FILL_ICONS } from '../src/components/icons/familyFill.js'
 import { GIFT_FILL_ICONS } from '../src/components/icons/giftFill.js'
+import { PETS_FILL_ICONS } from '../src/components/icons/petsFill.js'
+import { MEDICAL_FILL_ICONS } from '../src/components/icons/medicalFill.js'
+import { FINANCE_FILL_ICONS } from '../src/components/icons/financeFill.js'
+import { BUSINESS_FILL_ICONS } from '../src/components/icons/businessFill.js'
+import { OTHER_FILL_ICONS } from '../src/components/icons/otherFill.js'
 
 const RATIO = 0.65 // 与 index.js 的 CATEGORY_ICON_RATIO 保持一致
 
@@ -25,7 +30,12 @@ const GROUPS = [
   ['住房组 · 6 枚', HOUSE_FILL_ICONS],
   ['学习组 · 7 枚', STUDY_FILL_ICONS],
   ['家庭组 · 6 枚', FAMILY_FILL_ICONS],
-  ['人情组 · 6 枚', GIFT_FILL_ICONS]
+  ['人情组 · 6 枚', GIFT_FILL_ICONS],
+  ['宠物组 · 8 枚', PETS_FILL_ICONS],
+  ['医疗组 · 5 枚', MEDICAL_FILL_ICONS],
+  ['理财组 · 8 枚', FINANCE_FILL_ICONS],
+  ['生意组 · 6 枚', BUSINESS_FILL_ICONS],
+  ['其它组 · 1 枚', OTHER_FILL_ICONS]
 ]
 
 const cell = (key, inner) =>
@@ -66,7 +76,7 @@ const html = `<!DOCTYPE html>
   .mint{background:#dcfdf6}
   .active{background:#3fd9b6;color:#fff;box-shadow:0 4px 10px rgba(63,217,182,.35)}
 </style></head><body>
-<h1>填充风图标总览（S8-8~S8-11 九组 86 枚）</h1>
+<h1>填充风图标总览（S8-8~S8-12 十四组 114 枚）</h1>
 <div class='sub'>拖滑杆调「图标 / 圆底」尺寸比 —— App 内对应 src/components/icons/index.js 的 CATEGORY_ICON_RATIO（当前 ${RATIO}）</div>
 <div class='panel'>
   <div class='row'><span style='font-size:12px;color:#6b7c7c'>小</span><input id='r' type='range' min='0.40' max='0.72' step='0.01' value='${RATIO}'><span style='font-size:12px;color:#6b7c7c'>大</span><span class='val' id='v'>${RATIO.toFixed(2)}</span></div>

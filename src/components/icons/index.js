@@ -18,11 +18,17 @@ import { HOUSE_FILL_ICONS } from './houseFill.js'
 import { STUDY_FILL_ICONS } from './studyFill.js'
 import { FAMILY_FILL_ICONS } from './familyFill.js'
 import { GIFT_FILL_ICONS } from './giftFill.js'
+import { PETS_FILL_ICONS } from './petsFill.js'
+import { MEDICAL_FILL_ICONS } from './medicalFill.js'
+import { FINANCE_FILL_ICONS } from './financeFill.js'
+import { BUSINESS_FILL_ICONS } from './businessFill.js'
+import { OTHER_FILL_ICONS } from './otherFill.js'
 
 /** 原样再导出：给测试（gate-test 扫描硬编码色）与预览页用，别的地方别直接 import 各 *Fill.js */
 export {
   FOOD_FILL_ICONS, SHOP_FILL_ICONS, SPORT_FILL_ICONS, TRANSPORT_FILL_ICONS,
-  FUN_FILL_ICONS, HOUSE_FILL_ICONS, STUDY_FILL_ICONS, FAMILY_FILL_ICONS, GIFT_FILL_ICONS
+  FUN_FILL_ICONS, HOUSE_FILL_ICONS, STUDY_FILL_ICONS, FAMILY_FILL_ICONS, GIFT_FILL_ICONS,
+  PETS_FILL_ICONS, MEDICAL_FILL_ICONS, FINANCE_FILL_ICONS, BUSINESS_FILL_ICONS, OTHER_FILL_ICONS
 }
 
 /**
@@ -250,7 +256,12 @@ export const ICONS = {
   ...HOUSE_FILL_ICONS,
   ...STUDY_FILL_ICONS,
   ...FAMILY_FILL_ICONS,
-  ...GIFT_FILL_ICONS
+  ...GIFT_FILL_ICONS,
+  ...PETS_FILL_ICONS,
+  ...MEDICAL_FILL_ICONS,
+  ...FINANCE_FILL_ICONS,
+  ...BUSINESS_FILL_ICONS,
+  ...OTHER_FILL_ICONS
 }
 
 /** 图标选择器的分组（顺序与截图左右两栏一致） */
@@ -338,6 +349,14 @@ export const ICON_GROUPS = [
     ]
   },
   {
+    key: 'pets',
+    label: '宠物',
+    icons: [
+      /* S8-12 新增组，全部填充风；pet 与家庭组共用同一张爪印 */
+      'pet', 'dog', 'cat', 'bone', 'yarnBall', 'petDryer', 'petFoodBag', 'petCan'
+    ]
+  },
+  {
     key: 'study',
     label: '学习',
     icons: [
@@ -349,7 +368,34 @@ export const ICON_GROUPS = [
   {
     key: 'medical',
     label: '医疗',
-    icons: ['medkit', 'pill', 'hospital', 'thermometer', 'syringe', 'spa']
+    icons: [
+      /* S8-12 起前面这些是填充风新图标（user 手绘），后面保留旧线性图标以供选择 */
+      'medkit', 'pill', 'hospital', 'syringe', 'tooth', 'thermometer', 'spa'
+    ]
+  },
+  {
+    key: 'finance',
+    label: '理财',
+    icons: [
+      /* S8-12 新增组，全部填充风；stats 同时是种子收入「投资」的图标，coupon 与购物组共用 */
+      'stats', 'coins', 'creditCard', 'investment', 'monitorChart', 'shieldCheck', 'coupon', 'sparkle'
+    ]
+  },
+  {
+    key: 'business',
+    label: '生意',
+    icons: [
+      /* S8-12 新增组，全部填充风；bizCart / customer 不覆盖购物组的 cart 与通用 user */
+      'store', 'revenue', 'bizCart', 'openSign', 'adDisplay', 'customer'
+    ]
+  },
+  {
+    key: 'other',
+    label: '其它',
+    icons: [
+      /* S8-12 新增组；more 同时是种子「其它」分类与兜底图标 */
+      'more', 'grid', 'list', 'settings'
+    ]
   }
 ]
 

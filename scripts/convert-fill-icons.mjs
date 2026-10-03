@@ -248,6 +248,113 @@ const BATCHES = [
       ['doubleHeart.svg', 'doubleHeart'],
       ['coinBag.svg', 'coinBag']
     ]
+  },
+  {
+    name: 'pets',
+    out: 'src/components/icons/petsFill.js',
+    exportName: 'PETS_FILL_ICONS',
+    dir: 'E:/svg-输出-宠物医疗理财/pets',
+    extractor: 'shell',
+    header: [
+      ' * 宠物组·填充风图标（S8-12，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 8 张 512×512 填充风 SVG（单 path、自带 fill="currentColor"）。',
+      ' * paw→pet 覆盖家庭组的旧 pet key（宠物组与家庭组共用同一张爪印）；其余 7 个是新 key。',
+      ' * 注：pet-food-can 取新 key petCan，不覆盖吃喝组的旧线性 can（罐头）。'
+    ],
+    MAP: [
+      ['bone.svg', 'bone'],
+      ['cat.svg', 'cat'],
+      ['dog.svg', 'dog'],
+      ['paw.svg', 'pet'],
+      ['pet-dryer.svg', 'petDryer'],
+      ['pet-food-bag.svg', 'petFoodBag'],
+      ['pet-food-can.svg', 'petCan'],
+      ['yarn-ball.svg', 'yarnBall']
+    ]
+  },
+  {
+    name: 'medical',
+    out: 'src/components/icons/medicalFill.js',
+    exportName: 'MEDICAL_FILL_ICONS',
+    dir: 'E:/svg-输出-宠物医疗理财/medical',
+    extractor: 'shell',
+    header: [
+      ' * 医疗组·填充风图标（S8-12，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 5 张 512×512 填充风 SVG（单 path、自带 fill="currentColor"）。',
+      ' * 覆盖 4 个旧 key（medkit←first-aid-kit / pill←medicine / hospital / syringe，',
+      ' * 种子「医疗」分类用的 medkit 自动换新）；tooth 是新 key（牙科）。'
+    ],
+    MAP: [
+      ['first-aid-kit.svg', 'medkit'],
+      ['hospital.svg', 'hospital'],
+      ['medicine.svg', 'pill'],
+      ['syringe.svg', 'syringe'],
+      ['tooth.svg', 'tooth']
+    ]
+  },
+  {
+    name: 'finance',
+    out: 'src/components/icons/financeFill.js',
+    exportName: 'FINANCE_FILL_ICONS',
+    dir: 'E:/svg-输出-宠物医疗理财/finance',
+    extractor: 'shell',
+    header: [
+      ' * 理财组·填充风图标（S8-12，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 8 张 512×512 填充风 SVG（单 path、自带 fill="currentColor"）。',
+      ' * chart-up→stats 覆盖旧 key（种子收入「投资」分类用的就是 stats，自动换新）；',
+      ' * coupon 覆盖购物组的旧线性 coupon（同概念共用）；其余 6 个是新 key。'
+    ],
+    MAP: [
+      ['chart-up.svg', 'stats'],
+      ['coins.svg', 'coins'],
+      ['coupon.svg', 'coupon'],
+      ['credit-card.svg', 'creditCard'],
+      ['investment.svg', 'investment'],
+      ['monitor-chart.svg', 'monitorChart'],
+      ['shield-check.svg', 'shieldCheck'],
+      ['sparkle.svg', 'sparkle']
+    ]
+  },
+  {
+    name: 'business',
+    out: 'src/components/icons/businessFill.js',
+    exportName: 'BUSINESS_FILL_ICONS',
+    dir: 'E:/svg-输出-生意其它/business',
+    extractor: 'shell',
+    header: [
+      ' * 生意组·填充风图标（S8-12，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 6 张 512×512 填充风 SVG（单 path、自带 fill="currentColor"）。',
+      ' * 全部是新 key。注：shopping-cart 取新 key bizCart（带货购物车），不覆盖购物组的',
+      ' * cart；user 取新 key customer（客户），不覆盖通用 user 头像。'
+    ],
+    MAP: [
+      ['ad-display.svg', 'adDisplay'],
+      ['open-sign.svg', 'openSign'],
+      ['revenue.svg', 'revenue'],
+      ['shopping-cart.svg', 'bizCart'],
+      ['store.svg', 'store'],
+      ['user.svg', 'customer']
+    ]
+  },
+  {
+    name: 'other',
+    out: 'src/components/icons/otherFill.js',
+    exportName: 'OTHER_FILL_ICONS',
+    dir: 'E:/svg-输出-生意其它/other',
+    extractor: 'shell',
+    header: [
+      ' * 其它组·填充风图标（S8-12，由 scripts/convert-fill-icons.mjs 从用户手绘 SVG 生成 —— 别手改路径数据）',
+      ' *',
+      ' * 来源：用户提供的 1 张 512×512 填充风 SVG（单 path、自带 fill="currentColor"）。',
+      ' * more 覆盖旧 key —— 种子「其它 / 收入-其它」分类与 getIconPath 兜底都用它，自动换新。'
+    ],
+    MAP: [
+      ['more.svg', 'more']
+    ]
   }
 ]
 

@@ -1693,6 +1693,37 @@ gate 六模块循环扩到 **九模块**（gate 90 → **99**）；`test:data` *
 
 ---
 
+### S8-12（2026-10-03）：宠物 / 医疗 / 理财 / 生意 / 其它五组（28 张，四组新增选择器分组）
+
+用户一次给 28 张 SVG（宠物 8 / 医疗 5 / 理财 8 / 生意 6 / 其它 1，单 path 无 `<g>`，
+`shell` extractor）。其中**宠物、理财、生意、其它此前没有选择器分组**——本批在
+`ICON_GROUPS` 新增 `pets / finance / business / other` 四个组（组序：家庭→宠物→学习→
+医疗→理财→生意→其它），累计 **14 组 114 张**填充风图标。
+
+**映射（9 覆盖 + 19 新增）**：
+
+- **宠物**（`petsFill.js` 49KB）：`paw→pet` 覆盖家庭组旧 pet（两共用一张爪印）；
+  新增 `dog / cat / bone / yarnBall / petDryer / petFoodBag / petCan`。
+  ⚠️ pet-food-can 取新 key `petCan`，不覆盖吃喝组旧线性 `can`（罐头）。
+- **医疗**（`medicalFill.js` 36KB）：覆盖 `medkit`←first-aid-kit（**种子「医疗」自动换新**）/
+  `pill`←medicine / `hospital` / `syringe`；新增 `tooth`（牙科）。
+- **理财**（`financeFill.js` 42KB）：`chart-up→stats` 覆盖旧 key（**种子收入「投资」用的
+  就是 stats，自动换新**）；`coupon` 覆盖购物组旧线性 coupon（同概念共用）；
+  新增 `coins / creditCard / investment / monitorChart / shieldCheck / sparkle`。
+- **生意**（`businessFill.js` 43KB）：全新增 `store / revenue / bizCart / openSign /
+  adDisplay / customer`。⚠️ 两个避撞车决定：shopping-cart 取 `bizCart` 不覆盖购物组
+  `cart`；user 取 `customer` 不覆盖通用 `user` 头像。
+- **其它**（`otherFill.js` 8KB）：`more` 覆盖旧 key —— 种子「其它 / 收入-其它」与
+  `getIconPath` 兜底都用它，自动换新（"更多"圆点从线性换填充风）。
+
+gate 循环扩到 **十四模块**（99 → **114**），8d 改为「全部 exportName 都有展开 + 以
+`...OTHER_FILL_ICONS}` 收尾」+ 循环支持末组锚点（indexOf=-1 时切到串尾）；
+`test:data` **808 条全绿**；预览页十四组 114 枚（117 圆底全非空）。
+主包 946KB → 1129KB（gzip 388KB，五批净增约 +59KB gzip）。改完即部署
+（新包 `index-9O3xGwL8.js`，删孤儿 `index-8XR1wbJX.js`，线上 200 核验通过）。
+
+---
+
 ## 5. 云端数据设计
 
 本项目用 **CloudBase 文档型数据库**（不是关系型）：账单本身就是嵌套对象，查询也不需要 JOIN；文档型在 Web SDK 直连上最成熟。

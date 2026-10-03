@@ -337,7 +337,7 @@ const sheet = sheetMod.useLoginSheet()
 }
 
 /* ==========================================================================
- * 第 8 节（S8-8~S8-11）：九组填充风图标 + 尺寸可配参数
+ * 第 8 节（S8-8~S8-12）：填充风图标（十四个模块）+ 尺寸可配参数
  * ========================================================================== */
 {
   const foodSrc = readFileSync(new URL('../src/components/icons/foodFill.js', import.meta.url), 'utf8')
@@ -366,8 +366,10 @@ const sheet = sheetMod.useLoginSheet()
     })
   )
   t.ok(
-    '8d ★ ICONS 以「后展开覆盖」吃进九组填充风图标（放前面会被同 key 旧定义盖回去）',
-    /\.\.\.FOOD_FILL_ICONS,\s*\.\.\.SHOP_FILL_ICONS,\s*\.\.\.SPORT_FILL_ICONS,\s*\.\.\.TRANSPORT_FILL_ICONS,\s*\.\.\.FUN_FILL_ICONS,\s*\.\.\.HOUSE_FILL_ICONS,\s*\.\.\.STUDY_FILL_ICONS,\s*\.\.\.FAMILY_FILL_ICONS,\s*\.\.\.GIFT_FILL_ICONS\s*\n?\}/.test(iconSrc)
+    '8d ★ ICONS 以「后展开覆盖」吃进全部填充风图标组（放前面会被同 key 旧定义盖回去），且最后以 OTHER_FILL_ICONS 收尾',
+    ['FOOD', 'SHOP', 'SPORT', 'TRANSPORT', 'FUN', 'HOUSE', 'STUDY', 'FAMILY', 'GIFT', 'PETS', 'MEDICAL', 'FINANCE', 'BUSINESS', 'OTHER']
+      .every((n) => iconSrc.includes(`...${n}_FILL_ICONS`)) &&
+      /\.\.\.OTHER_FILL_ICONS\s*\n?\}/.test(iconSrc)
   )
 
   const eatGroup = iconSrc.slice(iconSrc.indexOf("key: 'eat'"), iconSrc.indexOf("key: 'shop'"))
@@ -400,7 +402,7 @@ const sheet = sheetMod.useLoginSheet()
     refreshBody.length > 0 && !/updatedAt/.test(refreshBody) && !/enqueue/.test(refreshBody)
   )
 
-  /* S8-8~S8-10：六组填充风图标统一守卫（每个模块 3 条：全内联 / 零硬编码色 + stroke=none 外壳 / 新 key 进组） */
+  /* S8-8~S8-12：填充风图标统一守卫（每个模块 3 条：全内联 / 零硬编码色 + stroke=none 外壳 / 新 key 进组） */
   const FILL_MODULES = [
     {
       label: '吃喝（S8-8）', file: 'foodFill.js', exportName: 'FOOD_FILL_ICONS',
@@ -446,6 +448,31 @@ const sheet = sheetMod.useLoginSheet()
       label: '人情（S8-11）', file: 'giftFill.js', exportName: 'GIFT_FILL_ICONS',
       newKeys: ['reward', 'heart', 'doubleHeart', 'coinBag'],
       groupAnchor: ["key: 'gift'", "key: 'family'"]
+    },
+    {
+      label: '宠物（S8-12）', file: 'petsFill.js', exportName: 'PETS_FILL_ICONS',
+      newKeys: ['dog', 'cat', 'bone', 'yarnBall', 'petDryer', 'petFoodBag', 'petCan'],
+      groupAnchor: ["key: 'pets'", "key: 'study'"]
+    },
+    {
+      label: '医疗（S8-12）', file: 'medicalFill.js', exportName: 'MEDICAL_FILL_ICONS',
+      newKeys: ['tooth'],
+      groupAnchor: ["key: 'medical'", "key: 'finance'"]
+    },
+    {
+      label: '理财（S8-12）', file: 'financeFill.js', exportName: 'FINANCE_FILL_ICONS',
+      newKeys: ['coins', 'creditCard', 'investment', 'monitorChart', 'shieldCheck', 'sparkle'],
+      groupAnchor: ["key: 'finance'", "key: 'business'"]
+    },
+    {
+      label: '生意（S8-12）', file: 'businessFill.js', exportName: 'BUSINESS_FILL_ICONS',
+      newKeys: ['store', 'revenue', 'bizCart', 'openSign', 'adDisplay', 'customer'],
+      groupAnchor: ["key: 'business'", "key: 'other'"]
+    },
+    {
+      label: '其它（S8-12）', file: 'otherFill.js', exportName: 'OTHER_FILL_ICONS',
+      newKeys: [],
+      groupAnchor: ["key: 'other'", "key: '__last__'"]
     }
   ]
   for (const mod of FILL_MODULES) {
@@ -460,7 +487,8 @@ const sheet = sheetMod.useLoginSheet()
       !/#[0-9a-fA-F]{3,8}\b/.test(src) &&
         keys.every((k) => src.slice(src.indexOf(`${k}: '`), src.indexOf(`${k}: '`) + 120).includes(`'<g stroke="none"`))
     )
-    const group = iconSrc.slice(iconSrc.indexOf(mod.groupAnchor[0]), iconSrc.indexOf(mod.groupAnchor[1]))
+    const endAt = iconSrc.indexOf(mod.groupAnchor[1])
+    const group = iconSrc.slice(iconSrc.indexOf(mod.groupAnchor[0]), endAt === -1 ? undefined : endAt)
     t.ok(
       `8-${mod.label} ${mod.newKeys.length} 个新 key 全部进了选择器组`,
       mod.newKeys.every((k) => group.includes(`'${k}'`))
