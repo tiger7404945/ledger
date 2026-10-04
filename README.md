@@ -413,6 +413,7 @@ export const syncEngine = createSyncEngine({ outbox: db.outbox, store: db.syncSt
   - IndexedDB 在 Node 里用 `fake-indexeddb` 打桩（devDependency）。**真实云端的调用不在这套断言里**，靠 `.preview/` 的探针脚本 + 浏览器端到端走查。
 - 参考截图（`微信图片_*.jpg`、`填写备注.jpg`、`月选择器.jpg`、`年选择器.jpg`）只存本地不入库；页面结构说明见 `page-structure.md`，第一阶段实施计划见 `ui-implementation-plan.md`，**第二阶段（接后端与云同步）任务清单见 `phase2-backend-plan.md`**。
 - **接手项目先读 `软件设计文档.md`**（SDD）：以「现状」而非「决策过程」组织的结构说明书 —— 分层架构、7 条关键时序图、逐模块接口清单、UML 类图与状态机、**数据库 schema 逐字段说明**（含字段生命周期与设计审视）、横切关注点、测试覆盖与常见改动指引。所有图用 Mermaid 绘制，可直接渲染。
+- **面向用户的界面说明见 `用户使用指南.md`**：逐页面截图 + 功能说明（截图在 `docs/screenshots/`）。
 - **云端运维提醒**（三条，都在 `phase2-backend-plan.md` 有详版）：
   1. **免费环境要手动续期**：单次 6 个月、不支持自动续费 —— **续期提醒已设，环境到期 2027-03-30**。
   2. **临时域名已就绪**：`<环境ID>-<随机段>.ap-shanghai.app.tcloudbase.com`（平台自带，无需自助加安全域名，当前 404 是因为静态托管还没部署内容）。正式域名待开发测试结束后申请。
