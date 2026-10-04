@@ -63,6 +63,11 @@ export const NAME_MAX_LENGTH = 8
  * @property {string} name
  * @property {number} createdAt
  * @property {number} updatedAt
+ * @property {number} [serverUpdatedAt] 服务端刻度：云函数**接收写入时**盖的时间戳，
+ *   由 `syncEngine` 在同步后经 `store.applyStamps()` 回写（不走写路径、不入 outbox、
+ *   不改 `updatedAt`）。跨设备裁决用它；本地新改过的文档上该刻度会失效，退回 `updatedAt`
+ *   （判据见 `core/merge.js` 的 `effectiveServerStamp`）。区别于云端集合的 `_serverTs`
+ *   （后者是拉取水位线，不落本地库）。
  *
  * ⚠️ 曾经有个 `ownerId`（值恒为 `'user_local'`）。它是第一阶段「还没有账号体系」
  *    时的占位，**云端真正的归属靠 `_openid`**，本地则靠库分区隔离 ——
@@ -80,6 +85,7 @@ export const NAME_MAX_LENGTH = 8
  * @property {number}  order
  * @property {number}  createdAt
  * @property {number}  updatedAt
+ * @property {number}  [serverUpdatedAt] 服务端刻度，同步后回写（语义同 Ledger，见上）
  * @property {0|1}     [deleted]   软删除标记，供增量同步
  */
 
@@ -95,12 +101,13 @@ export const NAME_MAX_LENGTH = 8
  * @property {string}  date                  YYYY-MM-DD
  * @property {number}  createdAt
  * @property {number}  updatedAt
+ * @property {number}  [serverUpdatedAt] 服务端刻度，同步后回写（语义同 Ledger，见上）
  * @property {0|1}     [deleted]
  *
  * ⚠️ S8-5 删掉了两个从不参与逻辑的字段，别再「顺手加回来」：
  *   - `noReimburse` —— 「不报销」开关在 S7-10 已从记账页下线，写入恒为 false；
  *   - `version`     —— 早期设想的「服务端同步版本号」，实际从未被读取。
- *     跨设备裁决用的是 `updatedAt` 与云端 `serverUpdatedAt`（见 core/merge.js）。
+ *     跨设备裁决用的是 `updatedAt` 与 `serverUpdatedAt`（见 core/merge.js）。
  *   两者的历史值已随 S8-5 的字段清理迁移一并从本地与云端移除。
  */
 
