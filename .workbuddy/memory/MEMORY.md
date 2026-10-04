@@ -98,3 +98,7 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
 - **改 `.env.local` 触发自动重启 + 端口漂移**（5173 被占降级 5174）：验环境变量差异用全新端口另起。
 - 本机无 Git for Windows，用 WorkBuddy 内置 PortableGit；主分支 main，约定式提交；不提交
   node_modules/dist/.preview；设计图与 `.workbuddy/memory` 入库。
+- **GitHub 远端 `tiger7404945/ledger`（私有）走 SSH**（`git@github.com:`；HTTPS 被沙箱代理
+  对 github.com 挡死 502，api.github.com 反而通；GitHub MCP 令牌只读，建仓/推码 403）。
+- ⚠️ **推送前先 `git fetch` 看有没有分叉**：用户会**在 GitHub 网页端直接手改文件**
+  （2026-10-04 手改过 README 开头）。被拒时 `git pull --rebase` 维持线性历史，别 merge。
