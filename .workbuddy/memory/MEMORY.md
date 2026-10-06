@@ -1,8 +1,9 @@
 # 项目长期记忆 · 随手记账（D:\projects\ledger）
 
 > 只留「改动前必须先知道」的规则。细节：`phase2-backend-plan.md`（S0–S9 实施记录）、
-> **`软件设计文档.md`（S9 产出：结构说明书 —— 分层/8 张时序图/逐模块接口/UML/schema 逐字段/改动指引，
-> 接手先读它；改架构、契约或 schema 时同步更新）**、`CLOUD-S4-NOTES.md`、同目录 `YYYY-MM-DD.md` 日志。
+> **`软件设计文档.md`（结构说明书，17 张 mermaid 图 —— 分层/时序/逐模块接口/UML/状态机/schema 逐字段/
+> 横切含 §8.2 云端权限与隔离边界/改动指引；接手先读它，改架构、契约、schema 或**云端权限**时同步更新）**、
+> `CLOUD-S4-NOTES.md`、同目录 `YYYY-MM-DD.md` 日志。
 
 ## 阶段
 Vue3+Vite 记账 App。**S0–S8 全部完成**（S8-1 备份/导入、S8-2 同步状态、S8-3 恢复模式、
@@ -67,6 +68,27 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
   **云端别名**、`idbAdapter.applyStamps` 按**本地 id** 查（必 miss）—— 现已在适配器内换算回传。
   测试此前全绿是因为 `fakeCloud` 用本地 id 作 key，把差异盖住了。**gate 第 10 节源码扫描钉住**
   （真适配器依赖 SDK，跑不了单测）；契约写明在 `sync/cloudClient.js` 的 push 段。
+
+## 云端隔离 / 权限（**全都不在代码里**，接手必读）
+- 三个集合（`ledger_ledgers`/`ledger_bills`/`ledger_categories`）权限都是 **PRIVATE**
+  （仅创建者可读写），配在**控制台**，代码里查不到 —— 用
+  `queryPermissions(listResourcePermissions, resourceType='noSqlDatabase', resourceIds=[…])` 复读。
+  `SecurityRule` 为空 = 走**内置模板**而非 CUSTOM 自定义规则（这个区分很重要，见下）。
+- 隔离的两半：① **写入**时 `_openid` 由 SDK 自动注入（**客户端手写会直接报错**，所以
+  `cloudbaseAdapter` 推送前用 `stripServerMeta()` 剥掉所有 `_` 前缀字段）；② **读取**时由
+  服务端安全规则按 `auth.openid` 施加，客户端改不了。前端 `useLoginGate` **只是 UI 引导，不是边界**。
+- ⚠️ **CloudBase 安全规则是「验证式」不是「过滤式」**：对 CUSTOM 规则，查询条件**必须是规则的子集**
+  （不带 owner 条件的 where 会被**直接拒绝**，不是返回空）。本项目用**简单权限 PRIVATE**，
+  线上 `where({_serverTs: gte})`（**不带 `_openid`**）实测跑得通 —— 所以**若将来把权限改成 CUSTOM
+  规则，必须同步给所有查询补上 `_openid` 条件**，否则 pull/push 全线 403。这是个隐性耦合点。
+- ⚠️ **云函数是管理员身份、绕过安全规则**：`ledger-sync-stamp` 的 `doc(id).update()` 只按 `_id`
+  定位，理论上能改到别的账号的文档。信任假设 = 客户端只传自己刚 upsert 过的 `_id`（别名带账号前缀）
+  且刻度不含业务内容。**云函数不属于隔离边界**，它是受信任的内部组件。
+- `_id` 别名（`core/cloudId.js`）与 `_openid` 是**两件事**：`_openid` 管**读**的隔离、
+  `_id` 管**集合内跨账号唯一**（避免换身份后「看不见却撞得上」抛 `E11000`，S4-7 真实缺陷）。
+  别名前缀是**客户端自觉**、不承担安全职责。
+- 以上全部已落进 `软件设计文档.md` **§8.2「云端权限与隔离边界」**（现状实测 + 隐性耦合 +
+  改权限检查清单 6 条）；入口另见 §11.2-E（改动指引）与 §11.3（排查速查「全线 403」一行）。
 
 ## 清理/迁移纪律（S8-5/8-7，已删的东西别加回来）
 - 判据：从写入到读取有没有消费者。已删：账单 `noReimburse`/`version`、账本 `ownerId`、
