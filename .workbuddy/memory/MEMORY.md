@@ -30,7 +30,7 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
   **shell 抽取器不居中**：源 SVG 主体没铺满 512 画布，图标就会在圆底里偏——跑
   `node scripts/build-center-audit.mjs`（打开 `.preview/center-audit.html`）量墨迹包围盒把关。
   人情第 7 张（mystery.svg）内容待用户确认未接入。
-- `test:data` 当前 **813 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
+- `test:data` 当前 **826 条**；gate-test 第 8 节是十四模块循环，加新图标批次会自动吃进去。
 - **⚠️ scoped 类名别撞车**：BillsView 的 `.empty`（空态文字，margin 30px 0）曾套到日历占位格
   `.cell.empty` 上，把 44px 行撑到 104px。占位格类名已固定为 `is-blank`（gate 第 9 节钉住）。
   排 UI 几何问题先无头浏览器实测（量轨高/逐属性二分），别靠猜。
@@ -59,8 +59,14 @@ S8-4 注销账号、S8-5 schema 瘦身、S8-6 打赏卡、S8-7 删卤鹅、S8-8~
 - 水位线只认 `_serverTs` 严格单调；**推送被拒必须回拉**。种子 `updatedAt=0` 不影响回拉。
 - **IDB 连接会被 Chromium 杀**：连接层探活+自动重连，打开失败的拒绝不能被缓存。
 - **身份切换后 store 必须刷两次**（sync 完成后再 `resetLoadedStores()`，含 `bill.periodInitialized`）。
-- `npm run test:data` **十脚本 810 条**（contract87/period22/seed28/migrate11/sync143/conflict135/
-  cloudid42/partition126/gate114/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
+- `npm run test:data` **十脚本 826 条**（contract87/period22/seed28/migrate11/sync143/conflict143/
+  cloudid42/partition126/gate122/backup102），输出统一走 `scripts/_harness.mjs`，别手搓 pass/fail。
+- **push 返回值的 id 空间（S9 已修）**：`upserted`/`rejected[].id`/`stamps` 三者的 key
+  **必须都是本地 id**。`cloudbaseAdapter.push` 曾把 `fetchServerStamps` 的返回值丢掉（返回体
+  只有 `{upserted, rejected}`，而 `syncEngine` 读 `result.stamps`），且那 Map 的 key 是
+  **云端别名**、`idbAdapter.applyStamps` 按**本地 id** 查（必 miss）—— 现已在适配器内换算回传。
+  测试此前全绿是因为 `fakeCloud` 用本地 id 作 key，把差异盖住了。**gate 第 10 节源码扫描钉住**
+  （真适配器依赖 SDK，跑不了单测）；契约写明在 `sync/cloudClient.js` 的 push 段。
 
 ## 清理/迁移纪律（S8-5/8-7，已删的东西别加回来）
 - 判据：从写入到读取有没有消费者。已删：账单 `noReimburse`/`version`、账本 `ownerId`、

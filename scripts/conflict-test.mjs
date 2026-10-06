@@ -120,6 +120,15 @@ async function makeDevice({ cloud, user = null, timer, isOnline, now, name = 'de
     }
   }
 
+  /**
+   * 记录每次 `applyStamps` 的实参。
+   * 用途（S9 修补）：证明「推送成功后把服务端刻度写回本地副本」这条链**真的接上了**
+   * —— 它断过，而且断得静默（`applyStamps` 找不到文档就跳过，不抛错、不影响正确性，
+   * 只是本地副本晚一轮才有刻度）。只断言「最终有刻度」是查不出来的：下一次 pull
+   * 也会把刻度带回来。必须看到实参才知道引擎有没有真的转交。
+   */
+  const stampWrites = []
+
   const store = {
     async get(collection, id) {
       return table(collection).get(id) || null
@@ -132,6 +141,7 @@ async function makeDevice({ cloud, user = null, timer, isOnline, now, name = 'de
     },
     /** 服务端刻度写回本地副本（S4-6）。与各适配器同语义：只改刻度、不入 outbox */
     async applyStamps(collection, stamps) {
+      stampWrites.push({ collection, stamps: { ...(stamps || {}) } })
       let n = 0
       for (const id of Object.keys(stamps || {})) {
         const doc = table(collection).get(id)
@@ -160,6 +170,8 @@ async function makeDevice({ cloud, user = null, timer, isOnline, now, name = 'de
     engine,
     store,
     watermark: () => watermark,
+    /** 每次 applyStamps 收到的刻度（S9 修补的观测点，见上方 stampWrites 注释） */
+    stampWrites: () => stampWrites.map((x) => ({ ...x, stamps: { ...x.stamps } })),
     async write(collection, doc) {
       table(collection).set(doc.id, { ...doc })
       await outbox.enqueue({ collection, op: 'update', docId: doc.id, payload: { ...doc } })
@@ -853,6 +865,77 @@ t.group('14. S4-6 边界：云函数不可用时降级 + 本地再改后刻度�
     `${cloud2._dump('bill')[0].serverUpdatedAt} vs ${stampAfterPush}`
   )
   t.eq('14k 本地 v2 的刻度也同步刷新了', c.get('bill', 'iv1').serverUpdatedAt, cloud2._dump('bill')[0].serverUpdatedAt)
+}
+
+/* ========================================================== */
+/* 15. S9 修补：push 返回的 stamps 必须以「本地 id」为 key          */
+/* ========================================================== */
+
+/**
+ * 背景（一条静默的契约漂移）：
+ *   `syncEngine.pushPending` 读 `result.stamps` → `store.applyStamps(collection, stamps)`，
+ *   而 `applyStamps` 是拿**本地 id** 去本地库查文档的（`byId.get(id)`，见 idbAdapter）。
+ *   真适配器 `cloudbaseAdapter.push()` 当时**把云函数的返回值丢了**，返回体里根本没有
+ *   `stamps`；而且它是按**云端别名**去问的，即便接住也是别名 key —— 两头都 miss。
+ *
+ *   为什么以前全绿：`fakeCloud` 按 `_openid` 分桶，`_id` 就等于本地 id，所以它的
+ *   stamps key 天然是本地 id。**参考实现恰好绕过了真实现踩的坑** —— 这正是
+ *   「后端可替换」原则最容易漏的地方：两个实现返回的 id 空间不一致，而契约没写。
+ *
+ * 这一组做两件事：
+ *   ① 把契约形状**写死**（含空推送、被拒条目），让两个实现有一致的验收标准；
+ *   ② 钉住「引擎真的把刻度转交回 store」—— 只断言「最终本地有刻度」是无效的，
+ *      下一次 pull 也会把刻度带回来，必须看 applyStamps 的实参。
+ */
+t.group('15. push 返回 stamps 的契约：key 是本地 id，且真的写回了本地副本')
+{
+  // 15-A 契约形状：直接摊开参考实现的返回值（不经引擎），pcloud 独立以免污染其它断言
+  const pclock = createClock()
+  const pcloud = createFakeCloud({ clock: pclock.now })
+  const probe = await pcloud.push('bill', [billDoc(pclock, 'st-1', 11)])
+
+  t.eq('15a upserted 是本地 id', probe.upserted, ['st-1'])
+  t.eq('15b ★★ stamps 的 key 也是本地 id（不是云端 `_id` / 别名形状）', Object.keys(probe.stamps), ['st-1'])
+  t.ok(
+    '15c 推成功的每一条都拿到了刻度（不漏条）',
+    probe.upserted.every((id) => Number(probe.stamps[id]) > 0),
+    JSON.stringify(probe.stamps)
+  )
+  t.eq(
+    '15d ★ 空推送也返回 stamps 对象（形状稳定，调用方不必写 `|| {}` 分支）',
+    await pcloud.push('bill', []),
+    { upserted: [], rejected: [], stamps: {} }
+  )
+
+  // 15-B 被拒的条目**不进** stamps —— 只有真的写成了、云函数才盖了刻度
+  const rclock = createClock()
+  const rcloud = createFakeCloud({ clock: rclock.now })
+  const older = billDoc(rclock, 'st-3', 10)
+  const newer = billDoc(rclock, 'st-3', 20) // updatedAt 更晚
+  await rcloud.push('bill', [newer])
+  const rejected = await rcloud.push('bill', [older])
+
+  t.eq('15e 云端有更新版本时的推送被拒', rejected.upserted, [])
+  t.eq('15f ★ 被拒的条目不出现在 stamps 里（否则会盖上一个「标着旧内容」的刻度）', Object.keys(rejected.stamps ?? {}), [])
+
+  // 15-C 端到端：引擎把 push 返回的刻度转交回 store，且 key 是本地 id
+  const clock = createClock()
+  const cloud = createFakeCloud({ clock: clock.now })
+  const a = await makeDevice({ cloud, now: clock.now, name: 'a' })
+  await a.write('bill', billDoc(clock, 'st-2', 12))
+  await a.engine.sync({ manual: true })
+
+  const handed = a.stampWrites().flatMap((w) => Object.keys(w.stamps))
+  t.ok(
+    '15g ★★ 引擎把 push 返回的刻度转交回 store，且 key 就是本地 id（这条链在修补前是断的）',
+    handed.includes('st-2'),
+    JSON.stringify(a.stampWrites())
+  )
+  t.ok(
+    '15h 本地副本因而不依赖下一次拉取就带上了服务端刻度',
+    Number(a.get('bill', 'st-2').serverUpdatedAt) > 0,
+    String(a.get('bill', 'st-2').serverUpdatedAt)
+  )
 }
 
 t.done()

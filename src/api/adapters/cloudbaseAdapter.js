@@ -412,6 +412,10 @@ export function createCloudBaseAdapter({
    * 引擎拿它们去 `outbox.markSynced`，而队列里存的是本地 id。
    * 别名只在进服务端的那一刻出现，出了函数就换算回来。
    *
+   * 返回的 `stamps` 是 `{ 本地id: 服务端刻度 }`（S4-6）—— 本次**真正写成功**的
+   * 那些文档被云函数盖上的刻度，供引擎写回本地副本（省掉一轮回拉）。
+   * **key 同样必须是本地 id**，理由同上（消费方按本地 id 查文档）。
+   *
    * 已知窗口（留给 S4-6）：①② 之间不是原子的，两台设备同时推同一条时理论上都
    * 可能通过检查。最终仍是 LWW，只是「谁是最后写入」由到达顺序而非 `updatedAt` 决定。
    * 要彻底消掉得靠云函数或事务。
@@ -433,7 +437,8 @@ export function createCloudBaseAdapter({
     const list = (docs || [])
       .map((d) => (d ? { doc: d, localId: toLocalId(d) } : null))
       .filter((x) => x && x.localId)
-    if (!list.length) return { upserted: [], rejected: [] }
+    // 形状与正常路径一致（含 `stamps`）：调用方不必为「空推送」写分支
+    if (!list.length) return { upserted: [], rejected: [], stamps: {} }
 
     // ① 读回云端现有版本（PRIVATE 权限下只会读到自己那份）
     //    查询用别名 —— 这里正是 S4-7 的修法：同名本地 id 在不同账号下
@@ -513,13 +518,27 @@ export function createCloudBaseAdapter({
      * ⚠️ 云函数不可用时这一步静默跳过（`stamps` 为空）—— 云端文档仍带客户端
      *    `updatedAt`，退回到 S4-2 的行为。**不因此报错**，否则「能推的数据」
      *    会被一个可选增强搞成「同步失败」。
+     *
+     * ⚠️ **拿回来的刻度必须把 key 从「云端别名」换回「本地 id」**（S9 修补）。
+     *    请求是按别名发的，云函数也按别名逐条回报，所以 Map 的 key 是别名；
+     *    而消费方（`syncEngine.pushPending` → `store.applyStamps`）是拿本地 id
+     *    去本地库 `byId.get(id)` 查文档的 —— 给别名会**每条都 miss**。
+     *    这个错是**静默**的：`applyStamps` 找不到文档就跳过，不报错；单设备
+     *    与全部测试都发现不了（fakeCloud 按本地 id 分桶，天然不会错）。
+     *    后果只是「写者本地副本晚一轮才有刻度」——功能无碍，但契约被漂开了。
      */
+    const stamps = {}
     if (upserted.length && isCloudApiConfigured) {
-      const aliasesToStamp = upserted.map((id) => toCloudId(id, prefix))
-      await fetchServerStamps(collection, aliasesToStamp)
+      // alias → localId，用于把云函数回报的 key 换回本地 id
+      const localIdOf = new Map(upserted.map((id) => [toCloudId(id, prefix), id]))
+      const stamped = await fetchServerStamps(collection, [...localIdOf.keys()])
+      for (const [alias, value] of stamped) {
+        const localId = localIdOf.get(alias)
+        if (localId) stamps[localId] = value
+      }
     }
 
-    return { upserted, rejected }
+    return { upserted, rejected, stamps }
   }
 
   /**

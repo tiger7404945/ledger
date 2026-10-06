@@ -523,4 +523,66 @@ const sheet = sheetMod.useLoginSheet()
   )
 }
 
+/* ==========================================================================
+ * 第 10 节（S9）：push 刻度回传的契约守卫
+ *
+ * 事故复盘：`cloudbaseAdapter.push()` 调完 `fetchServerStamps()` 就把它的返回值
+ * 丢了，返回体里没有 `stamps`，而 `syncEngine.pushPending` 读的正是 `result.stamps`
+ * —— S4-6「刻度写回本地副本」这条链在真实云端上**从没接通过**。
+ *
+ * 为什么单靠测试发现不了：
+ *   ① 它是**静默**的（`applyStamps` 找不到文档就跳过，不抛错，功能退化成
+ *      「晚一轮才拿到刻度」，不影响正确性）；
+ *   ② `fakeCloud` 是按 `_openid` 分桶的，`_id` 就等于本地 id，所以它的 stamps
+ *      key 天然是本地 id —— 用参考实现跑测试永远绿。**契约的缺口恰好落在
+ *      「后端可替换」这条原则的缝里**：两个实现返回的 id 空间不一致。
+ *   ③ 真适配器依赖 CloudBase SDK，跑不了单测，只能源码扫描钉住。
+ *
+ * 这类「文档写了、调用方读了、实现没给」的漂移，编译、构建、单测全都不报。
+ * ========================================================================== */
+{
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const adapterSrc = read('../src/api/adapters/cloudbaseAdapter.js')
+  const cloudClientSrc = read('../src/api/sync/cloudClient.js')
+  const fakeCloudSrc = read('../src/api/sync/fakeCloud.js')
+  const idbSrc = read('../src/api/adapters/idbAdapter.js')
+
+  // 10a 返回体里有 stamps —— 空列表分支也要有（形状稳定，调用方不必写分支）
+  t.ok(
+    '10a ★★ `cloudbaseAdapter.push` 回传 stamps（含空推送分支），不再丢掉云函数盖的刻度',
+    /return\s*\{\s*upserted:\s*\[\],\s*rejected:\s*\[\],\s*stamps:\s*\{\}\s*\}/.test(adapterSrc) &&
+      /return\s*\{\s*upserted,\s*rejected,\s*stamps\s*\}/.test(adapterSrc)
+  )
+
+  // 10b 关键：云函数按**别名**回报，必须换算回本地 id 才能被消费方查到
+  t.ok(
+    '10b ★★ stamps 的 key 换算回**本地 id**（直接给别名 ⇒ applyStamps 每条静默 miss）',
+    /const stamped = await fetchServerStamps\(/.test(adapterSrc) &&
+      /localIdOf\.get\(alias\)/.test(adapterSrc)
+  )
+
+  // 10c 两侧 id 空间必须一致：消费方按本地 id 查文档
+  t.ok(
+    '10c ★ 消费方 `applyStamps` 按本地 id 查文档（与 upserted 同一套 id 空间）',
+    /applyStamps\(collection, stamps\)/.test(read('../src/api/sync/syncEngine.js')) &&
+      /byId\.get\(id\)/.test(idbSrc) &&
+      /serverUpdatedAt: stamp/.test(idbSrc)
+  )
+
+  // 10d 契约声明必须写明它 —— 否则下一个人还会照「只有 upserted/rejected」去写实现
+  t.ok(
+    '10d ★ 契约（cloudClient.js）声明 push 返回 stamps，且注明 key 是本地 id、可缺省',
+    /stamps\s*\}/.test(cloudClientSrc) &&
+      /`stamps`/.test(cloudClientSrc) &&
+      /必须是「本地 id」/.test(cloudClientSrc) &&
+      /允许缺省或为空对象/.test(cloudClientSrc)
+  )
+
+  // 10e 参考实现（fakeCloud）保持同语义，否则「后端可替换」这条原则是空话
+  t.ok(
+    '10e ★ fakeCloud 同样返回 stamps（参考实现与真实现同一套契约）',
+    /stamps\[id\] = stamped/.test(fakeCloudSrc) && /return\s*\{\s*upserted,\s*rejected,\s*stamps\s*\}/.test(fakeCloudSrc)
+  )
+}
+
 t.done()
